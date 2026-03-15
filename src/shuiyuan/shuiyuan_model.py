@@ -94,10 +94,23 @@ class ShuiyuanModel:
                 )
 
             # Create a new aiohttp session and load cookies
-            session = aiohttp.ClientSession()
+            import yarl
+            
             with open(file_path, "rb") as f:
                 cookies = pickle.load(f)
-                session.cookie_jar.update_cookies(cookies)
+            
+            cookie_dict = {}
+            if hasattr(cookies, "items"):
+                for k, v in cookies.items():
+                    cookie_dict[k] = v.value if hasattr(v, "value") else v
+            else:
+                cookie_dict = cookies
+
+            # Initialize WITHOUT cookies here to prevent duplicate domain-less cookies
+            session = aiohttp.ClientSession()
+            # Explicitly add cookies with the correct bound domain
+            session.cookie_jar.update_cookies(cookie_dict, response_url=yarl.URL(get_cookies_url))
+
 
             # Update the shared session using Shuiyuan API
             cls._shared_session = session

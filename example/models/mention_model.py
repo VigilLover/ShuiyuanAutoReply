@@ -57,24 +57,27 @@ class MentionModel(BaseUserActionModel):
 
     async def _pumpkin_condition(self, raw: str, user: User) -> Optional[str]:
         """
-        Check if the raw content of a post contains the string "【小南瓜】".
+        Check if the raw content of a post contains the string "【小狼】".
 
         :param raw: The raw content of the post.
         :param user: The user who posted the message.
         :return: A string to reply to the post if the condition is met, otherwise None.
         """
         # Check if the mention actually exists
-        r = re.search(r"@monkeyspumpkin", raw, re.IGNORECASE)
-        if r is None:
-            return None
+        # r = re.search(r"@wolf_lumine", raw, re.IGNORECASE)
+        # if r is None:
+        #     return None
 
-        # If the raw content does not contain "【小南瓜】", we return None
-        raw = MentionModel._parse_prompt_text(raw, "【小南瓜】")
+        # If the raw content does not contain "【小狼】", we return None
+        raw = MentionModel._parse_prompt_text(raw, "【小狼】")
         if raw is None:
+            logging.info(f"==> [MentionModel] post did not contain keyword 【小狼】, skipping AI spawn.")
             return None
 
+        logging.info(f"==> [MentionModel] Triggered AI spawn with prompt: '{raw}' for user: {user.username}")
         # Let the Tongyi model respond based on conversation and similar responses
         reply = await self.mention_tongyi_model.get_pumpkin_response(raw, user)
+        logging.info(f"==> [MentionModel] AI replied with length {len(reply)}.")
         reply = f"{reply}\n\n（内容由AI生成，仅供参考）"
         return MentionModel._make_unique_reply(reply)
 
@@ -92,7 +95,7 @@ class MentionModel(BaseUserActionModel):
         # Clear the session history for the user
         self.mention_tongyi_model.clear_session_history(user.id)
 
-        return MentionModel._make_unique_reply("已清除与小南瓜的对话历史记录")
+        return MentionModel._make_unique_reply("已清除与小狼的对话历史记录")
 
     def _help_condition(self, raw: str) -> Optional[str]:
         """
@@ -107,8 +110,8 @@ class MentionModel(BaseUserActionModel):
 
         return MentionModel._make_unique_reply(
             "帮助信息如下：\n"
-            "1. 输入【小南瓜】+对话，与南瓜bot聊天 :jack_o_lantern:\n"
-            "2. 输入【清除历史】，清除与小南瓜的对话历史记录 :broom:\n"
+            "1. 输入【小狼】+对话，与小狼bot聊天 :wolf:\n"
+            "2. 输入【清除历史】，清除与小狼bot的对话历史记录 :broom:\n"
             "3. 输入【帮助】，查看该帮助信息 :question:"
         )
 
@@ -120,6 +123,8 @@ class MentionModel(BaseUserActionModel):
         :param action: The details of the user action (mention).
         :return: None
         """
+        logging.info(f"==> [MentionModel] Event triggered for action_type={action.action_type} on post_id={action.post_id}")
+        
         # This is the text to reply to the post
         text: Optional[str] = None
 
@@ -131,6 +136,7 @@ class MentionModel(BaseUserActionModel):
                 post_details.username,
                 post_details.name,
             )
+            logging.info(f"==> [MentionModel] Fetched post details successfully. User={post_user.username}")
 
             # If the member "raw" is not present, we should skip it
             if post_details.raw is None:
@@ -149,22 +155,31 @@ class MentionModel(BaseUserActionModel):
         try:
             # If the post is an auto-reply, we should skip it
             if auto_reply_tag in post_details.raw:
+                logging.info(f"==> [MentionModel] Post {action.post_id} is an auto-reply. Skipping.")
                 return
 
             # Check help condition
+            logging.info(f"==> [MentionModel] Checking _help_condition...")
             text = self._help_condition(post_details.raw)
             if text is not None:
+                logging.info(f"==> [MentionModel] _help_condition matched.")
                 return
 
             # Check clear condition
+            logging.info(f"==> [MentionModel] Checking _clear_condition...")
             text = await self._clear_condition(post_details.raw, post_user)
             if text is not None:
+                logging.info(f"==> [MentionModel] _clear_condition matched.")
                 return
 
             # Check pumpkin condition
+            logging.info(f"==> [MentionModel] Checking _pumpkin_condition...")
             text = await self._pumpkin_condition(post_details.raw, post_user)
             if text is not None:
+                logging.info(f"==> [MentionModel] _pumpkin_condition matched.")
                 return
+
+            logging.info(f"==> [MentionModel] No conditions matched for post {action.post_id}.")
 
         except Exception:
             # If we failed to get the post details or any other error occurred
@@ -174,13 +189,15 @@ class MentionModel(BaseUserActionModel):
             )
             # We should reply to the post with an error message
             text = MentionModel._make_unique_reply(
-                "抱歉，南瓜bot遇到了一个错误，暂时无法处理您的请求，请稍后再试"
+                "抱歉，小狼bot遇到了一个错误，暂时无法处理您的请求，请稍后再试"
             )
 
         finally:
             if text is not None:
+                logging.info(f"==> [MentionModel] Replying to topic {action.topic_id} at post {action.post_number}...")
                 await self.model.reply_to_post(
                     text,
                     action.topic_id,
                     action.post_number,
                 )
+                logging.info(f"==> [MentionModel] Reply successfully sent to post {action.post_id}.")
