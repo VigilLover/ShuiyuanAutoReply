@@ -94,23 +94,10 @@ class ShuiyuanModel:
                 )
 
             # Create a new aiohttp session and load cookies
-            import yarl
-            
+            session = aiohttp.ClientSession()
             with open(file_path, "rb") as f:
                 cookies = pickle.load(f)
-            
-            cookie_dict = {}
-            if hasattr(cookies, "items"):
-                for k, v in cookies.items():
-                    cookie_dict[k] = v.value if hasattr(v, "value") else v
-            else:
-                cookie_dict = cookies
-
-            # Initialize WITHOUT cookies here to prevent duplicate domain-less cookies
-            session = aiohttp.ClientSession()
-            # Explicitly add cookies with the correct bound domain
-            session.cookie_jar.update_cookies(cookie_dict, response_url=yarl.URL(get_cookies_url))
-
+                session.cookie_jar.update_cookies(cookies)
 
             # Update the shared session using Shuiyuan API
             cls._shared_session = session
@@ -270,6 +257,26 @@ class ShuiyuanModel:
         data = await response.json()
         return from_dict(PostDetails, data)
 
+    async def get_post_details_batch_by_topic_id(
+        self, topic_id: int, post_ids: List[int]
+    ) -> List[PostDetails]:
+        """
+        Get the details of all posts in a topic by its ID.
+
+        :param topic_id: The ID of the topic to retrieve posts from.
+        :param post_ids: A list of post IDs to retrieve details for.
+        :return: A list of PostDetails instances containing the post information.
+        """
+        response = await self._rate_limited_request(
+            "get",
+            f"{get_topic_url}/{topic_id}/posts.json",
+            params={"post_ids[]": post_ids},
+        )
+        data = await response.json()
+        post_stream = data.get("post_stream", {})
+        posts = post_stream.get("posts", [])
+        return [from_dict(PostDetails, post_data) for post_data in posts]
+
     async def get_actions(self, username: str, filter: List[int]) -> UserActions:
         """
         Get the latest actions for a given username and filter.
@@ -280,7 +287,12 @@ class ShuiyuanModel:
         """
         response = await self._rate_limited_request(
             "get",
-            f"{action_url}?offset=0&username={username}&filter={",".join(map(str, filter))}",
+            f"{action_url}",
+            params={
+                "offset": 0,
+                "username": username,
+                "filter": ",".join(map(str, filter)),
+            },
         )
         if response.status != 200:
             raise Exception(f"Failed to get at notifications: {await response.text()}")
@@ -433,7 +445,7 @@ class ShuiyuanModel:
     @classmethod
     async def _close_shared_session(cls) -> None:
         # Lock to ensure no re-creation during closing
-        with cls._session_init_lock:
+        async with cls._session_init_lock:
             if cls._shared_session and not cls._shared_session.closed:
                 await cls._shared_session.close()
 
@@ -441,6 +453,103 @@ class ShuiyuanModel:
         cls._shared_session = None
         cls._request_chain = None
         cls._last_request_ts = 0.0
+
+    #################################################
+    ##             Query Methods Start             ##
+    #################################################
+
+    async def search_user_by_term(self, term: str) -> List[User]:
+        """
+        Search for users by a search term.
+
+        :param term: The search term to use for finding users. It has to be NON-EMPTY.
+        :return: A list of User instances matching the search term.
+        """
+        response = await self._rate_limited_request(
+            "get", f"{user_search_url}", params={"term": term, "limit": 6}
+        )
+        if response.status != 200:
+            raise Exception(f"Failed to search users: {await response.text()}")
+
+        data = await response.json()
+        user_list = data.get("users", [])
+        return [from_dict(User, user) for user in user_list]
+
+    async def search_post_by_optional_username_topic(
+        self, term: str, username: Optional[str] = None, topic_id: Optional[int] = None
+    ) -> List[PostSearchResult]:
+        """
+        Search for posts by a search term and an optional username.
+
+        :param term: The search term to use for finding posts. It has to be NON-EMPTY.
+        :param username: An optional username to filter posts by.
+        :param topic_id: An optional topic ID to filter posts by.
+        :return: A list of PostSearchResult instances matching the search criteria.
+        """
+        # Construct the params
+        params = {"term": term}
+        if username:
+            params["term"] += f" @{username}"
+        if topic_id:
+            params["search_context[type]"] = "topic"
+            params["search_context[id]"] = str(topic_id)
+
+        response = await self._rate_limited_request(
+            "get", f"{post_search_url}", params=params
+        )
+        if response.status != 200:
+            raise Exception(f"Failed to search posts: {await response.text()}")
+
+        data = await response.json()
+        post_list = data.get("posts", [])
+        return [from_dict(PostSearchResult, post) for post in post_list]
+
+    async def search_post_details_by_optional_username_topic(
+        self, term: str, username: Optional[str] = None, topic_id: Optional[int] = None
+    ) -> List[PostDetails]:
+        """
+        Search for posts by a search term and an optional username, and return detailed information.
+
+        :param term: The search term to use for finding posts. It has to be NON-EMPTY.
+        :param username: An optional username to filter posts by.
+        :param topic_id: An optional topic ID to filter posts by.
+        :return: A list of PostDetails instances matching the search criteria.
+        """
+        post_search_results = await self.search_post_by_optional_username_topic(
+            term, username, topic_id
+        )
+        post_details_list = []
+        for result in post_search_results:
+            try:
+                details = await self.get_post_details(result.id)
+                post_details_list.append(details)
+            except Exception as e:
+                logging.error(
+                    f"Failed to get details for post ID {result.id}, "
+                    f"traceback is as follows:\n{traceback.format_exc()}"
+                )
+        return post_details_list
+
+    async def query_recent_posts_by_topic_id(
+        self, topic_id: int, limit: int
+    ) -> List[PostDetails]:
+        """
+        Query recent posts in a topic by its ID.
+
+        :param topic_id: The ID of the topic to query.
+        :param limit: The maximum number of recent posts to retrieve.
+        :return: A list of PostDetails instances for the recent posts in the topic.
+        """
+        # Check if `limit` is positive
+        if limit <= 0:
+            raise ValueError("Limit must be a positive integer")
+
+        # Retrieve the topic details to get the post stream
+        topic_details = await self.get_topic_details(topic_id)
+
+        # Use the last `limit` posts for recent activity
+        recent_posts = topic_details.post_stream.stream[-limit:]
+        return await self.get_post_details_batch_by_topic_id(topic_id, recent_posts)
 
 
 def _global_ignore_illegal_cookies() -> None:

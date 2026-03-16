@@ -25,10 +25,10 @@ async def get_user_replies(username: str, max_pages: int | None = None,
     page = 1
     
     try:
-        with open("cookie.txt", "r", encoding="utf-8") as f:
+        with open("cookies.txt", "r", encoding="utf-8") as f:
             cookie = f.read().strip()
     except FileNotFoundError:
-        print("错误: 未找到 cookie.txt 文件")
+        print("错误: 未找到 cookies.txt 文件")
         return []
     
     headers = {
@@ -127,17 +127,17 @@ def process_replies(username: str, data: list[dict]):
             posts_csv.append([content])
 
     # 写入txt文件
-    with open(f'user_archive.txt', 'w', encoding='utf-8') as f:
+    with open(f'{username}_posts.txt', 'w', encoding='utf-8') as f:
         for post in posts_text:
             f.write(post + '\n')
             
     # 写入csv文件
-    with open(f'user_archive.csv', 'w', newline='', encoding='utf-8') as f:
+    with open(f'{username}_posts.csv', 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(['post_raw'])
         writer.writerows(posts_csv)
         
-    print(f"文本已保存到 user_archive.txt 和 user_archive.csv")
+    print(f"文本已保存到 {username}_posts.txt 和 {username}_posts.csv")
 
 if __name__ == "__main__":
     username = input("请输入水源用户名: ").strip()
@@ -155,7 +155,7 @@ if __name__ == "__main__":
     replies = asyncio.run(get_user_replies(username, since_dt=since_dt, until_dt=until_dt))
     
     # 也可以保存为原始json便于查看
-    with open(f"user_archive.json", "w", encoding="utf-8") as f:
+    with open(f"{username}_replies.json", "w", encoding="utf-8") as f:
         json.dump(replies, f, ensure_ascii=False, indent=4)
         
     process_replies(username, replies)

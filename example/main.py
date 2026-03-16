@@ -27,7 +27,7 @@ from models.stock_topic_model import StockTopicModel
 from models.record_topic_model import RecordTopicModel
 
 
-async def main():
+async def main(persona: str):
     """
     Main function to run the ShuiyuanModel.
     This function initializes the model and retrieves the session.
@@ -35,7 +35,7 @@ async def main():
 
     async with await ShuiyuanModel.create() as model:
         # Let's try to get the post streams
-        mention_model = MentionModel(model, "wolf_lumine")
+        mention_model = MentionModel(model, bot_username="wolf_lumine", persona=persona)
         # tarot_topic_model = TarotTopicModel(model, 430919)
         # stock_topic_model = StockTopicModel(model, 392286)
         # record_topic_model = RecordTopicModel(model, 441566)
@@ -60,4 +60,8 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    persona = input("请输入要运行的人物模型 (例如 wolf_lumine): ").strip()
+    if not persona:
+        persona = "wolf_lumine"
+        print("未输入，默认使用: wolf_lumine")
+    asyncio.run(main(persona))

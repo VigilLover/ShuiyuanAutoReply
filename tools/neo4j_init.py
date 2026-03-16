@@ -24,18 +24,19 @@ from src.constants import auto_reply_tag
 from src.database.neo4j_mgr import global_async_neo4j_manager
 
 
-async def init_database():
+async def init_database(username: str):
     """Initialize the Neo4j database"""
     try:
         logging.info("Initializing Neo4j database...")
         # Initialize the Neo4j database
+        global_async_neo4j_manager.userid = username
         await global_async_neo4j_manager.initialize()
 
         # The signature has to be removed before storing the sentences
         sig_re = r"<div data-signature>.*?</div>"
 
         # Try to open the CSV file and import data
-        file_path = os.path.join(os.path.dirname(__file__), "user_archive.csv")
+        file_path = os.path.join(os.path.dirname(__file__), f"{username}_posts.csv")
         if os.path.exists(file_path):
             # Load the CSV data
             logging.info(f"Importing data from {file_path}...")
@@ -73,4 +74,8 @@ async def init_database():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(init_database())
+    username = input("请输入要初始化的用户名/角色名: ").strip()
+    if not username:
+        logging.error("用户名不能为空")
+        sys.exit(1)
+    asyncio.run(init_database(username))

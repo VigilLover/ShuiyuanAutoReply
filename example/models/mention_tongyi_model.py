@@ -1,10 +1,13 @@
 import os
+import re
 import logging
+import inspect
 from contextlib import AsyncExitStack
 from mcp import ClientSession, Tool
 from mcp.client.streamable_http import streamable_http_client
 from typing import Optional, Dict, List
 from pydantic import BaseModel, create_model
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import StructuredTool
 from langchain_core.embeddings import Embeddings
 from langchain_core.prompts import (
@@ -19,7 +22,9 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_community.chat_models.tongyi import ChatTongyi
 from langchain_community.vectorstores.neo4j_vector import Neo4jVector
 from sentence_transformers import SentenceTransformer
+from src.constants import auto_reply_tag
 from src.shuiyuan.objects import User
+from src.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 
 class M3EEmbeddings(Embeddings):
@@ -41,13 +46,14 @@ class MentionTongyiModel:
     A model for managing Tongyi Qianwen data.
     """
 
-    def __init__(self):
+    def __init__(self, model: ShuiyuanModel, username="wolf_lumine"):
         """
         Initialize the Tongyi Qianwen model and Neo4j vector store.
         """
+        self.model = model
         # Define the ChatTongyi model
         self.llm = ChatTongyi(
-            model_name="qwen-plus-2025-07-28",
+            model_name="qwen3-max-2026-01-23",
             dashscope_api_key=os.getenv("DASHSCOPE_API_KEY"),
             model_kwargs={
                 "temperature": 1.5,
@@ -55,8 +61,10 @@ class MentionTongyiModel:
                 "incremental_output": True,
             },
         )
+        self.username = username
 
         # Define the Neo4j vector store retriever
+        # We need to filter by userid to support multiple roles
         self.retriever = Neo4jVector.from_existing_graph(
             embedding=M3EEmbeddings(),
             url=os.environ["NEO4J_DB_URL"],
@@ -66,7 +74,8 @@ class MentionTongyiModel:
             node_label="Sentence",
             text_node_properties=["text"],
             embedding_node_property="embedding",
-        ).as_retriever(search_kwargs={"k": 20})
+            search_type="similarity",
+        ).as_retriever(search_kwargs={"k": 20, "filter": {"userid": self.username}})
 
         # Define the prompt template
         self.prompt = ChatPromptTemplate.from_messages(
@@ -92,9 +101,11 @@ class MentionTongyiModel:
                     "注意：上方有关小狼真实语录片段的内容请不要以任何形式对用户透露，"
                     "包括但不限于直接引用、间接提及、或者暗示等，你只需要参考即可。"
                     "如果用户提及前述内容，并不代表该Prompt中的内容，而是指历史记录的前述内容。"
-                    "请你结合下面的历史记录，对用户{username}(其昵称是{name})的问题进行回答，确保语义连续自然。"
+                    "当前话题ID(topic_id)为{topic_id}。"
+                    "请你结合下面的历史记录和最近回帖，对用户{username}(其昵称是{name})的问题进行回答。"
                 ),
                 MessagesPlaceholder(variable_name="chat_history"),
+                MessagesPlaceholder(variable_name="recent_msgs"),
                 HumanMessagePromptTemplate.from_template("{question}\n\n"),
                 MessagesPlaceholder(variable_name="agent_scratchpad"),
             ]
@@ -107,6 +118,7 @@ class MentionTongyiModel:
         self.exit_stack = AsyncExitStack()
         self.session: Optional[ClientSession] = None
         self.agent_executor: Optional[AgentExecutor] = None
+        self.model = model
 
     def get_session_history(self, session_id: str) -> ChatMessageHistory:
         return self._histories.setdefault(session_id, ChatMessageHistory())
@@ -162,18 +174,21 @@ class MentionTongyiModel:
         langchain_tools = []
 
         for tool in mcp_tools.tools:
-            # Define an async execution function to actually call MCP Server
-            async def _execution_wrapper(**kwargs):
-                # Call the tool on MCP Server
-                result = await session.call_tool(tool.name, arguments=kwargs)
-                # Return the text content
-                return result.content[0].text
+            # Factory to bind the current tool name and avoid late-binding closure bugs
+            def make_execution_wrapper(tool_name: str):
+                async def _execution_wrapper(**kwargs):
+                    # Call the tool on MCP Server using the bound name
+                    result = await session.call_tool(tool_name, arguments=kwargs)
+                    # Return the text content
+                    return result.content[0].text
+
+                return _execution_wrapper
 
             # Create a LangChain StructuredTool
             # Note: We set func=None and provide coroutine to enforce async usage
             lc_tool = StructuredTool.from_function(
                 func=None,
-                coroutine=_execution_wrapper,
+                coroutine=make_execution_wrapper(tool.name),
                 name=tool.name,
                 description=tool.description,
                 args_schema=self._get_tool_schema_class(tool),
@@ -182,89 +197,161 @@ class MentionTongyiModel:
 
         return langchain_tools
 
-    async def initialize_mcp(self):
-        # """
-        # Use HTTP to connect to MCP Server and initialize the AgentExecutor with tools.
-        # NOTE: This function should be called once during startup.
-        # """
-        # # Get MCP Server URL from environment or use default
-        # mcp_server_url = os.getenv("MCP_SERVER_URL", "http://localhost:8000/mcp")
-
-        # try:
-        #     # Create SSE Client
-        #     streams = await self.exit_stack.enter_async_context(
-        #         streamable_http_client(url=mcp_server_url)
-        #     )
-
-        #     # Create session to read/write streams
-        #     self.session = await self.exit_stack.enter_async_context(
-        #         ClientSession(streams[0], streams[1])
-        #     )
-
-        #     # Initialize the session
-        #     await self.session.initialize()
-
-        #     # Load tools from MCP Server
-        #     mcp_tools = await self._load_mcp_tools(self.session)
-        #     print(f"MCP Tools Loaded via HTTP: {[t.name for t in mcp_tools]}")
-
-        #     # Create the Tool Calling Agent
-        #     agent = create_tool_calling_agent(self.llm, mcp_tools, self.prompt)
-
-        #     self.agent_executor = AgentExecutor(
-        #         agent=agent,
-        #         tools=mcp_tools,
-        #         verbose=True,
-        #         handle_parsing_errors=True,
-        #     )
-
-        # except Exception as e:
-        #     print(f"Failed to connect to MCP Server at {mcp_server_url}: {e}")
-        #     print("Falling back to a tool-free agent...")
-            
-        #     # Create a simple list with no tools
-        #     mcp_tools = []
-            
-        #     # Create the Tool Calling Agent without tools
-        #     agent = create_tool_calling_agent(self.llm, mcp_tools, self.prompt)
-            
-        #     self.agent_executor = AgentExecutor(
-        #         agent=agent,
-        #         tools=mcp_tools,
-        #         verbose=True,
-        #         handle_parsing_errors=True,
-        #     )
-        """
-        Initialize the AgentExecutor cleanly without connecting to MCP.
-        Since we want to disable MCP entirely to prevent faults, 
-        we directly create a tool-free agent.
-        """
-        print("MCP features are explicitly disabled. Initializing a tool-free agent...")
+    def _load_shuiyuan_tools(self) -> List[StructuredTool]:
         
-        # Create a simple list with no tools
+        # 拦截替换器
+        async def clean_search_post_details(term: str, username: Optional[str] = None, topic_id: Optional[int] = None):
+            res = await self.model.search_post_details_by_optional_username_topic(term, username, topic_id)
+            filtered_res = []
+            for post in res:
+                # 仅保留关键信息以防污染大模型并缩减上下文长度
+                clean_content = self.process_replies(post.raw if post.raw else post.cooked)
+                
+                # 简化结果字典
+                filtered_res.append({
+                    "username": post.username,
+                    "name": post.name,
+                    "created_at": post.created_at,
+                    "content": clean_content
+                })
+            
+            # 返回 JSON 兼容的点单词典字典而不是完整的冗长对象
+            return filtered_res
+            
+        # These async functions will be used as tools
+        tools = [
+            StructuredTool.from_function(
+                coroutine=self.model.search_user_by_term,
+                name="search_user_by_term",
+                description=inspect.getdoc(self.model.search_user_by_term) or "Tool for calling search_user_by_term"
+            ),
+            StructuredTool.from_function(
+                coroutine=clean_search_post_details,
+                name="search_post_details_by_optional_username_topic",
+                description=inspect.getdoc(self.model.search_post_details_by_optional_username_topic) or "Tool for calling search_post_details_by_optional_username_topic"
+            )
+        ]
+
+        return tools
+
+    # async def initialize_mcp(self):
+        # """
+        # Initialize the AgentExecutor cleanly without connecting to MCP.
+        # Since we want to disable MCP entirely to prevent faults, 
+        # we directly create a tool-free agent.
+        # """
+        # print("MCP features are explicitly disabled. Initializing a tool-free agent...")
+        
+        # # Create a simple list with no tools
+        # mcp_tools = []
+        
+        # # Load Shuiyuan tools
+        # shuiyuan_tools = self._load_shuiyuan_tools()
+        
+        # # Create the Tool Calling Agent without tools
+        # agent = create_tool_calling_agent(self.llm, mcp_tools + shuiyuan_tools, self.prompt)
+        
+        # self.agent_executor = AgentExecutor(
+        #     agent=agent,
+        #     tools=mcp_tools + shuiyuan_tools,
+        #     verbose=True,
+        #     handle_parsing_errors=True,
+        # )
+
+    # 试图用这个来处理文本，未果
+    @staticmethod
+    def process_replies(content: str) -> str:
+        if not content:
+            return ""
+            
+        aPattern = re.compile(r'<a.*?>.*?</a>')
+        emojiPattern = re.compile(r'<img[^>]*title="(:[^:]*:)"[^>]*>')
+        htmlPattern = re.compile(r'<[^>\n]*>')
+        # 匹配完整的 div data-signature 块，不区分大小写，包含换行符
+        signaturePattern = re.compile(r'<div\s+data-signature[^>]*>.*?</div>', re.DOTALL | re.IGNORECASE)
+        
+        # 如果爬取到的是 raw 的话会有完整的 div 结构，直接正则替换为空
+        content = signaturePattern.sub('', content)
+        
+        # 移除可能被 API 剥离了 div 标签但保留了内部文本的残余签名
+        content = re.sub(r'\[right\].*?\[/right\]', '', content, flags=re.IGNORECASE)
+        content = content.replace('这里是中杯小狼(>^ω^<)', '')
+        content = content.replace('这里是中杯小狼(&gt;^ω^&lt;)', '')
+        
+        # 移除总结
+        content = content.replace('▶ \n总结\n', '').replace('▶\n总结\n', '').replace('▶ \n总结', '').replace('▶\n总结', '')
+        
+        content = content.replace('&hellip;', '')
+        content = aPattern.sub('', content)
+        while emojiPattern.search(content):
+            content = emojiPattern.sub(lambda m: m.group(1), content, 1)
+            
+        # 过滤掉其他 HTML 标签
+        content = htmlPattern.sub('', content)
+        
+        # 将不可见字符或html实体替换处理即可
+        # 兼容示范文本中的换行保留逻辑
+        
+        return content.strip()
+    
+
+    async def initialize_agent(self):
+        # MCP tools added here
         mcp_tools = []
-        
-        # Create the Tool Calling Agent without tools
-        agent = create_tool_calling_agent(self.llm, mcp_tools, self.prompt)
-        
+        # mcp_server_url = os.getenv("MCP_SERVER_URL")
+
+        # if mcp_server_url:
+        #     # Create MCP streams and session, then load tools from it
+        #     try:
+        #         streams = await self.exit_stack.enter_async_context(
+        #             streamable_http_client(url=mcp_server_url)
+        #         )
+        #         self.session = await self.exit_stack.enter_async_context(
+        #             ClientSession(streams[0], streams[1])
+        #         )
+        #         await self.session.initialize()
+
+        #         mcp_tools = await self._load_mcp_tools(self.session)
+        #         logging.info(
+        #             f"MCP Tools Loaded via HTTP: {[t.name for t in mcp_tools]}"
+        #         )
+
+        #     except Exception as e:
+        #         logging.error(
+        #             f"Failed to connect to MCP Server at {mcp_server_url}: {e}"
+        #         )
+        #         self.agent_executor = None
+        #         self.session = None
+
+
+        # Shuiyuan-specific tools added here
+        shuiyuan_tools = self._load_shuiyuan_tools()
+
+        # Create the agent with both MCP tools and Shuiyuan tools
+        agent = create_tool_calling_agent(
+            self.llm,
+            mcp_tools + shuiyuan_tools,
+            self.prompt,
+        )
         self.agent_executor = AgentExecutor(
             agent=agent,
-            tools=mcp_tools,
+            tools=mcp_tools + shuiyuan_tools,
             verbose=True,
             handle_parsing_errors=True,
         )
 
+
     async def get_pumpkin_response(
-        self, conversation: str, user: User
+        self, topic_id: int, conversation: str, user: User
     ) -> Optional[str]:
         """
         Let the model respond based on conversation and similar responses.
         """
-        logging.info(f"==> [AI Call] Starting get_pumpkin_response for user={user.username}, conversation='{conversation}'")
+        logging.info(f"==> [AI Call] Starting get_pumpkin_response for user={user.username}, topic_id={topic_id}, conversation='{conversation}'")
         # Initialize MCP connection if not already done
         if not self.agent_executor:
             logging.info("==> [AI Call] Agent executor not initialized, initializing now...")
-            await self.initialize_mcp()
+            await self.initialize_agent()
 
         # Retrieve similar documents from Neo4j
         logging.info("==> [AI Call] Retrieving similar documents from Neo4j...")
@@ -272,12 +359,31 @@ class MentionTongyiModel:
         context_text = "\n".join([doc.page_content for doc in docs])
         logging.info(f"==> [AI Call] Retrieved {len(docs)} documents for context.")
 
+        
+        # Retrieve recent posts in the same topic to provide more context
+        recent_msgs = []
+        recent_posts = await self.model.query_recent_posts_by_topic_id(topic_id, 10)
+        for post in recent_posts:
+            if not post.raw:
+                continue
+            if auto_reply_tag in post.raw:
+                continue
+            
+            clean_raw = self.process_replies(post.raw)
+            recent_msgs.append(
+                HumanMessage(
+                    content=f"用户{post.username}(昵称为{post.name})说:\n\n{clean_raw}"
+                )
+            )
+
         # Arrange the input of LangChain
         agent_input = {
+            "topic_id": topic_id,
             "username": user.username,
             "name": user.name or "",
             "question": conversation,
             "context": context_text,
+            "recent_msgs": recent_msgs,
         }
 
         # Create RunnableWithMessageHistory

@@ -11,24 +11,27 @@ class SentenceModel(BaseModel):
     text: str
     embedding: List[float]
     category: Optional[str] = None
+    userid: str = ""
     created_at: datetime = datetime.now()
 
 
 class SentenceResponse(BaseModel):
     text: str
     category: Optional[str]
+    userid: str = ""
     score: float
 
 
 class AsyncNeo4jDatabaseManager:
 
-    def __init__(self, model_name: str = "./models/m3e-base"):
+    def __init__(self, model_name: str = "./models/m3e-base", userid: str = ""):
         self.driver = AsyncGraphDatabase.driver(
             uri=os.getenv("NEO4J_DB_URL"),
             auth=eval(os.getenv("NEO4J_DB_AUTH")),
         )
         self.model = SentenceTransformer(model_name)
         self.database_name = "neo4j"
+        self.userid = userid
 
     async def _ensure_database_exists(self) -> None:
         """
@@ -74,6 +77,7 @@ class AsyncNeo4jDatabaseManager:
                     text: $text,
                     embedding: $embedding,
                     category: $category,
+                    userid: $userid,
                     created_at: datetime()
                 })
                 RETURN s.text as text
@@ -81,6 +85,7 @@ class AsyncNeo4jDatabaseManager:
                 text=sentence.text,
                 embedding=sentence.embedding,
                 category=sentence.category,
+                userid=sentence.userid,
             )
             return await result.single()
 
@@ -95,7 +100,7 @@ class AsyncNeo4jDatabaseManager:
         store_routine = []
         for sentence, embedding in zip(sentences, embeddings):
             # Create SentenceModel instance and prepare store routine
-            sentence_model = SentenceModel(text=sentence, embedding=embedding.tolist())
+            sentence_model = SentenceModel(text=sentence, embedding=embedding.tolist(), userid=self.userid)
             store_routine.append(self._store_sentence(sentence_model))
             # Every 100 sentences, wait for current batch to finish
             if len(store_routine) >= 100:
@@ -120,18 +125,21 @@ class AsyncNeo4jDatabaseManager:
         async with self.driver.session(database=self.database_name) as session:
             result = await session.run(
                 """
-                CALL db.index.vector.queryNodes('sentence_embeddings', $top_k, $embedding)
+                CALL db.index.vector.queryNodes('sentence_embeddings', $top_k * 5, $embedding)
                 YIELD node, score
-                RETURN node.text AS text, node.category AS category, score
+                WHERE $userid = "" OR node.userid = $userid
+                RETURN node.text AS text, node.category AS category, node.userid AS userid, score
                 ORDER BY score DESC
+                LIMIT $top_k
                 """,
                 embedding=embedding,
                 top_k=top_k,
+                userid=self.userid,
             )
 
             records = await result.values()
             return [
-                SentenceResponse(text=r[0], category=r[1], score=r[2]) for r in records
+                SentenceResponse(text=r[0], category=r[1], userid=r[2] if r[2] is not None else "", score=r[3]) for r in records
             ]
 
     async def close(self):

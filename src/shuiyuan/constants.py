@@ -2,11 +2,12 @@
 base_url = "https://shuiyuan.sjtu.edu.cn"
 get_topic_url = f"{base_url}/t"
 get_user_url = f"{base_url}/u"
-# get_cookies_url = f"{base_url}/auth/jaccount"
-get_cookies_url = f"{base_url}/latest"
+get_cookies_url = f"{base_url}/auth/jaccount"
 reply_url = f"{base_url}/posts"
 upload_url = f"{base_url}/uploads.json"
 action_url = f"{base_url}/user_actions.json"
+user_search_url = f"{base_url}/u/search/users.json"
+post_search_url = f"{base_url}/search/query.json"
 
 # We should use a suitable User-Agent for the requests
 default_user_agent = (

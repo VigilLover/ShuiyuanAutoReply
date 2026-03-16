@@ -14,16 +14,17 @@ class MentionModel(BaseUserActionModel):
     A class to represent a mention model for robot auto-replies.
     """
 
-    def __init__(self, model: ShuiyuanModel, username: str):
+    def __init__(self, model: ShuiyuanModel, bot_username: str, persona: str):
         """
         Initialize the TopicModel with a ShuiyuanModel instance.
 
         :param model: An instance of ShuiyuanModel.
-        :param username: The username of the robot account.
+        :param bot_username: The username of the robot account.
+        :param persona: The name of the character model to emulate.
         """
-        super().__init__(model, username, [5, 7])
-        self.mention_tongyi_model = MentionTongyiModel()
-
+        super().__init__(model, bot_username, [5, 7])
+        self.mention_tongyi_model = MentionTongyiModel(model, username=persona)
+        
     @staticmethod
     def _remove_shuiyuan_signature(text: str) -> str:
         """
@@ -55,12 +56,13 @@ class MentionModel(BaseUserActionModel):
         raw = MentionModel._remove_shuiyuan_signature(raw.replace(prompt, "")).strip()
         return raw
 
-    async def _pumpkin_condition(self, raw: str, user: User) -> Optional[str]:
+    async def _pumpkin_condition(self, raw: str, user: User, topic_id: int) -> Optional[str]:
         """
         Check if the raw content of a post contains the string "【小狼】".
 
         :param raw: The raw content of the post.
         :param user: The user who posted the message.
+        :param topic_id: The ID of the topic.
         :return: A string to reply to the post if the condition is met, otherwise None.
         """
         # Check if the mention actually exists
@@ -76,7 +78,7 @@ class MentionModel(BaseUserActionModel):
 
         logging.info(f"==> [MentionModel] Triggered AI spawn with prompt: '{raw}' for user: {user.username}")
         # Let the Tongyi model respond based on conversation and similar responses
-        reply = await self.mention_tongyi_model.get_pumpkin_response(raw, user)
+        reply = await self.mention_tongyi_model.get_pumpkin_response(topic_id, raw, user)
         logging.info(f"==> [MentionModel] AI replied with length {len(reply)}.")
         reply = f"{reply}\n\n（内容由AI生成，仅供参考）"
         return MentionModel._make_unique_reply(reply)
@@ -174,7 +176,7 @@ class MentionModel(BaseUserActionModel):
 
             # Check pumpkin condition
             logging.info(f"==> [MentionModel] Checking _pumpkin_condition...")
-            text = await self._pumpkin_condition(post_details.raw, post_user)
+            text = await self._pumpkin_condition(post_details.raw, post_user, action.topic_id)
             if text is not None:
                 logging.info(f"==> [MentionModel] _pumpkin_condition matched.")
                 return
