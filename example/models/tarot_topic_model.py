@@ -143,7 +143,7 @@ class TarotTopicModel(BaseTopicModel):
         )
         return BaseTopicModel._make_unique_reply(
             f"你好！{used_username}，"
-            f"欢迎来到南瓜的塔罗牌自助占卜小屋！请注意占卜结果仅供娱乐参考哦！\n\n"
+            f"欢迎来到小狼的塔罗牌自助占卜小屋！请注意占卜结果仅供娱乐参考哦！\n\n"
             f"{str(tarot_group)}"
             f"{text}"
         )

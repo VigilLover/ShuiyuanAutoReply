@@ -111,15 +111,27 @@ class ShuiyuanModel:
 
         # get the cookies
         cls._shared_session.headers.update({"User-Agent": default_user_agent})
-        response = await cls._rate_limited_request("get", get_cookies_url)
 
-        # now let's try to get CSRF Token from response
+        # try to get CSRF Token from response, with retries against network lag
+        max_retries = 5
         format = r'<meta name="csrf-token" content="([^"]+)"[^>]*>'
-        match = re.search(format, await response.text())
+        match = None
+
+        for attempt in range(max_retries):
+            response = await cls._rate_limited_request("get", get_cookies_url)
+            text = await response.text()
+            match = re.search(format, text)
+            
+            if match:
+                break
+                
+            logging.warning(f"CSRF token not found on attempt {attempt + 1}. Retrying in 2 seconds...")
+            await asyncio.sleep(2)
+
         if not match:
             raise CSRFTokenNotFoundError(
                 "[INITIALIZATION] "
-                "Failed to find CSRF token in the response, "
+                "Failed to find CSRF token in the response after multiple attempts, "
                 "please check the cookies file or the website structure"
             )
 
@@ -277,19 +289,20 @@ class ShuiyuanModel:
         posts = post_stream.get("posts", [])
         return [from_dict(PostDetails, post_data) for post_data in posts]
 
-    async def get_actions(self, username: str, filter: List[int]) -> UserActions:
+    async def get_actions(self, username: str, filter: List[int], offset: int = 0) -> UserActions:
         """
         Get the latest actions for a given username and filter.
 
         :param username: The username to check actions for.
         :param filter: The list of action types to filter.
+        :param offset: The offset of the actions, default to 0.
         :return: An instance of UserActions containing the mention information.
         """
         response = await self._rate_limited_request(
             "get",
             f"{action_url}",
             params={
-                "offset": 0,
+                "offset": offset,
                 "username": username,
                 "filter": ",".join(map(str, filter)),
             },

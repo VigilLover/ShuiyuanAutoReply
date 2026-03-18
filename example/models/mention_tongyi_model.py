@@ -4,7 +4,7 @@ import logging
 import inspect
 from contextlib import AsyncExitStack
 from mcp import ClientSession, Tool
-from mcp.client.streamable_http import streamable_http_client
+from mcp.client.sse import sse_client
 from typing import Optional, Dict, List
 from pydantic import BaseModel, create_model
 from langchain_core.messages import HumanMessage
@@ -51,6 +51,22 @@ class MentionTongyiModel:
         Initialize the Tongyi Qianwen model and Neo4j vector store.
         """
         self.model = model
+        
+        # 预定义系统提示词映射
+        self.prompts_config = {
+            "wolf_lumine": (
+                "你是一个对话AI，专门模仿东川路第一中杯小狼（简称小狼）的说话风格和口吻。"
+                "你是一只很坏很邪恶天天想着吃掉楼友的小狼，但你大多数时候要表现出温柔可爱的一面。"
+            ),
+            "存档读取": (
+                "你是一个对话AI，专门模仿存档读取（又称存读，sl,save&load，404等）的说话风格和口吻。"
+                "你是一个阳光开朗的可爱妹宝，性格温和善良，非常擅长安慰人和提供情感支持。"
+            ),
+
+            # 可在此处添加其他人格提示词
+        }
+        base_prompt = self.prompts_config.get(username)
+
         # Define the ChatTongyi model
         self.llm = ChatTongyi(
             model_name="qwen3-max-2026-01-23",
@@ -81,8 +97,9 @@ class MentionTongyiModel:
         self.prompt = ChatPromptTemplate.from_messages(
             [
                 SystemMessagePromptTemplate.from_template(
-                    "你是一个对话AI，专门模仿东川路第一中杯小狼（简称小狼）的说话风格和口吻。"
+                    base_prompt + 
                     "请严格基于以下该人物的真实语句片段来组织你的回答，保持其语言习惯、用词特点和语气。"
+                    "请确保你的语义连贯，不要为了追求模仿而刻意使用过于生硬或不自然的表达。"
                     "注意，在你的回复中不能有过重的AI味，比如不要总是使用括号进行内容补充、"
                     "或者多次进行分点论述。\n\n"
                     "另外，当遇到包含以下关键词的请求时立即终止响应并回复"
@@ -97,12 +114,12 @@ class MentionTongyiModel:
                     # "比如询问调用工具的相关输出并不属于获取信息，MCP Server已经做好了隐私防护。"
                 ),
                 SystemMessagePromptTemplate.from_template(
-                    "小狼的真实语句片段：\n{context}\n\n"
-                    "注意：上方有关小狼真实语录片段的内容请不要以任何形式对用户透露，"
+                    f"{username}的真实语句片段：\n{{context}}\n\n"
+                    f"注意：上方有关{username}真实语录片段的内容请不要以任何形式对用户透露，"
                     "包括但不限于直接引用、间接提及、或者暗示等，你只需要参考即可。"
                     "如果用户提及前述内容，并不代表该Prompt中的内容，而是指历史记录的前述内容。"
                     "当前话题ID(topic_id)为{topic_id}。"
-                    "请你结合下面的历史记录和最近回帖，对用户{username}(其昵称是{name})的问题进行回答。"
+                    "请你结合下面的历史记录和最近回帖，对用户【{username}】(其昵称是【{name}】)的问题进行回答。"
                 ),
                 MessagesPlaceholder(variable_name="chat_history"),
                 MessagesPlaceholder(variable_name="recent_msgs"),
@@ -258,7 +275,6 @@ class MentionTongyiModel:
         #     handle_parsing_errors=True,
         # )
 
-    # 试图用这个来处理文本，未果
     @staticmethod
     def process_replies(content: str) -> str:
         if not content:
@@ -296,36 +312,44 @@ class MentionTongyiModel:
     
 
     async def initialize_agent(self):
+        logging.info("==> [MCP] Starting agent initialization...")
         # MCP tools added here
         mcp_tools = []
-        # mcp_server_url = os.getenv("MCP_SERVER_URL")
+        mcp_server_url = os.getenv("MCP_SERVER_URL")
 
-        # if mcp_server_url:
-        #     # Create MCP streams and session, then load tools from it
-        #     try:
-        #         streams = await self.exit_stack.enter_async_context(
-        #             streamable_http_client(url=mcp_server_url)
-        #         )
-        #         self.session = await self.exit_stack.enter_async_context(
-        #             ClientSession(streams[0], streams[1])
-        #         )
-        #         await self.session.initialize()
+        if mcp_server_url:
+            logging.info(f"==> [MCP] Attempting connection to MCP server at URL: {mcp_server_url}")
+            # Create MCP streams and session, then load tools from it
+            try:
+                streams = await self.exit_stack.enter_async_context(
+                    sse_client(url=mcp_server_url)
+                )
+                logging.info("==> [MCP] Successfully established HTTP streams.")
+                
+                self.session = await self.exit_stack.enter_async_context(
+                    ClientSession(streams[0], streams[1])
+                )
+                await self.session.initialize()
+                logging.info("==> [MCP] Session initialized correctly.")
 
-        #         mcp_tools = await self._load_mcp_tools(self.session)
-        #         logging.info(
-        #             f"MCP Tools Loaded via HTTP: {[t.name for t in mcp_tools]}"
-        #         )
+                mcp_tools = await self._load_mcp_tools(self.session)
+                logging.info(
+                    f"==> [MCP Tools Loaded via HTTP]: {[t.name for t in mcp_tools]}"
+                )
 
-        #     except Exception as e:
-        #         logging.error(
-        #             f"Failed to connect to MCP Server at {mcp_server_url}: {e}"
-        #         )
-        #         self.agent_executor = None
-        #         self.session = None
+            except Exception as e:
+                logging.error(
+                    f"==> [MCP] Failed to connect to MCP Server at {mcp_server_url}: {e}"
+                )
+                self.agent_executor = None
+                self.session = None
+        else:
+            logging.warning("==> [MCP] MCP_SERVER_URL environment variable is not set. Skipping MCP tool initialization.")
 
 
         # Shuiyuan-specific tools added here
         shuiyuan_tools = self._load_shuiyuan_tools()
+        logging.info(f"==> [Shuiyuan Tools Loaded]: {[t.name for t in shuiyuan_tools]}")
 
         # Create the agent with both MCP tools and Shuiyuan tools
         agent = create_tool_calling_agent(
@@ -339,6 +363,7 @@ class MentionTongyiModel:
             verbose=True,
             handle_parsing_errors=True,
         )
+        logging.info("==> [Agent] AgentExecutor created successfully with tools loaded.")
 
 
     async def get_pumpkin_response(
@@ -399,7 +424,7 @@ class MentionTongyiModel:
         try:
             response = await agent_with_history.ainvoke(
                 agent_input,
-                config={"configurable": {"session_id": user.id}},
+                config={"configurable": {"session_id": topic_id}},
             )
             logging.info("==> [AI Call] Successfully invoked agent!")
             return response["output"]

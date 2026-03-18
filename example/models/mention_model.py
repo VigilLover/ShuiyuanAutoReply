@@ -23,6 +23,17 @@ class MentionModel(BaseUserActionModel):
         :param persona: The name of the character model to emulate.
         """
         super().__init__(model, bot_username, [5, 7])
+        self.persona = persona
+        
+        # 预先定义各个角色的触发词和昵称
+        self.persona_configs = {
+            "wolf_lumine": {"trigger": "【小狼】", "nickname": "小狼bot"},
+            "存档读取": {"trigger": "【存读】", "nickname": "存读bot"}, # 可扩展
+        }
+        self.config = self.persona_configs.get(persona, self.persona_configs["wolf_lumine"])
+        self.trigger_word = self.config["trigger"]
+        self.nickname = self.config["nickname"]
+        
         self.mention_tongyi_model = MentionTongyiModel(model, username=persona)
         
     @staticmethod
@@ -58,7 +69,7 @@ class MentionModel(BaseUserActionModel):
 
     async def _pumpkin_condition(self, raw: str, user: User, topic_id: int) -> Optional[str]:
         """
-        Check if the raw content of a post contains the string "【小狼】".
+        Check if the raw content of a post contains the target trigger word.
 
         :param raw: The raw content of the post.
         :param user: The user who posted the message.
@@ -70,17 +81,25 @@ class MentionModel(BaseUserActionModel):
         # if r is None:
         #     return None
 
-        # If the raw content does not contain "【小狼】", we return None
-        raw = MentionModel._parse_prompt_text(raw, "【小狼】")
+        # If the raw content does not contain the trigger word, we return None
+        raw = MentionModel._parse_prompt_text(raw, self.trigger_word)
         if raw is None:
-            logging.info(f"==> [MentionModel] post did not contain keyword 【小狼】, skipping AI spawn.")
+            logging.info(f"==> [MentionModel] post did not contain keyword {self.trigger_word}, skipping AI spawn.")
             return None
 
         logging.info(f"==> [MentionModel] Triggered AI spawn with prompt: '{raw}' for user: {user.username}")
         # Let the Tongyi model respond based on conversation and similar responses
         reply = await self.mention_tongyi_model.get_pumpkin_response(topic_id, raw, user)
         logging.info(f"==> [MentionModel] AI replied with length {len(reply)}.")
-        reply = f"{reply}\n\n（内容由AI生成，仅供参考）"
+        signature = (
+            "\n"
+            "<div data-signature>\n"
+            "\n"
+            "---\n"
+            f"[right]这里是AI{self.nickname.strip('bot')} :robot: [/right]\n"
+            "</div>"
+        )
+        reply = f"{reply}{signature}"
         return MentionModel._make_unique_reply(reply)
 
     async def _clear_condition(self, raw: str, user: User) -> Optional[str]:
@@ -97,7 +116,7 @@ class MentionModel(BaseUserActionModel):
         # Clear the session history for the user
         self.mention_tongyi_model.clear_session_history(user.id)
 
-        return MentionModel._make_unique_reply("已清除与小狼的对话历史记录")
+        return MentionModel._make_unique_reply(f"已清除与{self.nickname}的对话历史记录")
 
     def _help_condition(self, raw: str) -> Optional[str]:
         """
@@ -111,9 +130,10 @@ class MentionModel(BaseUserActionModel):
             return None
 
         return MentionModel._make_unique_reply(
+            f"欢迎和{self.nickname}对话o(｀ω´ )o\n"
             "帮助信息如下：\n"
-            "1. 输入【小狼】+对话，与小狼bot聊天 :wolf:\n"
-            "2. 输入【清除历史】，清除与小狼bot的对话历史记录 :broom:\n"
+            f"1. 输入{self.trigger_word}+对话，与{self.nickname}聊天 :wolf:\n"
+            f"2. 输入【清除历史】，清除与{self.nickname}的对话历史记录 :broom:\n"
             "3. 输入【帮助】，查看该帮助信息 :question:"
         )
 
@@ -191,7 +211,7 @@ class MentionModel(BaseUserActionModel):
             )
             # We should reply to the post with an error message
             text = MentionModel._make_unique_reply(
-                "抱歉，小狼bot遇到了一个错误，暂时无法处理您的请求，请稍后再试"
+                "抱歉，小狼bot遇到了一个错误，暂时无法处理您的请求，请稍后再试 :crying_cat:"
             )
 
         finally:

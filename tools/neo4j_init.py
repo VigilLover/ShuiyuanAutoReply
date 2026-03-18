@@ -36,7 +36,9 @@ async def init_database(username: str):
         sig_re = r"<div data-signature>.*?</div>"
 
         # Try to open the CSV file and import data
-        file_path = os.path.join(os.path.dirname(__file__), f"{username}_posts.csv")
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        file_path = os.path.join(project_root, "user_archive", username, f"{username}_posts.csv")
+            
         if os.path.exists(file_path):
             # Load the CSV data
             logging.info(f"Importing data from {file_path}...")

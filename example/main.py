@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import dotenv
 import logging
@@ -35,8 +36,10 @@ async def main(persona: str):
 
     async with await ShuiyuanModel.create() as model:
         # Let's try to get the post streams
+        # Here bot_username is fixed to "wolf_lumine" so it listens to mentions for wolf_lumine,
+        # but the persona argument controls the trigger word, nickname, prompt and neo4j filter.
         mention_model = MentionModel(model, bot_username="wolf_lumine", persona=persona)
-        # tarot_topic_model = TarotTopicModel(model, 430919)
+        # tarot_topic_model = TarotTopicModel(model, 393697)
         # stock_topic_model = StockTopicModel(model, 392286)
         # record_topic_model = RecordTopicModel(model, 441566)
 
@@ -60,8 +63,14 @@ async def main(persona: str):
 
 
 if __name__ == "__main__":
-    persona = input("请输入要运行的人物模型 (例如 wolf_lumine): ").strip()
-    if not persona:
-        persona = "wolf_lumine"
-        print("未输入，默认使用: wolf_lumine")
-    asyncio.run(main(persona))
+    parser = argparse.ArgumentParser(description="Run the Shuiyuan auto-reply bot.")
+    parser.add_argument(
+        "persona",
+        nargs="?",
+        default="wolf_lumine",
+        help="指定要运行的人物模型 (例如 wolf_lumine), 如果不指定则默认为 wolf_lumine",
+    )
+    args = parser.parse_args()
+
+    print(f"当前使用的人物模型: {args.persona}")
+    asyncio.run(main(args.persona))

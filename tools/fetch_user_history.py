@@ -1,10 +1,16 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from src.shuiyuan.shuiyuan_model import ShuiyuanModel
+from dataclasses import asdict
+
 import aiohttp
 import asyncio
 from datetime import datetime, timezone
 import json
 import re
 import csv
-import os
+import pickle
 
 def parse_iso_datetime(dt_str: str) -> datetime | None:
     try:
@@ -24,69 +30,67 @@ async def get_user_replies(username: str, max_pages: int | None = None,
     offset = 0
     page = 1
     
-    try:
-        with open("cookies.txt", "r", encoding="utf-8") as f:
-            cookie = f.read().strip()
-    except FileNotFoundError:
-        print("错误: 未找到 cookies.txt 文件")
-        return []
+    # 使用 shuiyuan_model 进行全局实例化并自行处理持久化 Cookie / CSRF
+    model = await ShuiyuanModel.create("cookies")
     
-    headers = {
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.69 Safari/537.36",
-        "cookie": cookie
-    }
+    # 动态调低 ShuiyuanModel 类的全局请求间隔以加快爬取速度（默认是保守的 1.0 秒以防封禁）
+    # 但需注意不能调得太低，0.3秒是一个相对适中的速度
+    ShuiyuanModel._request_interval = 0.3
     
-    async with aiohttp.ClientSession(headers=headers) as session:
-        while True:
-            if max_pages and page > max_pages:
+    while True:
+        if max_pages and page > max_pages:
+            break
+            
+        try:
+            max_retries = 5
+            user_actions = None
+            
+            for attempt in range(max_retries):
+                try:
+                    # filter=5 for replies
+                    actions_obj = await model.get_actions(username=username, filter=[5], offset=offset)
+                    user_actions = [asdict(ua) for ua in actions_obj.user_actions]
+                    break
+                except Exception as e:
+                    print(f"遇到错误: {e}，等待 2 秒后重试... ({attempt + 1}/{max_retries})")
+                    await asyncio.sleep(2)
+            
+            if user_actions is None:
+                print(f"最终请求失败，跳出当前爬取循环。")
                 break
                 
-            url = f"https://shuiyuan.sjtu.edu.cn/user_actions.json?username={username}&filter=5&offset={offset}"
-            
-            try:
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        print(f"请求失败: {response.status if response else 'Network Error'}")
-                        break
-                        
-                    data = await response.json()
-                    user_actions = data.get('user_actions', [])
-                    
-                    if not user_actions:
-                        print(f"已获取所有回复，共 {len(all_replies)} 条")
-                        break
-                    
-                    filtered_actions = []
-                    page_times = []
-                    for ua in user_actions:
-                        c = ua.get('created_at')
-                        cdt = parse_iso_datetime(c) if c else None
-                        if cdt:
-                            page_times.append(cdt)
-                        if cdt:
-                            if since_dt and cdt < since_dt:
-                                continue
-                            if until_dt and cdt > until_dt:
-                                continue
-                        filtered_actions.append(ua)
-
-                    all_replies.extend(filtered_actions)
-                    print(f"第 {page} 页: 获取了 {len(user_actions)} 条，窗口内 {len(filtered_actions)} 条 (累计 {len(all_replies)} 条)")
-
-                    if since_dt and page_times:
-                        oldest_on_page = min(page_times)
-                        if oldest_on_page < since_dt:
-                            print("达到开始时间阈值，停止翻页。")
-                            break
-                    
-                    offset += 30
-                    page += 1
-                    
-                    await asyncio.sleep(0.3)
-                    
-            except Exception as e:
-                print(f"获取第 {page} 页时出错: {e}")
+            if len(user_actions) == 0:
+                print(f"已获取所有回复，共 {len(all_replies)} 条")
                 break
+                
+            filtered_actions = []
+            page_times = []
+            for ua in user_actions:
+                c = ua.get('created_at')
+                cdt = parse_iso_datetime(c) if c else None
+                if cdt:
+                    page_times.append(cdt)
+                    if since_dt and cdt < since_dt:
+                        continue
+                    if until_dt and cdt > until_dt:
+                        continue
+                filtered_actions.append(ua)
+
+            all_replies.extend(filtered_actions)
+            print(f"第 {page} 页: 获取了 {len(user_actions)} 条，窗口内 {len(filtered_actions)} 条 (累计 {len(all_replies)} 条)")
+
+            if since_dt and page_times:
+                oldest_on_page = min(page_times)
+                if oldest_on_page < since_dt:
+                    print("达到开始时间阈值，停止翻页。")
+                    break
+            
+            offset += 30
+            page += 1
+                
+        except Exception as e:
+            print(f"获取第 {page} 页时出错: {e}")
+            break
     
     return all_replies
 
@@ -126,18 +130,21 @@ def process_replies(username: str, data: list[dict]):
             posts_text.append(content + '\n')
             posts_csv.append([content])
 
+    archive_dir = os.path.join("user_archive", username)
+    os.makedirs(archive_dir, exist_ok=True)
+
     # 写入txt文件
-    with open(f'{username}_posts.txt', 'w', encoding='utf-8') as f:
+    with open(os.path.join(archive_dir, f'{username}_posts.txt'), 'w', encoding='utf-8') as f:
         for post in posts_text:
             f.write(post + '\n')
             
     # 写入csv文件
-    with open(f'{username}_posts.csv', 'w', newline='', encoding='utf-8') as f:
+    with open(os.path.join(archive_dir, f'{username}_posts.csv'), 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(['post_raw'])
         writer.writerows(posts_csv)
         
-    print(f"文本已保存到 {username}_posts.txt 和 {username}_posts.csv")
+    print(f"文本已保存到 {archive_dir} 下的 {username}_posts.txt 和 {username}_posts.csv")
 
 if __name__ == "__main__":
     username = input("请输入水源用户名: ").strip()
@@ -154,8 +161,11 @@ if __name__ == "__main__":
     
     replies = asyncio.run(get_user_replies(username, since_dt=since_dt, until_dt=until_dt))
     
+    archive_dir = os.path.join("user_archive", username)
+    os.makedirs(archive_dir, exist_ok=True)
+    
     # 也可以保存为原始json便于查看
-    with open(f"{username}_replies.json", "w", encoding="utf-8") as f:
+    with open(os.path.join(archive_dir, f"{username}_replies.json"), "w", encoding="utf-8") as f:
         json.dump(replies, f, ensure_ascii=False, indent=4)
         
     process_replies(username, replies)

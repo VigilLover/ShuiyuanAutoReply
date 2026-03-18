@@ -76,7 +76,7 @@ class BaseTopicModel:
         """
         pass
 
-    async def watch_new_post_routine(self) -> None:
+    async def watch_new_post_routine(self, interval: int = 1) -> None:
         """
         A routine to watch for updates on the topic.
         This method can be extended to implement real-time updates or periodic checks.
@@ -90,6 +90,7 @@ class BaseTopicModel:
                     f"Failed to get topic details for {self.topic_id}, "
                     f"traceback is as follows:\n{traceback.format_exc()}"
                 )
+                await asyncio.sleep(5)
                 continue
 
             # OK, let's difference the current stream with the new one
@@ -114,6 +115,9 @@ class BaseTopicModel:
 
             # Update the stream list with the new stream
             self.stream_list = new_stream
+            
+            # Wait for a while before the next check
+            await asyncio.sleep(interval)
 
     def add_time_routine(
         self,

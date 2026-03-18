@@ -67,7 +67,7 @@ class BaseUserActionModel:
         """
         pass
 
-    async def watch_new_action_routine(self) -> None:
+    async def watch_new_action_routine(self, interval: int = 1) -> None:
         """
         A routine to watch for new actions.
         """
@@ -81,6 +81,7 @@ class BaseUserActionModel:
                     f"Failed to get action details for {self.username}, "
                     f"traceback is as follows:\n{traceback.format_exc()}"
                 )
+                await asyncio.sleep(5)
                 continue
 
             # OK, let's difference the current stream with the new one
@@ -89,6 +90,7 @@ class BaseUserActionModel:
             # If the stream list is empty, we should initialize it
             if not self.stream_list:
                 self.stream_list = new_stream
+                await asyncio.sleep(interval)
                 continue
 
             # Try to find the last known post in the new stream
@@ -107,3 +109,6 @@ class BaseUserActionModel:
 
             # Update the stream list with the new stream
             self.stream_list = new_stream
+            
+            # Wait for a while before the next check
+            await asyncio.sleep(interval)
