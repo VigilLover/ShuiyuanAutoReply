@@ -28,10 +28,10 @@ class MentionModel(BaseUserActionModel):
         # 预先定义各个角色的触发词和昵称
         self.persona_configs = {
             "wolf_lumine": {"trigger": "【小狼】", "nickname": "小狼bot"},
-            "存档读取": {"trigger": "【存读】", "nickname": "存读bot"}, # 可扩展
+            "存档读取": {"trigger": "【小狼】", "nickname": "存读bot"}, # 可扩展
         }
         self.config = self.persona_configs.get(persona, self.persona_configs["wolf_lumine"])
-        self.trigger_word = self.config["trigger"]
+        self.trigger_word = "【小狼】"
         self.nickname = self.config["nickname"]
         
         self.mention_tongyi_model = MentionTongyiModel(model, username=persona)

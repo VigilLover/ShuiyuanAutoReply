@@ -10,9 +10,10 @@ import hashlib
 import logging
 import traceback
 import http.cookies
+from datetime import datetime, timezone, timedelta
 from PIL import Image
 from dacite import from_dict
-from typing import Optional, ClassVar
+from typing import Optional, ClassVar, List, Dict, Any
 from .constants import *
 from .objects import *
 
@@ -517,16 +518,49 @@ class ShuiyuanModel:
         post_list = data.get("posts", [])
         return [from_dict(PostSearchResult, post) for post in post_list]
 
+    async def search_posts_by_time_range_and_topic(
+        self, topic_id: int, after_date: Optional[str] = None, before_date: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for posts within a specific topic and time range, returning cleaned dictionary results.
+        Note for AI Agents: The search API is exclusive of the dates provided. 
+        If you want to search for posts exactly ON a single day (e.g., today's posts on '2026-03-18'), 
+        you MUST set 'after_date' to the start day ('2026-03-18') AND set 'before_date' to the NEXT day ('2026-03-19').
+        Failure to space them by at least one day (e.g. after_date='2026-03-18' and before_date='2026-03-18') will result in empty results.
+
+        :param topic_id: The ID of the topic to search in.
+        :param after_date: An optional start date (format: YYYY-MM-DD).
+        :param before_date: An optional end date (format: YYYY-MM-DD). Must be at least 1 day after after_date to capture a single day.
+        :return: A list of dicts with cleaned post content.
+        """
+        term = f"topic:{topic_id}"
+        if after_date:
+            term += f" after:{after_date}"
+        if before_date:
+            term += f" before:{before_date}"
+
+        params = {"term": term.strip()}
+        response = await self._rate_limited_request(
+            "get", f"{post_search_url}", params=params
+        )
+        if response.status != 200:
+            raise Exception(f"Failed to search posts by time range: {await response.text()}")
+
+        data = await response.json()
+        post_list = data.get("posts", [])
+        posts = [from_dict(PostSearchResult, post) for post in post_list]
+        return self._format_posts_to_dicts(posts)
+
     async def search_post_details_by_optional_username_topic(
         self, term: str, username: Optional[str] = None, topic_id: Optional[int] = None
-    ) -> List[PostDetails]:
+    ) -> List[Dict[str, Any]]:
         """
-        Search for posts by a search term and an optional username, and return detailed information.
+        Search for posts by a search term and an optional username, returning cleaned dictionary results.
 
         :param term: The search term to use for finding posts. It has to be NON-EMPTY.
         :param username: An optional username to filter posts by.
         :param topic_id: An optional topic ID to filter posts by.
-        :return: A list of PostDetails instances matching the search criteria.
+        :return: A list of dicts with cleaned post content.
         """
         post_search_results = await self.search_post_by_optional_username_topic(
             term, username, topic_id
@@ -541,7 +575,56 @@ class ShuiyuanModel:
                     f"Failed to get details for post ID {result.id}, "
                     f"traceback is as follows:\n{traceback.format_exc()}"
                 )
-        return post_details_list
+        return self._format_posts_to_dicts(post_details_list)
+
+    @staticmethod
+    def process_replies(content: str) -> str:
+        if not content:
+            return ""
+            
+        aPattern = re.compile(r'<a.*?>.*?</a>')
+        emojiPattern = re.compile(r'<img[^>]*title="(:[^:]*:)"[^>]*>')
+        htmlPattern = re.compile(r'<[^>\n]*>')
+        signaturePattern = re.compile(r'<div\s+data-signature[^>]*>.*?</div>', re.DOTALL | re.IGNORECASE)
+        
+        content = signaturePattern.sub('', content)
+        content = re.sub(r'\[right\].*?\[/right\]', '', content, flags=re.IGNORECASE)
+        content = content.replace('这里是中杯小狼(>^ω^<)', '')
+        content = content.replace('这里是中杯小狼(&gt;^ω^&lt;)', '')
+        content = content.replace('▶ \n总结\n', '').replace('▶\n总结\n', '').replace('▶ \n总结', '').replace('▶\n总结', '')
+        content = content.replace('&hellip;', '')
+        content = aPattern.sub('', content)
+        
+        while emojiPattern.search(content):
+            content = emojiPattern.sub(lambda m: m.group(1), content, 1)
+            
+        content = htmlPattern.sub('', content)
+        return content.strip()
+
+    def _format_posts_to_dicts(self, posts: list) -> List[Dict[str, Any]]:
+        filtered_res = []
+        for post in posts:
+            content = getattr(post, 'raw', None) or getattr(post, 'cooked', None) or getattr(post, 'blurb', "")
+            clean_content = self.process_replies(content)
+            
+            # Convert UTC time string to UTC+8 formatted string
+            created_at_utc8 = post.created_at
+            try:
+                # Discourse returns ISO 8601 UTC like "2026-02-15T04:22:06.264Z"
+                dt_utc = datetime.strptime(post.created_at, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+                dt_utc8 = dt_utc.astimezone(timezone(timedelta(hours=8)))
+                created_at_utc8 = dt_utc8.strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass # fallback to original string if format is somehow different
+            
+            post_dict = {
+                "username": post.username,
+                "name": getattr(post, 'name', None),
+                "created_at": created_at_utc8,
+                "content": clean_content
+            }
+            filtered_res.append(post_dict)
+        return filtered_res
 
     async def query_recent_posts_by_topic_id(
         self, topic_id: int, limit: int

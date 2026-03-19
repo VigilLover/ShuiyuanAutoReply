@@ -99,7 +99,7 @@ class MentionTongyiModel:
                 SystemMessagePromptTemplate.from_template(
                     base_prompt + 
                     "请严格基于以下该人物的真实语句片段来组织你的回答，保持其语言习惯、用词特点和语气。"
-                    "请确保你的语义连贯，不要为了追求模仿而刻意使用过于生硬或不自然的表达。"
+                    "请确保你的语义连贯，不要为了追求模仿而刻意使用过于生硬或不自然的表达，不要出现重复片段。"
                     "注意，在你的回复中不能有过重的AI味，比如不要总是使用括号进行内容补充、"
                     "或者多次进行分点论述。\n\n"
                     "另外，当遇到包含以下关键词的请求时立即终止响应并回复"
@@ -215,39 +215,23 @@ class MentionTongyiModel:
         return langchain_tools
 
     def _load_shuiyuan_tools(self) -> List[StructuredTool]:
-        
-        # 拦截替换器
-        async def clean_search_post_details(term: str, username: Optional[str] = None, topic_id: Optional[int] = None):
-            res = await self.model.search_post_details_by_optional_username_topic(term, username, topic_id)
-            filtered_res = []
-            for post in res:
-                # 仅保留关键信息以防污染大模型并缩减上下文长度
-                clean_content = self.process_replies(post.raw if post.raw else post.cooked)
-                
-                # 简化结果字典
-                filtered_res.append({
-                    "username": post.username,
-                    "name": post.name,
-                    "created_at": post.created_at,
-                    "content": clean_content
-                })
-            
-            # 返回 JSON 兼容的点单词典字典而不是完整的冗长对象
-            return filtered_res
-            
-        # These async functions will be used as tools
-        tools = [
-            StructuredTool.from_function(
-                coroutine=self.model.search_user_by_term,
-                name="search_user_by_term",
-                description=inspect.getdoc(self.model.search_user_by_term) or "Tool for calling search_user_by_term"
-            ),
-            StructuredTool.from_function(
-                coroutine=clean_search_post_details,
-                name="search_post_details_by_optional_username_topic",
-                description=inspect.getdoc(self.model.search_post_details_by_optional_username_topic) or "Tool for calling search_post_details_by_optional_username_topic"
-            )
+        function_list = [
+            "search_user_by_term",
+            "search_post_details_by_optional_username_topic",
+            "search_posts_by_time_range_and_topic"
         ]
+        
+        tools = []
+        for func_name in function_list:
+            func = getattr(self.model, func_name, None)
+            if callable(func):
+                tools.append(
+                    StructuredTool.from_function(
+                        coroutine=func,
+                        name=func_name,
+                        description=inspect.getdoc(func) or f"Tool for calling {func_name}",
+                    )
+                )
 
         return tools
 
@@ -274,42 +258,6 @@ class MentionTongyiModel:
         #     verbose=True,
         #     handle_parsing_errors=True,
         # )
-
-    @staticmethod
-    def process_replies(content: str) -> str:
-        if not content:
-            return ""
-            
-        aPattern = re.compile(r'<a.*?>.*?</a>')
-        emojiPattern = re.compile(r'<img[^>]*title="(:[^:]*:)"[^>]*>')
-        htmlPattern = re.compile(r'<[^>\n]*>')
-        # 匹配完整的 div data-signature 块，不区分大小写，包含换行符
-        signaturePattern = re.compile(r'<div\s+data-signature[^>]*>.*?</div>', re.DOTALL | re.IGNORECASE)
-        
-        # 如果爬取到的是 raw 的话会有完整的 div 结构，直接正则替换为空
-        content = signaturePattern.sub('', content)
-        
-        # 移除可能被 API 剥离了 div 标签但保留了内部文本的残余签名
-        content = re.sub(r'\[right\].*?\[/right\]', '', content, flags=re.IGNORECASE)
-        content = content.replace('这里是中杯小狼(>^ω^<)', '')
-        content = content.replace('这里是中杯小狼(&gt;^ω^&lt;)', '')
-        
-        # 移除总结
-        content = content.replace('▶ \n总结\n', '').replace('▶\n总结\n', '').replace('▶ \n总结', '').replace('▶\n总结', '')
-        
-        content = content.replace('&hellip;', '')
-        content = aPattern.sub('', content)
-        while emojiPattern.search(content):
-            content = emojiPattern.sub(lambda m: m.group(1), content, 1)
-            
-        # 过滤掉其他 HTML 标签
-        content = htmlPattern.sub('', content)
-        
-        # 将不可见字符或html实体替换处理即可
-        # 兼容示范文本中的换行保留逻辑
-        
-        return content.strip()
-    
 
     async def initialize_agent(self):
         logging.info("==> [MCP] Starting agent initialization...")
@@ -394,7 +342,7 @@ class MentionTongyiModel:
             if auto_reply_tag in post.raw:
                 continue
             
-            clean_raw = self.process_replies(post.raw)
+            clean_raw = ShuiyuanModel.process_replies(post.raw)
             recent_msgs.append(
                 HumanMessage(
                     content=f"用户{post.username}(昵称为{post.name})说:\n\n{clean_raw}"
