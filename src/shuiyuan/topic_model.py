@@ -81,15 +81,23 @@ class BaseTopicModel:
         A routine to watch for updates on the topic.
         This method can be extended to implement real-time updates or periodic checks.
         """
+        # Flag to track if we're currently recovering from an error
+        is_recovering = False
+        
         while True:
             # Get the topic details
             try:
                 topic_details = await self.model.get_topic_details(self.topic_id)
+                # If we successfully fetched details after an error, log the recovery
+                if is_recovering:
+                    logging.info(f"Successfully reconnected and fetched topic details for {self.topic_id}.")
+                    is_recovering = False
             except Exception:
                 logging.error(
                     f"Failed to get topic details for {self.topic_id}, "
                     f"traceback is as follows:\n{traceback.format_exc()}"
                 )
+                is_recovering = True
                 await asyncio.sleep(5)
                 continue
 

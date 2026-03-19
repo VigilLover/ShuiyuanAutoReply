@@ -71,16 +71,25 @@ class BaseUserActionModel:
         """
         A routine to watch for new actions.
         """
+        # Flag to track if we're currently recovering from an error
+        is_recovering = False
+
         while True:
             # Get the mention details
             try:
                 actions = await self.model.get_actions(self.username, self.action_type)
                 action_details = actions.user_actions
+                
+                # If we successfully fetched details after an error, log the recovery
+                if is_recovering:
+                    logging.info(f"Successfully reconnected and fetched action details for {self.username}.")
+                    is_recovering = False
             except Exception:
                 logging.error(
                     f"Failed to get action details for {self.username}, "
                     f"traceback is as follows:\n{traceback.format_exc()}"
                 )
+                is_recovering = True
                 await asyncio.sleep(5)
                 continue
 
