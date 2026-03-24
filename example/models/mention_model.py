@@ -28,10 +28,10 @@ class MentionModel(BaseUserActionModel):
         # 预先定义各个角色的触发词和昵称
         self.persona_configs = {
             "wolf_lumine": {"trigger": "【小狼】", "nickname": "小狼bot"},
-            "存档读取": {"trigger": "【小狼】", "nickname": "存读bot"}, # 可扩展
+            "存档读取": {"trigger": "【存读】", "nickname": "存读bot"}, # 可扩展
         }
         self.config = self.persona_configs.get(persona, self.persona_configs["wolf_lumine"])
-        self.trigger_word = "【小狼】"
+        self.trigger_word = self.config["trigger"]
         self.nickname = self.config["nickname"]
         
         self.mention_tongyi_model = MentionTongyiModel(model, username=persona)
@@ -102,10 +102,10 @@ class MentionModel(BaseUserActionModel):
         reply = f"{reply}{signature}"
         return MentionModel._make_unique_reply(reply)
 
-    async def _clear_condition(self, raw: str, user: User) -> Optional[str]:
+    async def _clear_condition(self, raw: str, topic_id: int) -> Optional[str]:
         """
         Check if the raw content of a post contains the string "【清除历史】".
-
+        :param topic_id: The ID of the topic where the post is located.
         :param raw: The raw content of the post.
         :return: A string to reply to the post if the condition is met, otherwise None.
         """
@@ -114,9 +114,9 @@ class MentionModel(BaseUserActionModel):
             return None
 
         # Clear the session history for the user
-        self.mention_tongyi_model.clear_session_history(user.id)
+        self.mention_tongyi_model.clear_session_history(topic_id)
 
-        return MentionModel._make_unique_reply(f"已清除与{self.nickname}的对话历史记录")
+        return MentionModel._make_unique_reply(f"已清除当前话题中的对话历史记录")
 
     def _help_condition(self, raw: str) -> Optional[str]:
         """
@@ -133,7 +133,7 @@ class MentionModel(BaseUserActionModel):
             f"欢迎和{self.nickname}对话o(｀ω´ )o\n"
             "帮助信息如下：\n"
             f"1. 输入{self.trigger_word}+对话，与{self.nickname}聊天 :wolf:\n"
-            f"2. 输入【清除历史】，清除与{self.nickname}的对话历史记录 :broom:\n"
+            f"2. 输入【清除历史】，清除当前话题中的对话历史记录 :broom:\n"
             "3. 输入【帮助】，查看该帮助信息 :question:"
         )
 
@@ -189,7 +189,7 @@ class MentionModel(BaseUserActionModel):
 
             # Check clear condition
             logging.info(f"==> [MentionModel] Checking _clear_condition...")
-            text = await self._clear_condition(post_details.raw, post_user)
+            text = await self._clear_condition(post_details.raw, post_details.topic_id)
             if text is not None:
                 logging.info(f"==> [MentionModel] _clear_condition matched.")
                 return

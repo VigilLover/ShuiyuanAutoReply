@@ -73,4 +73,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print(f"当前使用的人物模型: {args.persona}")
+    
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     asyncio.run(main(args.persona))
