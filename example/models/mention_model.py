@@ -96,7 +96,7 @@ class MentionModel(BaseUserActionModel):
             "<div data-signature>\n"
             "\n"
             "---\n"
-            f"[right]这里是AI{self.nickname.strip('bot')} :robot: [/right]\n"
+            f"[right]这里是AI{self.nickname.strip('bot')}<small>(Pumpkin Edition)</small> :robot: [/right]\n"
             "</div>"
         )
         reply = f"{reply}{signature}"

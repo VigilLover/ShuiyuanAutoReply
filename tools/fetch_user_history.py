@@ -113,6 +113,7 @@ def process_replies(username: str, data: list[dict]):
         content = re.sub(r'\[right\].*?\[/right\]', '', content, flags=re.IGNORECASE)
         content = content.replace('这里是中杯小狼(>^ω^<)', '')
         content = content.replace('这里是中杯小狼(&gt;^ω^&lt;)', '')
+        content = content.replace('发自中杯小狼的MacBook Air o(｀ω´ )o', '')
         
         # 移除总结
         content = content.replace('▶ \n总结\n', '').replace('▶\n总结\n', '').replace('▶ \n总结', '').replace('▶\n总结', '')

@@ -37,7 +37,7 @@ async def init_database(username: str):
 
         # Try to open the CSV file and import data
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        file_path = os.path.join(project_root, "user_archive", username, f"{username}_posts.csv")
+        file_path = os.path.join(project_root, "user_archive", username, "user_archive.csv")
             
         if os.path.exists(file_path):
             # Load the CSV data

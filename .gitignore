@@ -213,3 +213,6 @@ models/m3e-base
 
 # user archive
 user_archive/
+
+# macOS
+.DS_Store

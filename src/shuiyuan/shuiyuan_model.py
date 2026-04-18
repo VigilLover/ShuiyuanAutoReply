@@ -675,15 +675,18 @@ class ShuiyuanModel:
         if not content:
             return ""
             
+        # 先去除签名档区块（直接截断到尾部，避免由于包含嵌套 div 导致提前终止匹配）
+        signaturePattern = re.compile(r'<div\s+data-signature[^>]*>.*', re.DOTALL | re.IGNORECASE)
+        content = signaturePattern.sub('', content)
+
         aPattern = re.compile(r'<a.*?>.*?</a>')
         emojiPattern = re.compile(r'<img[^>]*title="(:[^:]*:)"[^>]*>')
         htmlPattern = re.compile(r'<[^>\n]*>')
-        signaturePattern = re.compile(r'<div\s+data-signature[^>]*>.*?</div>', re.DOTALL | re.IGNORECASE)
         
-        content = signaturePattern.sub('', content)
         content = re.sub(r'\[right\].*?\[/right\]', '', content, flags=re.IGNORECASE)
         content = content.replace('这里是中杯小狼(>^ω^<)', '')
         content = content.replace('这里是中杯小狼(&gt;^ω^&lt;)', '')
+        content = content.replace('发自中杯小狼的MacBook Air o(｀ω´ )o', '')
         content = content.replace('▶ \n总结\n', '').replace('▶\n总结\n', '').replace('▶ \n总结', '').replace('▶\n总结', '')
         content = content.replace('&hellip;', '')
         content = aPattern.sub('', content)
