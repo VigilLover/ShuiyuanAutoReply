@@ -21,7 +21,7 @@ async def main():
     print("正在发送请求测试连通性...")
     try:
         response = await client.chat.completions.create(
-            model="qwen3.5-plus-2026-02-15", # 也可以用项目中出现的 qwen-plus-2025-07-28 或 deepseek-v3.1
+            model="qwen3-max", # 也可以用项目中出现的 qwen-plus-2025-07-28 或 deepseek-v3.1
             messages=[
                 {"role": "user", "content": "你好，请回复“API调用成功！”用于测试模型连通性。并介绍一下上海交通大学。"}
             ]

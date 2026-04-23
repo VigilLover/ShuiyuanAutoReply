@@ -89,7 +89,19 @@ class MentionModel(BaseUserActionModel):
 
         logging.info(f"==> [MentionModel] Triggered AI spawn with prompt: '{raw}' for user: {user.username}")
         # Let the Tongyi model respond based on conversation and similar responses
-        reply = await self.mention_tongyi_model.get_pumpkin_response(topic_id, raw, user)
+        try:
+            reply = await self.mention_tongyi_model.get_pumpkin_response(topic_id, raw, user)
+        except ValueError as e:
+            if "DataInspectionFailed" in str(e):
+                reply = "抱歉，您的输入包含不当内容，无法处理。"
+                logging.error(f"==> [MentionModel] AI replied with DataInspectionFailed: {str(e)}")
+            else:
+                reply = "抱歉，遇到了一些错误。"
+                logging.error(f"==> [MentionModel] AI replied with ValueError: {str(e)}")
+        except Exception as e:
+            reply = "抱歉，遇到了一些未知错误。"
+            logging.error(f"==> [MentionModel] AI replied with Exception: {str(e)}")
+            
         logging.info(f"==> [MentionModel] AI replied with length {len(reply)}.")
         signature = (
             "\n"
@@ -175,8 +187,8 @@ class MentionModel(BaseUserActionModel):
             return
 
         try:
-            # If the post is an auto-reply, we should skip it
-            if auto_reply_tag in post_details.raw:
+            # If the post is an auto-reply send by the bot, we should skip it
+            if auto_reply_tag in post_details.raw and post_details.username == self.username:
                 logging.info(f"==> [MentionModel] Post {action.post_id} is an auto-reply. Skipping.")
                 return
 

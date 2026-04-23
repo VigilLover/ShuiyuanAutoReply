@@ -209,7 +209,7 @@ cookies*
 user_archive*
 
 # m3e-base model
-models/m3e-base
+moka-ai/m3e-base
 
 # user archive
 user_archive/

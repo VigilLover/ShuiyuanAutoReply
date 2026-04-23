@@ -24,7 +24,7 @@ class SentenceResponse(BaseModel):
 
 class AsyncNeo4jDatabaseManager:
 
-    def __init__(self, model_name: str = "./models/m3e-base", userid: str = ""):
+    def __init__(self, model_name: str = "./moka-ai/m3e-base", userid: str = ""):
         self.driver = AsyncGraphDatabase.driver(
             uri=os.getenv("NEO4J_DB_URL"),
             auth=eval(os.getenv("NEO4J_DB_AUTH")),

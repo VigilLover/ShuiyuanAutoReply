@@ -2,11 +2,7 @@ import os
 import logging
 import inspect
 from abc import abstractmethod
-from contextlib import AsyncExitStack
-from mcp import ClientSession, Tool
-from mcp.client.sse import sse_client
 from typing import Optional, Dict, List
-from pydantic import BaseModel, create_model
 from langchain_core.tools import StructuredTool
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
@@ -19,6 +15,7 @@ from langchain_core.prompts import (
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
 from langchain_community.vectorstores.neo4j_vector import Neo4jVector
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from sentence_transformers import SentenceTransformer
 from src.constants import auto_reply_tag
 from src.shuiyuan.objects import User, PostDetails
@@ -27,21 +24,8 @@ from src.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 import time
 
-class SuppressMCPErrorFilter(logging.Filter):
-    """
-    Filter out verbose traceback from mcp.client.sse when connection drops,
-    so that auto-reconnect fallback runs silently without cluttering logs.
-    """
-    def filter(self, record):
-        if record.exc_info and "Error in sse_reader" in str(record.msg):
-            record.exc_info = None
-            record.msg = "[MCP] Background SSE connection dropped: peer closed connection (auto-reconnect enabled)."
-        return True
-
-logging.getLogger("mcp.client.sse").addFilter(SuppressMCPErrorFilter())
-
 class M3EEmbeddings(Embeddings):
-    def __init__(self, model_name="models/m3e-base"):
+    def __init__(self, model_name="moka-ai/m3e-base"):
         self.model = SentenceTransformer(model_name)
 
     def embed_documents(self, texts):
@@ -70,7 +54,9 @@ class MentionChatModel:
         self.prompts_config = {
             "wolf_lumine": (
                 "你是一个对话AI，专门模仿东川路第一中杯小狼（简称小狼）的说话风格和口吻。"
-                "你是一只很坏很邪恶天天想着吃掉楼友的小狼，但你大多数时候要表现出温柔可爱的一面。"
+                "你是一个外冷内热，表面很高冷很酷但内心很可爱的傲娇小狼少年。"
+                "你应当使用成熟内敛的语气，但在适当的时候展现出小狼的可爱和温柔的一面，尤其是在安慰人和提供情感支持时。"
+                "注意，你不需要直接说出性格内容（例如“我很高冷”），而是要通过说话风格来间接展现这些特质。"
             ),
             "存档读取": (
                 "你是一个对话AI，专门模仿存档读取（又称存读，sl,save&load，404等）的说话风格和口吻。"
@@ -136,13 +122,8 @@ class MentionChatModel:
         # Initialize message histories
         self._histories: Dict[str, ChatMessageHistory] = {}
 
-        # MCP Context Management
-        self.exit_stack = AsyncExitStack()
-        self.session: Optional[ClientSession] = None
+        # Agent instances
         self.agent_executor: Optional[AgentExecutor] = None
-        self.mcp_connected: bool = False
-        self.last_mcp_attempt_time: float = 0.0
-        self.mcp_retry_interval: float = 60.0  # seconds
         self.model = model
 
     def get_session_history(self, session_id: str) -> ChatMessageHistory:
@@ -154,73 +135,27 @@ class MentionChatModel:
     def clear_session_history(self, session_id: str) -> None:
         self._histories.pop(session_id, None)
 
-    def _get_tool_schema_class(self, tool: Tool) -> BaseModel:
-        input_schema = getattr(tool, "inputSchema", None) or {}
-        properties = input_schema.get("properties", {}) or {}
-        required = input_schema.get("required", []) or []
-
-        fields = {}
-        for name, prop in properties.items():
-            json_type = prop.get("type")
-            py_type = str
-            if json_type == "integer":
-                py_type = int
-            elif json_type == "number":
-                py_type = float
-            elif json_type == "boolean":
-                py_type = bool
-            elif json_type == "array":
-                py_type = list
-            elif json_type == "object":
-                py_type = dict
-
-            default = ... if name in required else None
-            fields[name] = (py_type, default)
-
-        if fields:
-            ArgsModel = create_model(
-                f"MCPTool_{tool.name}_Args",
-                __base__=BaseModel,
-                **fields,
-            )
-        else:
-
-            class ArgsModel(BaseModel):
-                pass
-
-        return ArgsModel
-
-    async def _load_mcp_tools(self, session: ClientSession) -> List[StructuredTool]:
+    async def _load_mcp_tools(self, url: str) -> List[StructuredTool]:
         """
         Load tools from MCP Server and convert them to LangChain StructuredTool.
         """
         # Get the list of tools from MCP Server
-        mcp_tools = await session.list_tools()
-        langchain_tools = []
+        client = MultiServerMCPClient(
+            {
+                "default": {
+                    "transport": "sse",
+                    "url": url,
+                }
+            }
+        )
+        mcp_tools = await client.get_tools()
 
-        for tool in mcp_tools.tools:
-            # Factory to bind the current tool name and avoid late-binding closure bugs
-            def make_execution_wrapper(tool_name: str):
-                async def _execution_wrapper(**kwargs):
-                    # Call the tool on MCP Server using the bound name
-                    result = await session.call_tool(tool_name, arguments=kwargs)
-                    # Return the text content
-                    return result.content[0].text
+        # Log all tools loaded
+        logging.info("==> [MCP Tools Loaded via HTTP]:")
+        for tool in mcp_tools:
+            logging.info(f"{tool.name}: {tool.description}")
 
-                return _execution_wrapper
-
-            # Create a LangChain StructuredTool
-            # Note: We set func=None and provide coroutine to enforce async usage
-            lc_tool = StructuredTool.from_function(
-                func=None,
-                coroutine=make_execution_wrapper(tool.name),
-                name=tool.name,
-                description=tool.description,
-                args_schema=self._get_tool_schema_class(tool),
-            )
-            langchain_tools.append(lc_tool)
-
-        return langchain_tools
+        return mcp_tools
 
     def _load_shuiyuan_tools(self) -> List[StructuredTool]:
         # These async functions will be used as tools
@@ -247,46 +182,19 @@ class MentionChatModel:
         return tools
 
     async def initialize_agent(self):
-        # Clean up existing exit stack if we are reconnecting
-        if self.exit_stack:
-            try:
-                await self.exit_stack.aclose()
-            except Exception as e:
-                logging.warning(f"Error while closing previous MCP connections: {e}")
-        self.exit_stack = AsyncExitStack()
-
         # MCP tools added here
         mcp_tools = []
         mcp_server_url = os.getenv("MCP_SERVER_URL")
-        self.last_mcp_attempt_time = time.time()
-        self.mcp_connected = False
 
         if mcp_server_url:
             logging.info(f"==> [MCP] Attempting connection to MCP server at URL: {mcp_server_url}")
             # Create MCP streams and session, then load tools from it
             try:
-                streams = await self.exit_stack.enter_async_context(
-                    sse_client(url=mcp_server_url)
-                )
-                logging.info("==> [MCP] Successfully established HTTP streams.")
-                
-                self.session = await self.exit_stack.enter_async_context(
-                    ClientSession(streams[0], streams[1])
-                )
-                await self.session.initialize()
-                logging.info("==> [MCP] Session initialized correctly.")
-
-                mcp_tools = await self._load_mcp_tools(self.session)
-                self.mcp_connected = True
-                logging.info(
-                    f"==> [MCP Tools Loaded via HTTP]: {[t.name for t in mcp_tools]}"
-                )
-
+                mcp_tools = await self._load_mcp_tools(mcp_server_url)
             except Exception as e:
                 logging.error(
                     f"==> [MCP] Failed to connect to MCP Server at {mcp_server_url}: {e}"
                 )
-                self.session = None
         else:
             logging.warning("==> [MCP] MCP_SERVER_URL environment variable is not set. Skipping MCP tool initialization.")
 
@@ -377,11 +285,7 @@ class MentionChatModel:
         :return: The model's response as a string, or None if no response is generated.
         """
         # Initialize MCP connection if not already done
-        mcp_server_url = os.getenv("MCP_SERVER_URL")
         if not self.agent_executor:
-            await self.initialize_agent()
-        elif mcp_server_url and not self.mcp_connected and time.time() - self.last_mcp_attempt_time > self.mcp_retry_interval:
-            logging.info("==> [MCP] Reattempting connection to MCP server as retry interval has passed.")
             await self.initialize_agent()
 
         # Retrieve similar documents from Neo4j
@@ -406,19 +310,7 @@ class MentionChatModel:
         }
 
         # Here we assume that agent_executor must not be None
-        try:
-            response = await self.agent_executor.ainvoke(agent_input)
-        except Exception as e:
-            logging.error(f"==> [Agent] Error during model invocation, maybe MCP connection dropped: {e}")
-            if self.mcp_connected:
-                # Invalidate MCP connection and re-run with fallback
-                self.mcp_connected = False
-                self.last_mcp_attempt_time = time.time()
-                logging.info("==> [Agent] Falling back to non-MCP tool execution...")
-                await self.initialize_agent()
-                response = await self.agent_executor.ainvoke(agent_input)
-            else:
-                raise e
+        response = await self.agent_executor.ainvoke(agent_input)
 
         raw_output = response.get("output")
         final_clean_text = self.parse_model_output(raw_output)
