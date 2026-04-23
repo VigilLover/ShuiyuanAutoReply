@@ -9,9 +9,10 @@ class MentionPetModel:
     A model to handle 'rua' interactions (pet interactions) with persistent states.
     """
 
-    def __init__(self, filepath="assets/pet_responses.json", state_path="assets/pet_state.json"):
+    def __init__(self, filepath="assets/pet_responses.json", state_path="assets/pet_state.json", endings_path="assets/pet_endings.json"):
         self.filepath = filepath
         self.state_path = state_path
+        self.endings_path = endings_path
 
     def _load_state(self) -> dict:
         """加载宠物持久化状态。如果不存在则初始化。"""
@@ -106,6 +107,41 @@ class MentionPetModel:
             state["wisdom"]   = self._clamp_stat(state.get("wisdom",   0) + wisdom_delta)
             state["chaos"]    = self._clamp_stat(state.get("chaos",    0) + chaos_delta)
 
+            # ===== 隐藏结局判定逻辑 =====
+            limits_hit = []
+            for stat in ["patience", "wisdom", "chaos"]:
+                if state[stat] >= 100:
+                    limits_hit.append(f"{stat}_max")
+                elif state[stat] <= -100:
+                    limits_hit.append(f"{stat}_min")
+                    
+            if limits_hit:
+                # 判定具体是单一触发还是多重触发彩蛋
+                ending_id = "multiple" if len(limits_hit) >= 2 else limits_hit[0]
+                
+                # 获取该结局信息
+                endings_data = {}
+                if os.path.exists(self.endings_path):
+                    with open(self.endings_path, "r", encoding="utf-8") as fe:
+                        endings_data = json.load(fe)
+                        
+                ending_info = endings_data.get(ending_id)
+                if ending_info:
+                    # 触发结局后，将所有属性清零并保存
+                    self._save_state({"patience": 0, "wisdom": 0, "chaos": 0})
+                    
+                    response_lines = [
+                        "```text",
+                        ending_info.get("ascii", ""),
+                        "",
+                        f"{ending_info.get('title', '【结局】')} {ending_info.get('text', '')}",
+                        "",
+                        "（已达成以上结局，所有属性重新归零）",
+                        "```"
+                    ]
+                    return "\n".join([line for line in response_lines if line is not None])
+
+            # 如果没有到达极限值，正常进行保存及回复构造
             self._save_state(state)
 
             # 构造最终 Markdown 回复块 (包含 ```)
