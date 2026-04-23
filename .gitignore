@@ -216,3 +216,6 @@ user_archive/
 
 # macOS
 .DS_Store
+
+# Pet Module Configs
+assets/pet_state.json

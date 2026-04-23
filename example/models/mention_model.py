@@ -7,6 +7,7 @@ from src.shuiyuan.shuiyuan_model import ShuiyuanModel
 from src.shuiyuan.user_action_model import BaseUserActionModel
 from src.constants import auto_reply_tag
 from .mention_tongyi_model import MentionTongyiModel
+from .mention_pet_model import MentionPetModel
 
 
 class MentionModel(BaseUserActionModel):
@@ -35,6 +36,7 @@ class MentionModel(BaseUserActionModel):
         self.nickname = self.config["nickname"]
         
         self.mention_tongyi_model = MentionTongyiModel(model, username=persona)
+        self.pet_model = MentionPetModel()
         
     @staticmethod
     def _remove_shuiyuan_signature(text: str) -> str:
@@ -146,8 +148,31 @@ class MentionModel(BaseUserActionModel):
             "帮助信息如下：\n"
             f"1. 输入{self.trigger_word}+对话，与{self.nickname}聊天 :wolf:\n"
             f"2. 输入【清除历史】，清除当前话题中的对话历史记录 :broom:\n"
-            "3. 输入【帮助】，查看该帮助信息 :question:"
+            "3. 输入【帮助】，查看该帮助信息 :question:\n"
+            "4. 输入【rua】，可以rua一下小狼哦 :kissing_cat:"
         )
+
+    def _rua_condition(self, raw: str, username: str, name: str) -> Optional[str]:
+        """
+        Check if the raw content of a post contains the string "【rua】".
+        :param raw: The raw content of the post.
+        :param username: The username of the user who posts.
+        :param name: The display name of the user who posts.
+        :return: A string to reply to the post if the condition is met, otherwise None.
+        """
+        if "【rua】" not in raw:
+            return None
+        
+        reply = self.pet_model.get_rua_response(username=username, name=name)
+        signature = (
+            "\n"
+            "<div data-signature>\n"
+            "\n"
+            "---\n"
+            f"[right]这里是AI{self.nickname.strip('bot')}<small>(Pumpkin Edition)</small> :robot: [/right]\n"
+            "</div>"
+        )
+        return MentionModel._make_unique_reply(f"{reply}{signature}")
 
     async def _new_action_routine(self, action: UserActionDetails) -> None:
         """
@@ -197,6 +222,13 @@ class MentionModel(BaseUserActionModel):
             text = self._help_condition(post_details.raw)
             if text is not None:
                 logging.info(f"==> [MentionModel] _help_condition matched.")
+                return
+                
+            # Check rua condition
+            logging.info(f"==> [MentionModel] Checking _rua_condition...")
+            text = self._rua_condition(post_details.raw, post_user.username, post_user.name)
+            if text is not None:
+                logging.info(f"==> [MentionModel] _rua_condition matched.")
                 return
 
             # Check clear condition
