@@ -98,9 +98,21 @@ class MentionPetModel:
             # 加载并变更状态
             state = self._load_state()
             
-            patience_delta = deltas.get("patience", 0)
-            wisdom_delta = deltas.get("wisdom", 0)
-            chaos_delta = deltas.get("chaos", 0)
+            def _apply_random_offset(val: int) -> int:
+                if val == 0:
+                    return 0
+                # 添加 -5 到 5 的随机偏移
+                offset = random.randint(-5, 5)
+                new_val = val + offset
+                # 保证偏移后原有的增减方向不改变（正数最小为 1，负数最大为 -1）
+                if val > 0:
+                    return max(1, new_val)
+                else:
+                    return min(-1, new_val)
+
+            patience_delta = _apply_random_offset(deltas.get("patience", 0))
+            wisdom_delta = _apply_random_offset(deltas.get("wisdom", 0))
+            chaos_delta = _apply_random_offset(deltas.get("chaos", 0))
 
             # 更新并截断属性值
             state["patience"] = self._clamp_stat(state.get("patience", 0) + patience_delta)

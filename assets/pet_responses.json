@@ -1,15 +1,15 @@
 {
   "开心": {
-    "weight": 25,
+    "weight": 15,
     "texts": [
       "（蹭蹭）好暖和，心情都变好了！",
       "（摇起尾巴）嗷呜，再来一次！",
       "今天也是元气满满的一天！"
     ],
     "deltas": {
-      "patience": 5,
-      "wisdom": 1,
-      "chaos": -5
+      "patience": 24,
+      "wisdom": 8,
+      "chaos": -8
     },
     "ascii": [
       "   /| 　|\\  \n  ( ^ ▽ ^ ) \n   /　  　\\ "
@@ -38,9 +38,9 @@
       "今天的风，甚是喧嚣呢。"
     ],
     "deltas": {
-      "patience": -2,
-      "wisdom": 5,
-      "chaos": -2
+      "patience": -24,
+      "wisdom": -8,
+      "chaos": 8
     },
     "ascii": [
       "   /| 　|\\  \n  ( ╥ ﹏ ╥ ) \n   /　  　\\ "
@@ -53,56 +53,56 @@
           "（流泪跑开）小狼一点也不伤心，一点也不难过"
         ],
         "deltas": {
-          "patience": -10,
-          "wisdom": -10,
+          "patience": -30,
+          "wisdom": -30,
           "chaos": 20
         }
       }
     }
   },
   "昏睡": {
-    "weight": 20,
+    "weight": 15,
     "texts": [
       "（打哈欠）zzz...谁在叫我？",
       "不行了，眼皮好重...",
       "（翻了个身继续睡）呼噜噜..."
     ],
     "deltas": {
-      "patience": 2,
-      "wisdom": -2,
-      "chaos": 2
+      "patience": 8,
+      "wisdom": 24,
+      "chaos": -8
     },
     "ascii": [
       "   /| 　|\\  \n  ( - . - )zZ\n   /　  　\\ "
     ]
   },
   "反击": {
-    "weight": 10,
+    "weight": 15,
     "texts": [
       "（一口咬住）不许乱摸！",
       "再摸一下试试？（亮爪子）",
       "嗷！信不信我咬你！"
     ],
     "deltas": {
-      "patience": -10,
-      "wisdom": -5,
-      "chaos": 15
+      "patience": -8,
+      "wisdom": -24,
+      "chaos": 8
     },
     "ascii": [
       "   /| 　|\\  \n  ( ˋ口ˊ )っ爪\n   /　  　\\ "
     ]
   },
   "星星眼": {
-    "weight": 25,
+    "weight": 15,
     "texts": [
       "哇！这是给我的吗？",
       "（眼睛闪闪发光）小狼最喜欢你了！",
       "好棒的感觉！想一直这样！"
     ],
     "deltas": {
-      "patience": 10,
-      "wisdom": 5,
-      "chaos": -5
+      "patience": 8,
+      "wisdom": -8,
+      "chaos": 24
     },
     "ascii": [
       "   /| 　|\\  \n  ( ✪ ▽ ✪ ) \n   /　  　\\ "
@@ -117,7 +117,7 @@
         "deltas": {
           "patience": 30,
           "wisdom": 25,
-          "chaos": -10
+          "chaos": -20
         }
       }
     }
@@ -131,22 +131,22 @@
     ],
     "deltas": {
       "patience": -8,
-      "wisdom": -2,
-      "chaos": 10
+      "wisdom": 8,
+      "chaos": -24
     },
     "ascii": [
       "   /| 　|\\  \n  ( ‵ 皿 ′) \n   /　  　\\ "
     ]
   },
   "???": {
-    "weight": 10,
+    "weight": 2,
     "texts": [
       "你的手明明只是在敲击键盘而没有真正摸到我，不是吗？"
     ],
     "deltas": {
-      "patience": 0,
-      "wisdom": 0,
-      "chaos": 50
+      "patience": 16,
+      "wisdom": 16,
+      "chaos": 16
     },
     "ascii": [
       "   /? 　?\\  \n  ( ◉ _ ◉ ) \n   /　  　\\ "
