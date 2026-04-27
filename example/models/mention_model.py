@@ -36,7 +36,7 @@ class MentionModel(BaseUserActionModel):
         self.nickname = self.config["nickname"]
         
         self.mention_tongyi_model = MentionTongyiModel(model, username=persona)
-        self.pet_model = MentionPetModel()
+        self.pet_model = MentionPetModel(persona=persona)
         
     @staticmethod
     def _remove_shuiyuan_signature(text: str) -> str:
@@ -152,7 +152,7 @@ class MentionModel(BaseUserActionModel):
             "4. 输入【rua】，可以rua一下小狼哦 :kissing_cat:"
         )
 
-    def _rua_condition(self, raw: str, username: str, name: str) -> Optional[str]:
+    async def _rua_condition(self, raw: str, username: str, name: str) -> Optional[str]:
         """
         Check if the raw content of a post contains the string "【rua】".
         :param raw: The raw content of the post.
@@ -162,8 +162,16 @@ class MentionModel(BaseUserActionModel):
         """
         if "【rua】" not in raw:
             return None
-        
-        reply = self.pet_model.get_rua_response(username=username, name=name)
+
+        rua_text = MentionModel._parse_prompt_text(raw, "【rua】")
+        if rua_text is not None:
+            rua_text = rua_text.strip()
+
+        reply = await self.pet_model.get_rua_response(
+            username=username,
+            name=name,
+            user_text=rua_text,
+        )
         signature = (
             "\n"
             "<div data-signature>\n"
@@ -226,7 +234,7 @@ class MentionModel(BaseUserActionModel):
                 
             # Check rua condition
             logging.info(f"==> [MentionModel] Checking _rua_condition...")
-            text = self._rua_condition(post_details.raw, post_user.username, post_user.name)
+            text = await self._rua_condition(post_details.raw, post_user.username, post_user.name)
             if text is not None:
                 logging.info(f"==> [MentionModel] _rua_condition matched.")
                 return

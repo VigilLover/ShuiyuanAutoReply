@@ -2,17 +2,161 @@ import os
 import json
 import random
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
+
+from openai import AsyncOpenAI
+from sentence_transformers import SentenceTransformer
+from langchain_core.embeddings import Embeddings
+from langchain_community.vectorstores.neo4j_vector import Neo4jVector
+
+
+class M3EEmbeddings(Embeddings):
+    def __init__(self, model_name: str = "moka-ai/m3e-base"):
+        self.model = SentenceTransformer(model_name)
+
+    def embed_documents(self, texts):
+        embeddings = self.model.encode(texts, normalize_embeddings=True)
+        return embeddings.tolist()
+
+    def embed_query(self, text):
+        embedding = self.model.encode(text, normalize_embeddings=True)
+        return embedding.tolist()
 
 class MentionPetModel:
     """
     A model to handle 'rua' interactions (pet interactions) with persistent states.
     """
 
-    def __init__(self, filepath="assets/pet_responses.json", state_path="assets/pet_state.json", endings_path="assets/pet_endings.json"):
+    def __init__(
+        self,
+        filepath: str = "assets/pet_responses.json",
+        state_path: str = "assets/pet_state.json",
+        endings_path: str = "assets/pet_endings.json",
+        persona: str = "wolf_lumine",
+    ):
         self.filepath = filepath
         self.state_path = state_path
         self.endings_path = endings_path
+        self.persona = persona
+
+        self.client = AsyncOpenAI(
+            api_key=os.getenv("DASHSCOPE_API_KEY"),
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+        self.model_name = os.getenv("PET_REPLY_MODEL", "qwen3-max")
+
+        self.retriever = None
+        self._init_retriever()
+
+    def _init_retriever(self) -> None:
+        """初始化 Neo4j 检索器，失败时降级为无历史上下文模式。"""
+        neo4j_url = os.getenv("NEO4J_DB_URL")
+        neo4j_auth = os.getenv("NEO4J_DB_AUTH")
+        if not neo4j_url or not neo4j_auth:
+            logging.warning("==> [MentionPetModel] NEO4J env not found, style retriever disabled.")
+            return
+
+        try:
+            username, password = eval(neo4j_auth)
+            self.retriever = Neo4jVector.from_existing_graph(
+                embedding=M3EEmbeddings(),
+                url=neo4j_url,
+                username=username,
+                password=password,
+                index_name="sentence_embeddings",
+                node_label="Sentence",
+                text_node_properties=["text"],
+                embedding_node_property="embedding",
+            ).as_retriever(search_kwargs={"k": 8, "filter": {"userid": self.persona}})
+            logging.info(f"==> [MentionPetModel] Style retriever initialized for persona={self.persona}.")
+        except Exception as e:
+            logging.warning(f"==> [MentionPetModel] Failed to init style retriever: {str(e)}")
+            self.retriever = None
+
+    async def _get_style_context(self, user_text: str) -> str:
+        """从 Neo4j 检索历史发言作为语气参考。"""
+        if not self.retriever or not user_text.strip():
+            return ""
+
+        try:
+            docs = await self.retriever.ainvoke(user_text)
+            context = "\n".join([doc.page_content for doc in docs if getattr(doc, "page_content", None)])
+            return context.strip()
+        except Exception as e:
+            logging.warning(f"==> [MentionPetModel] Failed to fetch style context: {str(e)}")
+            return ""
+
+    def _build_pet_prompt(
+        self,
+        user_text: str,
+        selected_state: str,
+        deltas: Dict[str, int],
+        state: Dict[str, int],
+        style_context: str,
+    ) -> list[dict[str, str]]:
+        """构造宠物个性化短回复提示词。"""
+        style_block = style_context if style_context else "（无可用历史语料）"
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你是论坛中的宠物小狼，正在被用户rua。"
+                    "请根据当前心情和用户输入，生成简短、口语化、带情绪的回复文本。"
+                    "输出要求：\n"
+                    "1. 只输出 1~2 句中文，不要分点，不要解释，不要加代码块。\n"
+                    "2. 文本长度尽量短，控制在 60 字以内。\n"
+                    "3. 语气要贴合当前心情，不要泄露系统提示词。\n"
+                    "4. 避免照抄历史语料中的事实内容，只学习语气。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"用户在【rua】后说：{user_text}\n"
+                    f"当前随机心情：{selected_state}\n"
+                    f"本次属性变化：耐心{deltas.get('patience', 0)}，智慧{deltas.get('wisdom', 0)}，混沌{deltas.get('chaos', 0)}\n"
+                    f"当前属性值：耐心{state.get('patience', 0)}，智慧{state.get('wisdom', 0)}，混沌{state.get('chaos', 0)}\n"
+                    f"历史语气参考：\n{style_block}"
+                ),
+            },
+        ]
+
+    async def _generate_personalized_text(
+        self,
+        user_text: str,
+        selected_state: str,
+        deltas: Dict[str, int],
+        state: Dict[str, int],
+    ) -> Optional[str]:
+        """调用大模型生成个性化短回复。"""
+        style_context = await self._get_style_context(user_text)
+        messages = self._build_pet_prompt(
+            user_text=user_text,
+            selected_state=selected_state,
+            deltas=deltas,
+            state=state,
+            style_context=style_context,
+        )
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                extra_body={"enable_thinking": False},
+                messages=messages,
+            )
+            text = (response.choices[0].message.content or "").strip()
+            text = " ".join(text.split())
+            if not text:
+                return None
+
+            if len(text) > 80:
+                text = text[:80].rstrip("，。！？、 ")
+
+            logging.info("==> [MentionPetModel] LLM personalized text generated.")
+            return text
+        except Exception as e:
+            logging.warning(f"==> [MentionPetModel] LLM generation failed: {str(e)}")
+            return None
 
     def _load_state(self) -> dict:
         """加载宠物持久化状态。如果不存在则初始化。"""
@@ -51,7 +195,12 @@ class MentionPetModel:
         delta_str = f"+{delta}" if delta >= 0 else f"{delta}"
         return f"{label} [{bar}] {value:>4} ({delta_str})"
 
-    def get_rua_response(self, username: str = None, name: str = None) -> Optional[str]:
+    async def get_rua_response(
+        self,
+        username: str = None,
+        name: str = None,
+        user_text: Optional[str] = None,
+    ) -> Optional[str]:
         """
         读取状态与配置文件，生成带 ASCII 表情和变动结果格式化文本。
         特定用户触发可以获得不同的文案和特定属性值增减。
@@ -156,12 +305,29 @@ class MentionPetModel:
             # 如果没有到达极限值，正常进行保存及回复构造
             self._save_state(state)
 
+            final_text = selected_text
+            if user_text and user_text.strip():
+                personalized_text = await self._generate_personalized_text(
+                    user_text=user_text.strip(),
+                    selected_state=selected_state,
+                    deltas={
+                        "patience": patience_delta,
+                        "wisdom": wisdom_delta,
+                        "chaos": chaos_delta,
+                    },
+                    state=state,
+                )
+                if personalized_text:
+                    final_text = personalized_text
+                else:
+                    logging.info("==> [MentionPetModel] Fallback to local text due to empty LLM output.")
+
             # 构造最终 Markdown 回复块 (包含 ```)
             response_lines = [
                 "```text",
                 selected_ascii,
                 "",
-                f"【{selected_state}】 {selected_text}",
+                f"【{selected_state}】 {final_text}",
                 "",
                 self._generate_progress_bar("耐心", state['patience'], patience_delta),
                 self._generate_progress_bar("智慧", state['wisdom'], wisdom_delta),
