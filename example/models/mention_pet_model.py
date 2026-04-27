@@ -263,10 +263,21 @@ class MentionPetModel:
             wisdom_delta = _apply_random_offset(deltas.get("wisdom", 0))
             chaos_delta = _apply_random_offset(deltas.get("chaos", 0))
 
-            # 更新并截断属性值
-            state["patience"] = self._clamp_stat(state.get("patience", 0) + patience_delta)
-            state["wisdom"]   = self._clamp_stat(state.get("wisdom",   0) + wisdom_delta)
-            state["chaos"]    = self._clamp_stat(state.get("chaos",    0) + chaos_delta)
+            # 更新并截断属性值，同时记录是否发生越界
+            raw_next_state = {
+                "patience": state.get("patience", 0) + patience_delta,
+                "wisdom": state.get("wisdom", 0) + wisdom_delta,
+                "chaos": state.get("chaos", 0) + chaos_delta,
+            }
+            overflow_flags = {
+                "patience": raw_next_state["patience"] > 100 or raw_next_state["patience"] < -100,
+                "wisdom": raw_next_state["wisdom"] > 100 or raw_next_state["wisdom"] < -100,
+                "chaos": raw_next_state["chaos"] > 100 or raw_next_state["chaos"] < -100,
+            }
+
+            state["patience"] = self._clamp_stat(raw_next_state["patience"])
+            state["wisdom"] = self._clamp_stat(raw_next_state["wisdom"])
+            state["chaos"] = self._clamp_stat(raw_next_state["chaos"])
 
             # ===== 隐藏结局判定逻辑 =====
             limits_hit = []
@@ -288,6 +299,17 @@ class MentionPetModel:
                         
                 ending_info = endings_data.get(ending_id)
                 if ending_info:
+                    def _format_ending_stat(label: str, key: str, value: int) -> str:
+                        if overflow_flags.get(key, False):
+                            return f"!! {label}: {value} [超限触发，原始值: {raw_next_state[key]}]"
+                        return f"{label}: {value}"
+
+                    ending_stat_lines = [
+                        _format_ending_stat("耐心", "patience", state["patience"]),
+                        _format_ending_stat("智慧", "wisdom", state["wisdom"]),
+                        _format_ending_stat("混沌", "chaos", state["chaos"]),
+                    ]
+
                     # 触发结局后，将所有属性清零并保存
                     self._save_state({"patience": 0, "wisdom": 0, "chaos": 0})
                     
@@ -296,6 +318,9 @@ class MentionPetModel:
                         ending_info.get("ascii", ""),
                         "",
                         f"{ending_info.get('title', '【结局】')} {ending_info.get('text', '')}",
+                        "",
+                        "当前属性：",
+                        *ending_stat_lines,
                         "",
                         "（已达成以上结局，所有属性重新归零）",
                         "```"
