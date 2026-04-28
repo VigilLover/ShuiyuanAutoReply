@@ -93,9 +93,20 @@ class MentionPetModel:
         deltas: Dict[str, int],
         state: Dict[str, int],
         style_context: str,
+        username: Optional[str] = None,
+        name: Optional[str] = None,
     ) -> list[dict[str, str]]:
         """构造宠物个性化短回复提示词。"""
         style_block = style_context if style_context else "（无可用历史语料）"
+        
+        user_identity = "用户"
+        if name:
+            user_identity = f"昵称为'{name}'的用户"
+            if username:
+                user_identity += f"(用户名:{username})"
+        elif username:
+            user_identity = f"用户'{username}'"
+
         return [
             {
                 "role": "system",
@@ -112,7 +123,7 @@ class MentionPetModel:
             {
                 "role": "user",
                 "content": (
-                    f"用户在【rua】后说：{user_text}\n"
+                    f"{user_identity} 在【rua】后说：{user_text}\n"
                     f"当前随机心情：{selected_state}\n"
                     f"本次属性变化：耐心{deltas.get('patience', 0)}，智慧{deltas.get('wisdom', 0)}，混沌{deltas.get('chaos', 0)}\n"
                     f"当前属性值：耐心{state.get('patience', 0)}，智慧{state.get('wisdom', 0)}，混沌{state.get('chaos', 0)}\n"
@@ -127,6 +138,8 @@ class MentionPetModel:
         selected_state: str,
         deltas: Dict[str, int],
         state: Dict[str, int],
+        username: Optional[str] = None,
+        name: Optional[str] = None,
     ) -> Optional[str]:
         """调用大模型生成个性化短回复。"""
         style_context = await self._get_style_context(user_text)
@@ -136,6 +149,8 @@ class MentionPetModel:
             deltas=deltas,
             state=state,
             style_context=style_context,
+            username=username,
+            name=name,
         )
 
         try:
@@ -341,6 +356,8 @@ class MentionPetModel:
                         "chaos": chaos_delta,
                     },
                     state=state,
+                    username=username,
+                    name=name,
                 )
                 if personalized_text:
                     final_text = personalized_text
