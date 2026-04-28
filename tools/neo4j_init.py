@@ -1,7 +1,8 @@
-import re
 import asyncio
-import dotenv
 import logging
+import re
+
+import dotenv
 import pandas as pd
 
 # Setup the logging configuration
@@ -20,8 +21,8 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.constants import auto_reply_tag
-from src.database.neo4j_mgr import global_async_neo4j_manager
+from shuiyuan_auto_reply.constants import auto_reply_tag
+from shuiyuan_auto_reply.database.neo4j_mgr import global_async_neo4j_manager
 
 
 async def init_database(username: str):
@@ -66,8 +67,6 @@ async def init_database(username: str):
             logging.info("Data imported successfully!")
         else:
             logging.warning(f"CSV file {file_path} not found. Skipping data import.")
-
-        await global_async_neo4j_manager.close()
         logging.info("Neo4j database initialized successfully!")
     except Exception as e:
         logging.error(f"Error initializing Neo4j database: {e}")

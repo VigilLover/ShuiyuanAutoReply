@@ -1,19 +1,20 @@
+import asyncio
+import base64
+import hashlib
+import http.cookies
 import io
+import logging
 import os
+import pickle
 import re
 import time
-import base64
-import pickle
-import aiohttp
-import asyncio
-import hashlib
-import logging
 import traceback
-import http.cookies
-from datetime import datetime, timezone, timedelta
-from PIL import Image
+from typing import ClassVar, Optional
+
+import aiohttp
 from dacite import from_dict
-from typing import Optional, ClassVar, List, Dict, Any
+from PIL import Image
+
 from .constants import *
 from .objects import *
 
@@ -112,27 +113,15 @@ class ShuiyuanModel:
 
         # get the cookies
         cls._shared_session.headers.update({"User-Agent": default_user_agent})
+        response = await cls._rate_limited_request("get", get_cookies_url)
 
-        # try to get CSRF Token from response, with retries against network lag
-        max_retries = 5
+        # now let's try to get CSRF Token from response
         format = r'<meta name="csrf-token" content="([^"]+)"[^>]*>'
-        match = None
-
-        for attempt in range(max_retries):
-            response = await cls._rate_limited_request("get", get_cookies_url)
-            text = await response.text()
-            match = re.search(format, text)
-            
-            if match:
-                break
-                
-            logging.warning(f"CSRF token not found on attempt {attempt + 1}. Retrying in 2 seconds...")
-            await asyncio.sleep(2)
-
+        match = re.search(format, await response.text())
         if not match:
             raise CSRFTokenNotFoundError(
                 "[INITIALIZATION] "
-                "Failed to find CSRF token in the response after multiple attempts, "
+                "Failed to find CSRF token in the response, "
                 "please check the cookies file or the website structure"
             )
 
@@ -270,6 +259,43 @@ class ShuiyuanModel:
         data = await response.json()
         return from_dict(PostDetails, data)
 
+    async def get_post_details_by_post_number(
+        self, topic_id: int, post_number: int
+    ) -> PostDetails:
+        """
+        Get the details of a post by its topic ID and post number.
+
+        :param topic_id: The ID of the topic the post belongs to.
+        :param post_number: The post number within the topic.
+        :return: An instance of PostDetails containing the post information.
+        """
+        response = await self._rate_limited_request(
+            "get",
+            f"{get_topic_url}/{topic_id}/{post_number}.json",
+        )
+        if response.status != 200:
+            raise Exception(f"Failed to get post details: {await response.text()}")
+
+        data = await response.json()
+        post_stream = data.get("post_stream", {})
+        posts = post_stream.get("posts", [])
+        if not posts:
+            raise Exception(
+                f"Post with number {post_number} not found in topic {topic_id}"
+            )
+
+        # Find the specific post with the given post number
+        post_data = next(
+            (post for post in posts if post.get("post_number") == post_number),
+            None,
+        )
+        if not post_data:
+            raise Exception(
+                f"Post with number {post_number} not found in topic {topic_id}"
+            )
+
+        return from_dict(PostDetails, post_data)
+
     async def get_post_details_batch_by_topic_id(
         self, topic_id: int, post_ids: List[int]
     ) -> List[PostDetails]:
@@ -290,20 +316,37 @@ class ShuiyuanModel:
         posts = post_stream.get("posts", [])
         return [from_dict(PostDetails, post_data) for post_data in posts]
 
-    async def get_actions(self, username: str, filter: List[int], offset: int = 0) -> UserActions:
+    async def get_voters_by_post_id(self, post_id: int) -> VoterDetails:
+        """
+        Get the voters of a poll by the post ID.
+
+        :param post_id: The ID of the post containing the poll.
+        :return: A VoterDetails instance containing the voter information.
+        """
+        response = await self._rate_limited_request(
+            "get",
+            f"{voter_url}",
+            params={"post_id": post_id, "poll_name": "poll", "limit": 999},
+        )
+        if response.status != 200:
+            raise Exception(f"Failed to get voters: {await response.text()}")
+
+        voter_data = await response.json()
+        return from_dict(VoterDetails, voter_data)
+
+    async def get_actions(self, username: str, filter: List[int]) -> UserActions:
         """
         Get the latest actions for a given username and filter.
 
         :param username: The username to check actions for.
         :param filter: The list of action types to filter.
-        :param offset: The offset of the actions, default to 0.
         :return: An instance of UserActions containing the mention information.
         """
         response = await self._rate_limited_request(
             "get",
             f"{action_url}",
             params={
-                "offset": offset,
+                "offset": 0,
                 "username": username,
                 "filter": ",".join(map(str, filter)),
             },
@@ -519,18 +562,23 @@ class ShuiyuanModel:
         return await self._retry_wrapper(self._search_user_by_term, term)
 
     async def _search_post_by_optional_username_topic(
-        self, term: str, username: Optional[str] = None, topic_id: Optional[int] = None
+        self,
+        term: str = "",
+        latest: bool = False,
+        username: Optional[str] = None,
+        topic_id: Optional[int] = None,
     ) -> List[PostSearchResult]:
         """
-        Search for posts by a search term and an optional username.
+        Search for posts by a search term, an optional username and an optional topic ID, and return detailed information.
 
-        :param term: The search term to use for finding posts. It has to be NON-EMPTY.
-        :param username: An optional username to filter posts by.
-        :param topic_id: An optional topic ID to filter posts by.
+        :param term: Optional search term to use for finding posts. Default is empty.
+        :param latest: Whether to sort the results by created_at in descending order. Default is False.
+        :param username: An optional username to filter posts by. Default is None.
+        :param topic_id: An optional topic ID to filter posts by. Default is None.
         :return: A list of PostSearchResult instances matching the search criteria.
         """
         # Construct the params
-        params = {"term": term}
+        params = {"term": f"{term} order:{"latest" if latest else "none"}"}
         if username:
             params["term"] += f" @{username}"
         if topic_id:
@@ -548,19 +596,24 @@ class ShuiyuanModel:
         return [from_dict(PostSearchResult, post) for post in post_list]
 
     async def _search_post_details_by_optional_username_topic(
-        self, term: str, username: Optional[str] = None, topic_id: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        self,
+        term: str = "",
+        latest: bool = False,
+        username: Optional[str] = None,
+        topic_id: Optional[int] = None,
+    ) -> List[PostDetails]:
         """
-        Search for posts by a search term and an optional username, and return detailed information.
+        Search for posts by a search term, an optional username and an optional topic ID, and return detailed information.
 
-        :param term: The search term to use for finding posts. It has to be NON-EMPTY.
-        :param username: An optional username to filter posts by.
-        :param topic_id: An optional topic ID to filter posts by.
-        :return: A list of dicts with cleaned post content.
+        :param term: Optional search term to use for finding posts. Default is empty.
+        :param latest: Whether to sort the results by created_at in descending order. Default is False.
+        :param username: An optional username to filter posts by. Default is None.
+        :param topic_id: An optional topic ID to filter posts by. Default is None.
+        :return: A list of PostSearchResult instances matching the search criteria.
         """
         # First we search for posts with the given criteria
         post_search_results = await self._search_post_by_optional_username_topic(
-            term, username, topic_id
+            term, latest, username, topic_id
         )
 
         # For posts with the same topic_id, we can get details in batch to save requests
@@ -578,36 +631,41 @@ class ShuiyuanModel:
             post_details_list.extend(details_list)
 
         # Finally we sort the post details by created_at in descending order to return
-        sorted_posts = sorted(post_details_list, key=lambda x: x.created_at, reverse=True)
-        return self._format_posts_to_dicts(sorted_posts)
+        return sorted(post_details_list, key=lambda x: x.created_at, reverse=True)
 
     async def search_post_details_by_optional_username_topic(
-        self, term: str, username: Optional[str] = None, topic_id: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        self,
+        term: str = "",
+        latest: bool = False,
+        username: Optional[str] = None,
+        topic_id: Optional[int] = None,
+    ) -> List[PostDetails]:
         """
-        Search for posts by a search term and an optional username, and return detailed information.
+        Search for posts by a search term, an optional username and an optional topic ID, and return detailed information.
 
-        :param term: The search term to use for finding posts. It has to be NON-EMPTY.
-        :param username: An optional username to filter posts by.
-        :param topic_id: An optional topic ID to filter posts by.
-        :return: A list of dicts with cleaned post content.
+        :param term: Optional search term to use for finding posts. Default is empty.
+        :param latest: Whether to sort the results by created_at in descending order. Default is False.
+        :param username: An optional username to filter posts by. Default is None.
+        :param topic_id: An optional topic ID to filter posts by. Default is None.
+        :return: A list of PostSearchResult instances matching the search criteria.
         """
         return await self._retry_wrapper(
             self._search_post_details_by_optional_username_topic,
             term,
+            latest,
             username,
             topic_id,
         )
 
     async def _query_recent_posts_by_topic_id(
         self, topic_id: int, limit: int
-    ) -> List[Dict[str, Any]]:
+    ) -> List[PostDetails]:
         """
         Query recent posts in a topic by its ID.
 
         :param topic_id: The ID of the topic to query.
         :param limit: The maximum number of recent posts to retrieve.
-        :return: A list of dicts with cleaned post content.
+        :return: A list of PostDetails instances for the recent posts in the topic.
         """
         # Check if `limit` is positive
         if limit <= 0:
@@ -618,39 +676,37 @@ class ShuiyuanModel:
 
         # Use the last `limit` posts for recent activity
         recent_posts = topic_details.post_stream.stream[-limit:]
-        post_details = await self.get_post_details_batch_by_topic_id(topic_id, recent_posts)
-        return self._format_posts_to_dicts(post_details)
+        return await self.get_post_details_batch_by_topic_id(topic_id, recent_posts)
 
     async def query_recent_posts_by_topic_id(
         self, topic_id: int, limit: int
-    ) -> List[Dict[str, Any]]:
+    ) -> List[PostDetails]:
         """
         Query recent posts in a topic by its ID.
 
         :param topic_id: The ID of the topic to query.
         :param limit: The maximum number of recent posts to retrieve.
-        :return: A list of dicts with cleaned post content.
+        :return: A list of PostDetails instances for the recent posts in the topic.
         """
         return await self._retry_wrapper(
             self._query_recent_posts_by_topic_id, topic_id, limit
         )
-  
-# self-defined functions
+
 
     async def search_posts_by_time_range_and_topic(
         self, topic_id: int, after_date: Optional[str] = None, before_date: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> List[PostSearchResult]:
         """
-        Search for posts within a specific topic and time range, returning cleaned dictionary results.
+        Search for posts within a specific topic and time range.
         Note for AI Agents: The search API is exclusive of the dates provided. 
-        If you want to search for posts exactly ON a single day (e.g., today's posts on '2026-03-18'), 
-        you MUST set 'after_date' to the start day ('2026-03-18') AND set 'before_date' to the NEXT day ('2026-03-19').
-        Failure to space them by at least one day (e.g. after_date='2026-03-18' and before_date='2026-03-18') will result in empty results.
+        If you want to search for posts exactly ON a single day (e.g., todays posts on 2026-03-18), 
+        you MUST set after_date to the start day (2026-03-18) AND set before_date to the NEXT day (2026-03-19).
+        Failure to space them by at least one day (e.g. after_date=2026-03-18 and before_date=2026-03-18) will result in empty results.
 
         :param topic_id: The ID of the topic to search in.
         :param after_date: An optional start date (format: YYYY-MM-DD).
         :param before_date: An optional end date (format: YYYY-MM-DD). Must be at least 1 day after after_date to capture a single day.
-        :return: A list of dicts with cleaned post content.
+        :return: A list of PostSearchResult instances.
         """
         term = f"topic:{topic_id}"
         if after_date:
@@ -667,60 +723,8 @@ class ShuiyuanModel:
 
         data = await response.json()
         post_list = data.get("posts", [])
-        posts = [from_dict(PostSearchResult, post) for post in post_list]
-        return self._format_posts_to_dicts(posts)
-        
-    @staticmethod
-    def process_replies(content: str) -> str:
-        if not content:
-            return ""
-            
-        # 先去除签名档区块（直接截断到尾部，避免由于包含嵌套 div 导致提前终止匹配）
-        signaturePattern = re.compile(r'<div\s+data-signature[^>]*>.*', re.DOTALL | re.IGNORECASE)
-        content = signaturePattern.sub('', content)
+        return [from_dict(PostSearchResult, post) for post in post_list]
 
-        aPattern = re.compile(r'<a.*?>.*?</a>')
-        emojiPattern = re.compile(r'<img[^>]*title="(:[^:]*:)"[^>]*>')
-        htmlPattern = re.compile(r'<[^>\n]*>')
-        
-        content = re.sub(r'\[right\].*?\[/right\]', '', content, flags=re.IGNORECASE)
-        content = content.replace('这里是中杯小狼(>^ω^<)', '')
-        content = content.replace('这里是中杯小狼(&gt;^ω^&lt;)', '')
-        content = content.replace('发自中杯小狼的MacBook Air o(｀ω´ )o', '')
-        content = content.replace('▶ \n总结\n', '').replace('▶\n总结\n', '').replace('▶ \n总结', '').replace('▶\n总结', '')
-        content = content.replace('&hellip;', '')
-        content = aPattern.sub('', content)
-        
-        while emojiPattern.search(content):
-            content = emojiPattern.sub(lambda m: m.group(1), content, 1)
-            
-        content = htmlPattern.sub('', content)
-        return content.strip()
-
-    def _format_posts_to_dicts(self, posts: list) -> List[Dict[str, Any]]:
-        filtered_res = []
-        for post in posts:
-            content = getattr(post, 'raw', None) or getattr(post, 'cooked', None) or getattr(post, 'blurb', "")
-            clean_content = self.process_replies(content)
-            
-            # Convert UTC time string to UTC+8 formatted string
-            created_at_utc8 = post.created_at
-            try:
-                # Discourse returns ISO 8601 UTC like "2026-02-15T04:22:06.264Z"
-                dt_utc = datetime.strptime(post.created_at, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
-                dt_utc8 = dt_utc.astimezone(timezone(timedelta(hours=8)))
-                created_at_utc8 = dt_utc8.strftime("%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                pass # fallback to original string if format is somehow different
-            
-            post_dict = {
-                "username": post.username,
-                "name": getattr(post, 'name', None),
-                "created_at": created_at_utc8,
-                "content": clean_content
-            }
-            filtered_res.append(post_dict)
-        return filtered_res
 
 def _global_ignore_illegal_cookies() -> None:
     # ignore the illegal key error
@@ -728,3 +732,4 @@ def _global_ignore_illegal_cookies() -> None:
 
 
 _global_ignore_illegal_cookies()
+

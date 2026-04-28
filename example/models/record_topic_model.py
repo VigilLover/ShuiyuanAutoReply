@@ -1,13 +1,14 @@
-import re
 import logging
+import re
 import traceback
-from typing import Optional
 from datetime import datetime
-from src.shuiyuan.objects import User
-from src.shuiyuan.shuiyuan_model import ShuiyuanModel
-from src.shuiyuan.topic_model import BaseTopicModel
-from src.database.mysql_mgr import global_async_mysql_manager
-from src.constants import auto_reply_tag
+from typing import Optional
+
+from shuiyuan_auto_reply.constants import auto_reply_tag
+from shuiyuan_auto_reply.database.mysql_mgr import global_async_mysql_manager
+from shuiyuan_auto_reply.shuiyuan.objects import User
+from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
+from shuiyuan_auto_reply.shuiyuan.topic_model import BaseTopicModel
 
 
 class RecordTopicModel(BaseTopicModel):

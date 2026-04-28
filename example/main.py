@@ -1,7 +1,9 @@
 import argparse
 import asyncio
-import dotenv
 import logging
+import sys
+
+import dotenv
 
 # Setup the logging configuration
 logging.basicConfig(
@@ -13,19 +15,13 @@ logging.basicConfig(
 # Load all environment variables from the .env file
 dotenv.load_dotenv()
 
-# Add the parent directory to the system path for module resolution
-import os
-import sys
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-from src.shuiyuan.objects import TimeInADay
-from src.shuiyuan.shuiyuan_model import ShuiyuanModel
 from models.mention_model import MentionModel
-from models.tarot_topic_model import TarotTopicModel
-from models.stock_topic_model import StockTopicModel
 from models.record_topic_model import RecordTopicModel
+from models.stock_topic_model import StockTopicModel
+from models.tarot_topic_model import TarotTopicModel
+
+from shuiyuan_auto_reply.shuiyuan.objects import TimeInADay
+from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 
 async def main(persona: str):
@@ -39,7 +35,7 @@ async def main(persona: str):
         # Here bot_username is fixed to "wolf_lumine" so it listens to mentions for wolf_lumine,
         # but the persona argument controls the trigger word, nickname, prompt and neo4j filter.
         mention_model = MentionModel(model, bot_username="wolf_lumine", persona=persona)
-        # tarot_topic_model = TarotTopicModel(model, 393697)
+        tarot_topic_model = TarotTopicModel(model, 456849)
         # stock_topic_model = StockTopicModel(model, 392286)
         # record_topic_model = RecordTopicModel(model, 441566)
 
