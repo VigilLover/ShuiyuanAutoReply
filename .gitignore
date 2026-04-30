@@ -234,3 +234,6 @@ user_archive/
 
 # Pet Module Configs
 assets/pet_state.json
+
+# AI generated images
+generated_images/
