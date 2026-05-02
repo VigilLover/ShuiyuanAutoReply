@@ -218,7 +218,7 @@ class ShuiyuanModel:
         sig_re = r"<div data-signature>.*?</div>"
         return re.sub(sig_re, "", text, flags=re.DOTALL).strip()
 
-    async def get_topic_details(self, topic_id: int) -> Tuple[TopicDetails]:
+    async def get_topic_details(self, topic_id: int) -> TopicDetails:
         """
         Get the details of a topic by its ID.
 
@@ -770,20 +770,16 @@ class ShuiyuanModel:
         )
 
 
-    async def search_posts_by_time_range_and_topic(
+    async def _search_post_details_by_time_range_and_topic(
         self, topic_id: int, after_date: Optional[str] = None, before_date: Optional[str] = None
-    ) -> List[PostSearchResult]:
+    ) -> Dict[str, List[PostDetails]]:
         """
-        Search for posts within a specific topic and time range.
-        Note for AI Agents: The search API is exclusive of the dates provided. 
-        If you want to search for posts exactly ON a single day (e.g., todays posts on 2026-03-18), 
-        you MUST set after_date to the start day (2026-03-18) AND set before_date to the NEXT day (2026-03-19).
-        Failure to space them by at least one day (e.g. after_date=2026-03-18 and before_date=2026-03-18) will result in empty results.
+        Search for posts within a specific topic and time range, and return detailed information.
 
         :param topic_id: The ID of the topic to search in.
         :param after_date: An optional start date (format: YYYY-MM-DD).
-        :param before_date: An optional end date (format: YYYY-MM-DD). Must be at least 1 day after after_date to capture a single day.
-        :return: A list of PostSearchResult instances.
+        :param before_date: An optional end date (format: YYYY-MM-DD).
+        :return: A dictionary mapping topic titles to lists of detailed post information.
         """
         term = f"topic:{topic_id}"
         if after_date:
@@ -799,8 +795,36 @@ class ShuiyuanModel:
             raise Exception(f"Failed to search posts by time range: {await response.text()}")
 
         data = await response.json()
-        post_list = data.get("posts", [])
-        return [from_dict(PostSearchResult, post) for post in post_list]
+        post_list = [from_dict(PostSearchResult, post) for post in data.get("posts", [])]
+        if not post_list:
+            return {}
+
+        # Get post details in batch (all posts share the same topic_id)
+        post_ids = [post.id for post in post_list]
+        details_list = await self.get_post_details_batch_by_topic_id(topic_id, post_ids)
+        topic_title = data.get("topics", [{}])[0].get("title", str(topic_id)) if data.get("topics") else str(topic_id)
+        return {topic_title: details_list}
+
+    async def search_post_details_by_time_range_and_topic(
+        self, topic_id: int, after_date: Optional[str] = None, before_date: Optional[str] = None
+    ) -> Dict[str, List[PostDetails]]:
+        """
+        Search for posts within a specific topic and time range, and return detailed information.
+        Note for AI Agents: The search API is exclusive of the dates provided.
+        If you want to search for posts exactly ON a single day (e.g., todays posts on 2026-03-18),
+        you MUST set after_date to the start day (2026-03-18) AND set before_date to the NEXT day (2026-03-19).
+
+        :param topic_id: The ID of the topic to search in.
+        :param after_date: An optional start date (format: YYYY-MM-DD).
+        :param before_date: An optional end date (format: YYYY-MM-DD).
+        :return: A dictionary mapping topic titles to lists of detailed post information.
+        """
+        return await self._retry_wrapper(
+            self._search_post_details_by_time_range_and_topic,
+            topic_id,
+            after_date,
+            before_date,
+        )
 
 
 def _global_ignore_illegal_cookies() -> None:

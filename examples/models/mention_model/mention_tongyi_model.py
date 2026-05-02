@@ -23,7 +23,7 @@ class MentionTongyiModel(MentionChatModel):
 
         # Define the ChatTongyi model
         self.llm = ChatTongyi(
-            model_name="qwen3-max",
+            model_name="qwen3-max-2025-09-23",
             dashscope_api_key=os.getenv("DASHSCOPE_API_KEY"),
             model_kwargs={
                 "temperature": 1.5,

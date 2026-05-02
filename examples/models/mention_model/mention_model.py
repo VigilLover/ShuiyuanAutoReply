@@ -42,7 +42,7 @@ class MentionModel(BaseUserActionModel):
         self.nickname = self.config["nickname"]
 
         self.mention_tongyi_model = MentionTongyiModel(model, username=persona)
-        self.mention_openrouter_model = MentionOpenRouterModel(model)
+        # self.mention_openrouter_model = MentionOpenRouterModel(model)
         self.pet_model = MentionPetModel(persona=persona)
     @staticmethod
     def _parse_prompt_text(raw: str, prompt: str) -> Optional[str]:
@@ -64,15 +64,15 @@ class MentionModel(BaseUserActionModel):
         return ShuiyuanModel.remove_shuiyuan_signature(raw.replace(prompt, "")).strip()
 
     async def _pumpkin_condition(
-        self, topic_id: int, raw: str, user: User
+        self, topic_id: int, reply_to_post_number: Optional[int], raw: str, user: User
     ) -> Optional[str]:
         """
         Check if the raw content of a post contains the target trigger word.
 
-
+        :param topic_id: The ID of the topic where the post is located.
+        :param reply_to_post_number: The post number this post is replying to.
         :param raw: The raw content of the post.
         :param user: The user who posted the message.
-        :param topic_id: The ID of the topic.
         :return: A string to reply to the post if the condition is met, otherwise None.
         """
         # If the raw content does not contain the trigger word, we return None
@@ -84,7 +84,7 @@ class MentionModel(BaseUserActionModel):
         logging.info(f"==> [MentionModel] Triggered AI spawn with prompt: '{raw}' for user: {user.username}")
         # Let the Tongyi model respond based on conversation and similar responses
         try:
-            reply = await self.mention_tongyi_model.get_pumpkin_response(topic_id, raw, user)
+            reply = await self.mention_tongyi_model.get_pumpkin_response(topic_id, reply_to_post_number, raw, user)
         except ValueError as e:
             if "DataInspectionFailed" in str(e):
                 reply = "抱歉，您的输入包含不当内容，无法处理。"
@@ -122,7 +122,7 @@ class MentionModel(BaseUserActionModel):
 
         # Clear the session history for the user
         self.mention_tongyi_model.clear_session_history(topic_id)
-        self.mention_openrouter_model.clear_session_history(topic_id)
+        # self.mention_openrouter_model.clear_session_history(topic_id)
 
         return MentionModel._make_unique_reply("已清除当前话题中的对话历史记录")
 
@@ -422,7 +422,8 @@ class MentionModel(BaseUserActionModel):
             # Check pumpkin condition
             logging.info(f"==> [MentionModel] Checking _pumpkin_condition...")
             text = await self._pumpkin_condition(
-                action.topic_id,
+                post_details.topic_id,
+                post_details.reply_to_post_number,
                 post_details.raw,
                 post_user,
             )

@@ -1,6 +1,5 @@
 from typing import List, Optional
 
-from shuiyuan_auto_reply.openrouter.image_tool import OpenRouterImageTool
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 from .shuiyuan_tools_objects import PostShort, UserShort
@@ -8,12 +7,11 @@ from .shuiyuan_tools_objects import PostShort, UserShort
 
 class ShuiyuanToolsWrapper:
     """
-    A wrapper around the ShuiyuanModel to provide tools for the OpenRouter model.
+    A wrapper around the ShuiyuanModel to provide tool functions for LLM agents.
     """
 
     def __init__(self, shuiyuan_model: ShuiyuanModel):
         self.shuiyuan_model = shuiyuan_model
-        self.image_tool = OpenRouterImageTool(shuiyuan_model)
 
     async def search_user_by_term(self, term: str) -> List[UserShort] | str:
         """
@@ -79,19 +77,56 @@ class ShuiyuanToolsWrapper:
         except Exception as e:
             return str(e)
 
-    async def generate_image_and_upload(self, prompt: str) -> str:
+    async def get_post_details_by_post_number(
+        self, topic_id: int, post_number: int
+    ) -> PostShort | str:
         """
-        Generate an image from a prompt and then return the Shuiyuan short URL.
-        NOTE: To show this image in your reply, you have to use Markdown format like `![image]({short_url})`.
+        Get the details of a post by its topic ID and post number.
+        If a user give you a url like "https://shuiyuan.sjtu.edu.cn/t/topic_id/post_number",
+        you can extract the topic_id and post_number from the url and use this function to get the post details.
+        Also, for any post you've retrieved using tool, if the `topic_id` and `reply_to_post_number` are both not None,
+        you can use this function to get the details of the post being replied to.
 
-        :param prompt: The prompt to generate the image from.
-        :return: The short URL of the uploaded image on Shuiyuan or error message.
+        :param topic_id: The ID of the topic the post belongs to.
+        :param post_number: The post number within the topic.
+        :return: An instance of PostShort containing the post information or error message.
         """
         try:
-            return await self.image_tool.generate_and_upload(
-                prompt,
-                output_dir="generated_images",
-                image_size="1K",
+            topic = await self.shuiyuan_model._retry_wrapper(
+                self.shuiyuan_model.get_topic_details,
+                topic_id,
             )
+            post = await self.shuiyuan_model._retry_wrapper(
+                self.shuiyuan_model.get_post_details_by_post_number,
+                topic_id,
+                post_number,
+            )
+            return PostShort(post, topic.title)
+        except Exception as e:
+            return str(e)
+
+    async def search_post_details_by_time_range_and_topic(
+        self,
+        topic_id: int,
+        after_date: Optional[str] = None,
+        before_date: Optional[str] = None,
+    ) -> List[PostShort] | str:
+        """
+        Search for posts within a specific topic and time range, and return detailed information.
+
+        :param topic_id: The ID of the topic to search in.
+        :param after_date: An optional start date (format: YYYY-MM-DD).
+        :param before_date: An optional end date (format: YYYY-MM-DD).
+        :return: A list of PostShort instances matching the criteria or error message.
+        """
+        try:
+            posts_dict = await self.shuiyuan_model.search_post_details_by_time_range_and_topic(
+                topic_id, after_date, before_date
+            )
+            return [
+                PostShort(post, title)
+                for title, post_list in posts_dict.items()
+                for post in post_list
+            ]
         except Exception as e:
             return str(e)

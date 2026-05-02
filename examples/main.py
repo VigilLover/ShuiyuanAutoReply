@@ -35,7 +35,7 @@ async def main(persona: str):
         # Here bot_username is fixed to "wolf_lumine" so it listens to mentions for wolf_lumine,
         # but the persona argument controls the trigger word, nickname, prompt and neo4j filter.
         mention_model = MentionModel(model, bot_username="wolf_lumine", persona=persona)
-        tarot_topic_model = TarotTopicModel(model, 456849)
+        # tarot_topic_model = TarotTopicModel(model, 456849)  # requires OPENROUTER_API_KEY
         # stock_topic_model = StockTopicModel(model, 392286)
         # record_topic_model = RecordTopicModel(model, 441566)
 

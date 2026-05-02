@@ -29,14 +29,16 @@ class MentionPetModel:
 
     def __init__(
         self,
-        filepath: str = "assets/pet_responses.json",
-        state_path: str = "assets/pet_state.json",
-        endings_path: str = "assets/pet_endings.json",
+        filepath: Optional[str] = None,
+        state_path: Optional[str] = None,
+        endings_path: Optional[str] = None,
         persona: str = "wolf_lumine",
     ):
-        self.filepath = filepath
-        self.state_path = state_path
-        self.endings_path = endings_path
+        from shuiyuan_auto_reply.constants import assets_directory
+
+        self.filepath = filepath or os.path.join(assets_directory, "pet_responses.json")
+        self.state_path = state_path or os.path.join(assets_directory, "pet_state.json")
+        self.endings_path = endings_path or os.path.join(assets_directory, "pet_endings.json")
         self.persona = persona
 
         self.client = AsyncOpenAI(

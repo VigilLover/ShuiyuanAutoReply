@@ -35,7 +35,7 @@ class _MockModel:
 
 async def test_image_generation(prompt: str):
     """测试本地图片生成工具 (生成 + 下载 + 本地备份, 不上传水源)"""
-    from example.models.image_generation import create_image_generation_tool
+    from examples.models.mention_model.image_generation import create_image_generation_tool
 
     # 检查配置
     api_key = os.getenv("IMAGE_GEN_API_KEY")

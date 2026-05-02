@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from example.models.mention_pet_model import MentionPetModel
+from examples.models.mention_model.mention_pet_model import MentionPetModel
 
 
 logging.basicConfig(
@@ -105,7 +105,7 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         model = self._build_model()
 
         logging.info("[STEP] 调用 get_rua_response(user_text='')")
-        with patch("example.models.mention_pet_model.random.randint", return_value=0):
+        with patch("examples.models.mention_model.mention_pet_model.random.randint", return_value=0):
             reply = await model.get_rua_response(username="normal_user", name="normal_name", user_text="")
         logging.info("[STEP] 模型回复: %s", reply)
 
@@ -127,7 +127,7 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         model = self._build_model()
 
         logging.info("[STEP] 调用 get_rua_response(user_text='今天有点累，但还是想被摸摸头')")
-        with patch("example.models.mention_pet_model.random.randint", return_value=0):
+        with patch("examples.models.mention_model.mention_pet_model.random.randint", return_value=0):
             reply = await model.get_rua_response(
                 username="normal_user",
                 name="normal_name",
@@ -163,7 +163,7 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         model = self._build_model()
 
         logging.info("[STEP] 调用 get_rua_response(username='special_user')")
-        with patch("example.models.mention_pet_model.random.randint", return_value=0):
+        with patch("examples.models.mention_model.mention_pet_model.random.randint", return_value=0):
             reply = await model.get_rua_response(username="special_user", name="special_user", user_text="")
         logging.info("[STEP] 模型回复: %s", reply)
 
@@ -187,7 +187,7 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         )
 
         logging.info("[STEP] 调用 get_rua_response 触发结局")
-        with patch("example.models.mention_pet_model.random.randint", return_value=0):
+        with patch("examples.models.mention_model.mention_pet_model.random.randint", return_value=0):
             reply = await model.get_rua_response(username="normal_user", name="normal_name", user_text="")
         logging.info("[STEP] 模型回复: %s", reply)
 
