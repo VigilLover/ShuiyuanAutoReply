@@ -10,6 +10,7 @@ from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from shuiyuan_auto_reply.shuiyuan.user_action_model import BaseUserActionModel
 
 from .mention_tongyi_model import MentionTongyiModel
+from .mention_openrouter_model import MentionOpenRouterModel
 from .mention_pet_model import MentionPetModel
 
 
@@ -29,30 +30,20 @@ class MentionModel(BaseUserActionModel):
         super().__init__(model, bot_username, [5, 7])
         self.persona = persona
         self.username = bot_username
-        
+
         # 预先定义各个角色的触发词和昵称
         self.persona_configs = {
             "wolf_lumine": {"trigger": "【小狼】", "nickname": "小狼bot"},
-            "存档读取": {"trigger": "【存读】", "nickname": "存读bot"}, # 可扩展
+            "存档读取": {"trigger": "【存读】", "nickname": "存读bot"},
             "MonkeysPumpkin": {"trigger": "【小南瓜】", "nickname": "南瓜bot"},
         }
         self.config = self.persona_configs.get(persona, self.persona_configs["wolf_lumine"])
         self.trigger_word = self.config["trigger"]
         self.nickname = self.config["nickname"]
-        
+
         self.mention_tongyi_model = MentionTongyiModel(model, username=persona)
+        self.mention_openrouter_model = MentionOpenRouterModel(model)
         self.pet_model = MentionPetModel(persona=persona)
-    @staticmethod
-    def _remove_shuiyuan_signature(text: str) -> str:
-        """
-        Remove the Shuiyuan signature from the given text.
-
-        :param text: The text from which to remove the signature.
-        :return: The text without the signature.
-        """
-        sig_re = r"<div data-signature>.*?</div>"
-        return re.sub(sig_re, "", text, flags=re.DOTALL).strip()
-
     @staticmethod
     def _parse_prompt_text(raw: str, prompt: str) -> Optional[str]:
         """
@@ -70,8 +61,7 @@ class MentionModel(BaseUserActionModel):
         raw = raw[irst_occurrence:]
 
         # Remove the keyword itself
-        raw = MentionModel._remove_shuiyuan_signature(raw.replace(prompt, "")).strip()
-        return raw
+        return ShuiyuanModel.remove_shuiyuan_signature(raw.replace(prompt, "")).strip()
 
     async def _pumpkin_condition(
         self, topic_id: int, raw: str, user: User
@@ -105,7 +95,7 @@ class MentionModel(BaseUserActionModel):
         except Exception as e:
             reply = "抱歉，遇到了一些未知错误。"
             logging.error(f"==> [MentionModel] AI replied with Exception: {str(e)}")
-            
+
         logging.info(f"==> [MentionModel] AI replied with length {len(reply)}.")
         signature = (
             "\n"
@@ -132,6 +122,7 @@ class MentionModel(BaseUserActionModel):
 
         # Clear the session history for the user
         self.mention_tongyi_model.clear_session_history(topic_id)
+        self.mention_openrouter_model.clear_session_history(topic_id)
 
         return MentionModel._make_unique_reply("已清除当前话题中的对话历史记录")
 

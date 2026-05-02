@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "shuiyuan-auto-reply"
 version = "0.1.0"
-description = "A project for automatic replies using LangChain and Google GenAI."
+description = "A project for automatic replies using LangChain and OpenRouter."
 authors = [{ name = "Hydroiodic_Acid", email = "liao_chengfan@sjtu.edu.cn" }]
 requires-python = ">=3.12"
 dependencies = [
@@ -13,11 +13,10 @@ dependencies = [
     "aiomysql",
     "apscheduler",
     "dacite",
-    "dashscope",
     "ddgs",
     "httpx[socks]",
     "langchain-community",
-    "langchain-google-genai",
+    "langchain-openai",
     "langchain-mcp-adapters",
     "neomodel",
     "numpy",
@@ -31,6 +30,10 @@ dependencies = [
     "sqlalchemy",
 ]
 
+[project.optional-dependencies]
+dev = ["black", "isort"]
+server = ["fastapi[all]"]
+
 [tool.setuptools]
 include-package-data = true
 
@@ -40,6 +43,17 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["shuiyuan_auto_reply*"]
+
+[tool.setuptools.package-data]
+shuiyuan_auto_reply = [
+    "assets/tarot_data.json",
+    "assets/tarot_img/*.jpg",
+    "assets/fonts/Noto_Color_Emoji/*.ttf",
+    "assets/fonts/Noto_Color_Emoji/*.txt",
+    "assets/fonts/Noto_Sans_SC/OFL.txt",
+    "assets/fonts/Noto_Sans_SC/static/NotoSansSC-Bold.ttf",
+    "assets/fonts/Noto_Sans_SC/static/NotoSansSC-Regular.ttf",
+]
 
 [tool.isort]
 profile = "black"

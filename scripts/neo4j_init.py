@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 
 import dotenv
@@ -14,12 +15,6 @@ logging.basicConfig(
 
 # Load all environment variables from the .env file
 dotenv.load_dotenv()
-
-# Add the parent directory to the system path for module resolution
-import os
-import sys
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shuiyuan_auto_reply.constants import auto_reply_tag
 from shuiyuan_auto_reply.database.neo4j_mgr import global_async_neo4j_manager

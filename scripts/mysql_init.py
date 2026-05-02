@@ -13,12 +13,6 @@ logging.basicConfig(
 # Load all environment variables from the .env file
 dotenv.load_dotenv()
 
-# Add the parent directory to the system path for module resolution
-import os
-import sys
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from shuiyuan_auto_reply.database.mysql_mgr import global_async_mysql_manager
 
 

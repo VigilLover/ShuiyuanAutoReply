@@ -22,9 +22,13 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from sentence_transformers import SentenceTransformer
 
 from shuiyuan_auto_reply.constants import auto_reply_tag
+from shuiyuan_auto_reply.openrouter.openrouter_model import (
+    DEFAULT_OPENROUTER_MAX_RETRIES,
+)
 from shuiyuan_auto_reply.shuiyuan.objects import PostDetails, User
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from .image_generation import create_image_generation_tool
+from .shuiyuan_tools_wrapper import PostShort, ShuiyuanToolsWrapper
 
 class M3EEmbeddings(Embeddings):
     def __init__(self, model_name="moka-ai/m3e-base"):
@@ -151,6 +155,7 @@ class MentionChatModel:
                 "default": {
                     "transport": "sse",
                     "url": url,
+                    "sse_read_timeout": 900,  # Image generation may take long
                 }
             }
         )
@@ -168,13 +173,16 @@ class MentionChatModel:
         function_list = [
             "search_user_by_term",
             "search_post_details_by_optional_username_topic",
-            "search_posts_by_time_range_and_topic"
+            "query_recent_posts_by_topic_id",
+            "search_posts_by_time_range_and_topic",
+            "generate_image_and_upload"
         ]
 
         # Dynamically create tool wrappers for the above functions
+        tools_wrapper = ShuiyuanToolsWrapper(self.model)
         tools = []
         for func_name in function_list:
-            func = getattr(self.model, func_name)
+            func = getattr(tools_wrapper, func_name)
             if callable(func):
                 tools.append(
                     StructuredTool.from_function(
@@ -232,6 +240,8 @@ class MentionChatModel:
             self.llm,
             all_tools,
             self.prompt,
+        ).with_retry(
+            stop_after_attempt=DEFAULT_OPENROUTER_MAX_RETRIES
         )
         self.agent_executor = AgentExecutor(
             agent=agent,
@@ -255,19 +265,6 @@ class MentionChatModel:
         arranged_text = f"{identity_info}说：\n{raw}"
         return arranged_text.strip()
 
-    async def _get_recent_posts(self, topic_id: int, limit: int) -> List[PostDetails]:
-        """
-        Get recent posts in the topic, excluding those that contain the auto-reply tag.
-
-        :param topic_id: The ID of the topic to retrieve recent posts from.
-        :param limit: The maximum number of recent posts to retrieve.
-        :return: A list of PostDetails instances for recent posts in the topic.
-        """
-        recent_posts = await self.model.query_recent_posts_by_topic_id(topic_id, limit)
-        return [
-            post for post in recent_posts if post.raw and auto_reply_tag not in post.raw
-        ]
-
     async def get_recent_msgs_context(self, topic_id: int, limit: int = 10) -> str:
         """
         Get recent posts in the topic and arrange them into a text block for context.
@@ -276,16 +273,20 @@ class MentionChatModel:
         :param limit: The maximum number of recent posts to retrieve.
         :return: A formatted string containing the recent posts.
         """
-        recent_posts = await self._get_recent_posts(topic_id, limit)
-        if not recent_posts:
+        tools_wrapper = ShuiyuanToolsWrapper(self.model)
+        posts = await tools_wrapper.query_recent_posts_by_topic_id(topic_id, limit)
+
+        # If there are no recent posts, return a default message
+        if not posts:
             return "无近期回帖记录"
 
+        # Arrange the recent posts into a formatted string
         return "\n\n".join(
             [
                 self._arrange_post_text(
-                    post.raw, User(post.user_id, post.username, post.name)
+                    post.raw[:192], User(0, post.username, post.name)
                 )
-                for post in recent_posts
+                for post in posts
             ]
         )
 
