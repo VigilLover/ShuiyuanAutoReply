@@ -4,7 +4,6 @@ import re
 from datetime import datetime
 
 import aiohttp
-import requests
 
 from shuiyuan_auto_reply.constants import assets_directory
 
@@ -13,16 +12,20 @@ logger = logging.getLogger(__name__)
 IMAGE_API_URL = os.getenv("IMAGE_GEN_API_URL", "https://www.openclaudecode.cn/v1/chat/completions")
 IMAGE_MODEL = os.getenv("IMAGE_GEN_MODEL", "gpt-image-2-pro")
 
+_SUPPORTED_ASPECT_RATIOS = {
+    "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
+    "1:4", "4:1", "1:8", "8:1",
+}
+_SUPPORTED_IMAGE_SIZES = {"0.5K", "512", "1K", "2K", "4K"}
+
 
 def _extract_image_url(content: str) -> str | None:
-    """从 chat completions 返回的 Markdown 内容中提取图片 URL"""
+    """从 chat completions 返回的 Markdown 内容中提取图片 URL（含 data URL）"""
     if not isinstance(content, str):
         return None
     match = re.search(r'!\[.*?\]\(([^)]+)\)', content)
     if match:
-        url = match.group(1)
-        if not url.startswith("data:"):
-            return url
+        return match.group(1)
     return None
 
 
@@ -30,60 +33,62 @@ def create_image_generation_tool(model):
     """
     创建一个与 ShuiyuanModel 绑定的文生图工具函数.
 
-    :param model: ShuiyuanModel 实例, 用于调用 try_upload_image 上传图片到水源.
+    :param model: ShuiyuanModel 实例, 用于调用 upload_image 上传图片到水源.
     :return: async callable, 可作为 StructuredTool 的 coroutine.
     """
 
-    async def generate_image(prompt: str) -> str:
+    async def generate_image(prompt: str, aspect_ratio: str = "1:1", image_size: str = "1K") -> str:
         """
-        根据文字描述生成图片, 使用 GPT Image 模型, 自动上传到水源并返回 Markdown 图片链接.
+        根据用户的文字描述生成图片，自动上传到水源并返回图片的短链接。
 
-        适用场景:
-        - 用户要求画一张图、生成图片、帮我画个等与绘图、插图、生成图片相关的需求.
-        - 用户希望将一段文字描述转换为可视化的图像.
+        【重要】你必须使用 Markdown 图片语法将返回的短链接嵌入最终回复：`![描述](短链接)`
+        例如返回 `https://shuiyuan.sjtu.edu.cn/uploads/short-url/xxx`，你在回复中写 `![生成的图片](https://shuiyuan.sjtu.edu.cn/uploads/short-url/xxx)`
 
-        调用前必须做的提示词优化:
-        在调用本工具之前, 你必须先将用户的原始需求改写为一段仅使用中文的生图提示词, 且必须尽可能详细, 不要在意字数长短, 规则如下:
-        1. 只允许输出中文提示词, 不要混入英文句子; 可保留极少量通用风格标签但优先中文表达.
-        2. 将场景扩写到足够细致, 细化并覆盖: 人物外貌特征(发型、发色、瞳色、五官、年龄感)、服装材质与褶皱、姿态动作、面部神态、镜头景别与机位、前中后景层次、空间透视关系、背景物件与装饰细节、时间天气季节、主辅光源方向与色温、色彩搭配、画面情绪与叙事氛围.
-        3. 明确强调极致画质与细节密度, 可使用中文高质量关键词, 如: 杰作、高清、精细、细节、光影、体积光、柔和辉光、超清背景、纹理清晰、边缘干净.
-        4. 画风以二次元人物插画为主, 强调: 唯美、通透、精致、人物脸部和眼睛刻画细腻、服饰与道具细节丰富、整体观感高级.
-        5. 只写可视化、可落地的具体描述, 不写空泛抽象词; 让模型能直接据此作画, 不要包含反向提示词(negative prompt).
-        6. 当用户提供参考文本、人物信息或附件内容时, 必须尽可能完整吸收并具象化到画面里, 宁可写得更长更细, 也不要省略关键元素.
-        7. 如果是“用户印象图”, 必须围绕该用户昵称与特征设计个性化场景, 增加可识别的专属元素与氛围细节, 让画面具有强记忆点.
-        8. 输出时默认采用一整段长提示词, 优先保证信息密度和可视化细节完整性, 不因篇幅主动删减内容.
+        提示词(prompt)编写参数规则：
+        1. 必须使用纯中文进行极其详细的画面描述。
+        2. 场景与人物扩写需精细：涵盖外貌特征、服饰、姿态、神态、光影、背景、时间、氛围等可视化细节。
+        3. 画风设定为二次元精美插画，强调"唯美、精细、干净通透"，并要求"避免过度锐化、畸变与崩坏"。
+        4. 若用户提供设定/附件/"用户印象"，必须将关键元素具象化融入画面。
 
-        返回值说明:
-        - 成功时返回水源论坛的 Markdown 图片链接, 图片会自动附加到你的回复末尾.
-        - 你只需用文字简要描述图片内容, 无需手动放置图片链接.
-
-        :param prompt: 优化后的中文生图提示词(必须按照上述规则改写后再传入)
-        :return: Markdown 图片链接, 系统会自动追加到回复.
+        :param prompt: 优化后详细的纯中文生图提示词。
+        :param aspect_ratio: 画面宽高比，默认 1:1。支持 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9, 1:4, 4:1, 1:8, 8:1。
+        :param image_size: 图片分辨率，默认 1K。支持 0.5K, 512, 1K, 2K, 4K。
+        :return: 图片的短链接。你必须用 `![描述](链接)` 格式嵌入回复中。
         """
         api_key = os.getenv("IMAGE_GEN_API_KEY")
         if not api_key:
             return "图片生成失败: IMAGE_GEN_API_KEY 未配置."
 
-        try:
-            resp = requests.post(
-                IMAGE_API_URL,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": IMAGE_MODEL,
-                    "messages": [
-                        {"role": "user", "content": [{"type": "text", "text": prompt}]}
-                    ],
-                    "max_tokens": 4096,
-                },
-                timeout=240,
-            )
-            if resp.status_code != 200:
-                return f"图片生成失败: API 返回 HTTP {resp.status_code}"
+        if aspect_ratio not in _SUPPORTED_ASPECT_RATIOS:
+            aspect_ratio = "1:1"
+        if image_size not in _SUPPORTED_IMAGE_SIZES:
+            image_size = "1K"
 
-            data = resp.json()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    IMAGE_API_URL,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": IMAGE_MODEL,
+                        "messages": [
+                            {"role": "user", "content": [{"type": "text", "text": prompt}]}
+                        ],
+                        "max_tokens": 4096,
+                        "image_config": {
+                            "aspect_ratio": aspect_ratio,
+                            "image_size": image_size,
+                        },
+                    },
+                    timeout=aiohttp.ClientTimeout(total=300),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return f"图片生成失败: API 返回 HTTP {resp.status_code}, {body[:200]}"
+                    data = await resp.json()
             content = data["choices"][0]["message"]["content"]
             logger.info("Image API response: %s", str(content)[:200])
         except Exception as exc:
@@ -95,14 +100,28 @@ def create_image_generation_tool(model):
             return f"图片生成失败: 未在响应中找到图片 URL."
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=60)) as dl_resp:
-                    if dl_resp.status != 200:
-                        return f"图片生成失败: 下载图片 HTTP {dl_resp.status}"
-                    image_bytes = await dl_resp.read()
-            logger.info("Downloaded image: %d bytes (%.1fKB)", len(image_bytes), len(image_bytes) / 1024)
+            if image_url.startswith("data:"):
+                import base64
+
+                match = re.match(r"^data:[^;]+;base64,(.+)$", image_url)
+                if not match:
+                    return "图片生成失败: 无法解析 data URL。"
+                image_bytes = base64.b64decode(match.group(1))
+            else:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        image_url, timeout=aiohttp.ClientTimeout(total=60)
+                    ) as dl_resp:
+                        if dl_resp.status != 200:
+                            return f"图片生成失败: 下载图片 HTTP {dl_resp.status}"
+                        image_bytes = await dl_resp.read()
+            logger.info(
+                "Got image: %d bytes (%.1fKB)",
+                len(image_bytes),
+                len(image_bytes) / 1024,
+            )
         except Exception as exc:
-            logger.error("Image download failed: %s", exc)
+            logger.error("Image download/parse failed: %s", exc)
             return f"图片生成失败: 下载图片异常 {exc}"
 
         try:
@@ -118,11 +137,9 @@ def create_image_generation_tool(model):
             logger.warning("Backup save failed (non-fatal): %s", exc)
 
         try:
-            img_url = await model.try_upload_image(
-                image_bytes, try_base64=True, try_base64_size_kb=40
-            )
-            logger.info("Uploaded to Shuiyuan: type=%s", img_url.type)
-            return img_url.data
+            response = await model.upload_image(image_bytes)
+            logger.info("Uploaded to Shuiyuan: %s", response.short_url)
+            return response.short_url
         except Exception as exc:
             logger.error("Shuiyuan upload failed: %s", exc)
             return f"图片生成失败: 上传到水源异常 {exc}"

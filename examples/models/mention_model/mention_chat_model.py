@@ -256,7 +256,6 @@ class MentionChatModel:
             tools=all_tools,
             verbose=True,
             handle_parsing_errors=True,
-            return_intermediate_steps=True,
         )
         logging.info("==> [Agent] AgentExecutor created successfully with tools loaded.")
 
@@ -355,13 +354,6 @@ class MentionChatModel:
 
         raw_output = response.get("output")
         final_clean_text = self.parse_model_output(raw_output)
-
-        # 从工具调用中提取图片 Markdown, 自动插入到回复最前面
-        intermediate_steps = response.get("intermediate_steps", [])
-        for action, tool_output in intermediate_steps:
-            if action.tool == "generate_image" and isinstance(tool_output, str):
-                if tool_output.startswith("![") and not tool_output.startswith("图片生成失败"):
-                    final_clean_text = tool_output + "\n\n" + final_clean_text
 
         # Append history for the session
         history_obj.add_user_message(self._arrange_post_text(conversation, user))
