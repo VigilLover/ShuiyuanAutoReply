@@ -11,6 +11,7 @@ from shuiyuan_auto_reply.shuiyuan.user_action_model import BaseUserActionModel
 
 from .mention_tongyi_model import MentionTongyiModel
 from .mention_openrouter_model import MentionOpenRouterModel
+from .mention_deepseek_model import MentionDeepSeekModel
 from .mention_pet_model import MentionPetModel
 
 
@@ -41,8 +42,9 @@ class MentionModel(BaseUserActionModel):
         self.trigger_word = self.config["trigger"]
         self.nickname = self.config["nickname"]
 
-        self.mention_tongyi_model = MentionTongyiModel(model, username=persona)
-        # self.mention_openrouter_model = MentionOpenRouterModel(model)
+        # 模型选择：运行时二选一，不用的注释掉即可
+        self.pumpkin = MentionTongyiModel(model, username=persona)
+        # self.pumpkin = MentionDeepSeekModel(model, username=persona)
         self.pet_model = MentionPetModel(persona=persona)
     @staticmethod
     def _parse_prompt_text(raw: str, prompt: str) -> Optional[str]:
@@ -84,7 +86,7 @@ class MentionModel(BaseUserActionModel):
         logging.info(f"==> [MentionModel] Triggered AI spawn with prompt: '{raw}' for user: {user.username}")
         # Let the Tongyi model respond based on conversation and similar responses
         try:
-            reply = await self.mention_tongyi_model.get_pumpkin_response(topic_id, reply_to_post_number, raw, user)
+            reply = await self.pumpkin.get_pumpkin_response(topic_id, reply_to_post_number, raw, user)
         except ValueError as e:
             if "DataInspectionFailed" in str(e):
                 reply = "抱歉，您的输入包含不当内容，无法处理。"
@@ -121,8 +123,7 @@ class MentionModel(BaseUserActionModel):
             return None
 
         # Clear the session history for the user
-        self.mention_tongyi_model.clear_session_history(topic_id)
-        # self.mention_openrouter_model.clear_session_history(topic_id)
+        self.pumpkin.clear_session_history(topic_id)
 
         return MentionModel._make_unique_reply("已清除当前话题中的对话历史记录")
 

@@ -42,10 +42,10 @@ class MentionPetModel:
         self.persona = persona
 
         self.client = AsyncOpenAI(
-            api_key=os.getenv("DASHSCOPE_API_KEY"),
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key=os.getenv("DEEPSEEK_API_KEY"),
+            base_url="https://api.deepseek.com",
         )
-        self.model_name = os.getenv("PET_REPLY_MODEL", "qwen3-max")
+        self.model_name = os.getenv("PET_REPLY_MODEL", "deepseek-v4-pro")
 
         self.retriever = None
         self._init_retriever()
@@ -158,8 +158,9 @@ class MentionPetModel:
         try:
             response = await self.client.chat.completions.create(
                 model=self.model_name,
-                extra_body={"enable_thinking": False},
                 messages=messages,
+                reasoning_effort="max",
+                extra_body={"thinking": {"type": "enabled"}},
             )
             text = (response.choices[0].message.content or "").strip()
             text = " ".join(text.split())

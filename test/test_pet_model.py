@@ -27,9 +27,9 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
         dotenv.load_dotenv()
-        cls.api_key = os.getenv("DASHSCOPE_API_KEY")
+        cls.api_key = os.getenv("DEEPSEEK_API_KEY")
         if not cls.api_key:
-            raise RuntimeError("未检测到 DASHSCOPE_API_KEY，无法执行真实大模型测试。")
+            raise RuntimeError("未检测到 DEEPSEEK_API_KEY，无法执行真实大模型测试。")
 
     def setUp(self):
         logging.info("[SETUP] 创建临时测试目录和测试资产文件")

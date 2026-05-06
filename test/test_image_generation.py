@@ -1,11 +1,56 @@
+"""
+Test image generation tool, including reference-image support.
+
+Usage:
+    python -m pytest test/test_image_generation.py -v
+    python -m pytest test/test_image_generation.py::TestImageGeneration -v
+    python -m pytest test/test_image_generation.py::TestImageGenerationWithReference -v
+"""
+
 import asyncio
+import base64
 import logging
 import os
 import sys
+import unittest
+from pathlib import Path
 
-import dotenv
+import aiohttp
 
-dotenv.load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from examples.models.mention_model.image_generation import (
+    _download_and_encode,
+    _extract_image_url,
+    create_image_generation_tool,
+)
+
+_TEST_DIR = Path(__file__).resolve().parent
+_REFERENCE_DIR = _TEST_DIR / "image_generation_reference"
+_OUTPUT_DIR = _TEST_DIR / "image_generation_test"
+
+# Shuiyuan 上传链接（upload:// 格式，与 reference 目录中的 17663417780751842.jpg 对应）
+_SHUIYUAN_UPLOAD_PATH = "upload://nmJhpoTDTvnjmrYg0oIn8dZFVF2.jpeg"
+# 水源图片下载的基础 URL（与 src/.../constants.py 中 download_url 一致）
+_SHUIYUAN_DOWNLOAD_BASE = "https://shuiyuan.sjtu.edu.cn/uploads/short-url"
+
+
+def _load_env():
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, val = line.partition("=")
+                os.environ.setdefault(key.strip(), val.strip())
+
+
+_load_env()
+os.makedirs(_OUTPUT_DIR, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,73 +58,218 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-# 添加项目根目录到 sys.path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 
 class _MockModel:
-    """模拟 ShuiyuanModel, 只记录上传调用而不实际请求水源"""
-
     def __init__(self):
         self.uploaded_images = []
 
-    async def try_upload_image(self, image_bytes, try_base64=True, try_base64_size_kb=40):
-        from shuiyuan_auto_reply.shuiyuan.objects import ImageURL
+    async def upload_image(self, image_bytes):
+        from shuiyuan_auto_reply.shuiyuan.objects import ImageUploadResponse
         self.uploaded_images.append(image_bytes)
-        logging.info(
-            f"==> [Mock] try_upload_image called: {len(image_bytes) / 1024:.1f}KB, "
-            f"skip real upload to Shuiyuan"
+        logging.info("==> [Mock] upload_image: %.1fKB", len(image_bytes) / 1024)
+        idx = len(self.uploaded_images)
+        return ImageUploadResponse(
+            id=idx,
+            url=f"mock_url_{idx}",
+            original_filename=f"mock_{idx}.png",
+            short_url=f"mock_short_url_{idx}",
+            short_path=f"upload://mockShortPath{idx}.jpeg",
         )
-        return ImageURL("url", f"![img](mock_uploaded_url_{len(self.uploaded_images)})")
+
+    async def download_image(self, image_url: str) -> bytes:
+        """模拟 ShuiyuanModel.download_image：将 upload:// 解析为 HTTPS 并下载"""
+        if not image_url.startswith("upload://"):
+            raise ValueError(f"Invalid image URL: {image_url}")
+        resolved = image_url.replace("upload://", _SHUIYUAN_DOWNLOAD_BASE + "/")
+        logging.info("==> [Mock] download_image: %s → %s", image_url, resolved)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(resolved) as resp:
+                if resp.status != 200:
+                    raise Exception(f"Download failed: HTTP {resp.status}")
+                data = await resp.read()
+        logging.info("==> [Mock] downloaded: %.1fKB", len(data) / 1024)
+        return data
 
 
-async def test_image_generation(prompt: str):
-    """测试本地图片生成工具 (生成 + 下载 + 本地备份, 不上传水源)"""
-    from examples.models.mention_model.image_generation import create_image_generation_tool
+# ── 基础文生图 ────────────────────────────────────────────────────────
 
-    # 检查配置
-    api_key = os.getenv("IMAGE_GEN_API_KEY")
-    if not api_key:
-        logging.error("IMAGE_GEN_API_KEY is not set in .env")
-        return
+class TestImageGenerationBasic(unittest.IsolatedAsyncioTestCase):
+    """纯文本文生图（无参考图）"""
 
-    api_url = os.getenv("IMAGE_GEN_API_URL", "https://www.openclaudecode.cn/v1/chat/completions")
-    model = os.getenv("IMAGE_GEN_MODEL", "gpt-image-2-pro")
-    logging.info(f"==> [Test] API URL: {api_url}")
-    logging.info(f"==> [Test] Model:   {model}")
-    logging.info(f"==> [Test] Key:     {api_key[:12]}...")
+    async def test_generate_image_basic(self):
+        api_key = os.getenv("IMAGE_GEN_API_KEY")
+        if not api_key:
+            self.skipTest("IMAGE_GEN_API_KEY not set")
 
-    # 创建工具函数 (与 MentionChatModel._load_shuiyuan_tools() 相同方式)
-    mock_model = _MockModel()
-    gen_img_func = create_image_generation_tool(mock_model)
+        mock = _MockModel()
+        gen_img = create_image_generation_tool(mock)
+        prompt = (
+            "一幅简单的二次元风格插画，1:1。一只白色的卡通小猫坐在木地板上，"
+            "背景为纯浅蓝色，阳光从左侧窗户照入。简洁干净，无多余细节。"
+        )
+        result = await gen_img(prompt, aspect_ratio="1:1", image_size="0.5K", output_dir=str(_OUTPUT_DIR))
+        logging.info("Result: %s", str(result)[:200])
+        self.assertTrue(result)
+        self.assertFalse(result.startswith("图片生成失败"))
+        self.assertEqual(len(mock.uploaded_images), 1)
 
-    logging.info(f"==> [Test] Calling generate_image with prompt: '{prompt[:100]}...'")
 
-    # 与 Agent 调用工具的相同方式 — 直接 await 工具函数
-    result = await gen_img_func(prompt)
+# ── 参考图生图 ────────────────────────────────────────────────────────
 
-    logging.info(f"==> [Test] Result type: {type(result).__name__}")
-    logging.info(f"==> [Test] Result: {str(result)[:500]}")
+class TestImageGenerationWithReference(unittest.IsolatedAsyncioTestCase):
+    """使用参考图进行文生图"""
 
-    if mock_model.uploaded_images:
-        total_kb = sum(len(img) for img in mock_model.uploaded_images) / 1024
-        logging.info(f"==> [Test] Uploaded {len(mock_model.uploaded_images)} image(s) ({total_kb:.1f}KB total)")
-        logging.info(f"==> [Test] Images saved locally in assets/generated_images/")
-    else:
-        logging.warning("==> [Test] No images were uploaded.")
+    async def test_with_local_reference(self):
+        """使用 test/image_generation_reference/ 中的本地图片作为参考"""
+        api_key = os.getenv("IMAGE_GEN_API_KEY")
+        if not api_key:
+            self.skipTest("IMAGE_GEN_API_KEY not set")
+
+        ref_files = list(_REFERENCE_DIR.glob("*"))
+        if not ref_files:
+            self.skipTest("No reference images in image_generation_reference/")
+        ref_path = str(ref_files[0])
+        logging.info("Using local reference: %s", ref_path)
+
+        mock = _MockModel()
+        gen_img = create_image_generation_tool(mock)
+        prompt = (
+            "参考提供的图片，生成一张新的图片。"
+            "保持相似的风格和角色特征，可适当加入新的姿态或场景元素。"
+        )
+        result = await gen_img(
+            prompt, aspect_ratio="1:1", image_size="1K",
+            reference_images=[ref_path], output_dir=str(_OUTPUT_DIR),
+        )
+        logging.info("Result: %s", str(result)[:200])
+        self.assertTrue(result)
+        self.assertFalse(result.startswith("图片生成失败"))
+        self.assertEqual(len(mock.uploaded_images), 1)
+
+    async def test_with_shuiyuan_reference_local_file(self):
+        """使用 image_generation_reference 中的本地参考图（该文件即水源 upload:// 对应图片）"""
+        api_key = os.getenv("IMAGE_GEN_API_KEY")
+        if not api_key:
+            self.skipTest("IMAGE_GEN_API_KEY not set")
+
+        ref_files = list(_REFERENCE_DIR.glob("*"))
+        if not ref_files:
+            self.skipTest("No reference images in image_generation_reference/")
+        ref_path = str(ref_files[0])
+        logging.info("Using reference (downloaded from upload://): %s", ref_path)
+
+        mock = _MockModel()
+        gen_img = create_image_generation_tool(mock)
+        prompt = (
+            "参考提供的图片，生成一张新的图片。"
+            "保持相似的风格和角色特征，可适当加入新的姿态或场景元素。"
+        )
+        result = await gen_img(
+            prompt, aspect_ratio="1:1", image_size="1K",
+            reference_images=[ref_path], output_dir=str(_OUTPUT_DIR),
+        )
+        logging.info("Result: %s", str(result)[:200])
+        self.assertTrue(result)
+        self.assertFalse(result.startswith("图片生成失败"))
+        self.assertEqual(len(mock.uploaded_images), 1)
+
+    async def test_with_mixed_references(self):
+        """混合使用本地参考图和小型 HTTP 参考图"""
+        api_key = os.getenv("IMAGE_GEN_API_KEY")
+        if not api_key:
+            self.skipTest("IMAGE_GEN_API_KEY not set")
+
+        ref_files = list(_REFERENCE_DIR.glob("*"))
+        refs = []
+        if ref_files:
+            refs.append(str(ref_files[0]))
+        # 第二张用小图 HTTP URL 避免请求体过大导致服务端断开
+        refs.append("https://www.python.org/static/img/python-logo.png")
+
+        mock = _MockModel()
+        gen_img = create_image_generation_tool(mock)
+        prompt = "参考提供的两张图片风格，生成一张新的图片。"
+        result = await gen_img(
+            prompt, aspect_ratio="1:1", image_size="1K",
+            reference_images=refs, output_dir=str(_OUTPUT_DIR),
+        )
+        logging.info("Result: %s", str(result)[:200])
+        self.assertTrue(result)
+        self.assertFalse(result.startswith("图片生成失败"))
+        self.assertEqual(len(mock.uploaded_images), 1)
+
+
+# ── Shuiyuan download_image ────────────────────────────────────────────
+
+class TestShuiyuanDownloadImage(unittest.IsolatedAsyncioTestCase):
+    """测试 upload:// 格式图片通过 download_image 下载（需要有效的 Shuiyuan cookies）"""
+
+    async def test_download_upload_image(self):
+        """upload:// 应通过 Shuiyuan 认证下载为图片 bytes"""
+        from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
+        cookies_path = os.path.join(PROJECT_ROOT, "cookies")
+        if not os.path.exists(cookies_path):
+            self.skipTest("Cookies file not found, cannot auth with Shuiyuan")
+
+        model = await ShuiyuanModel.create(cookies_path)
+        async with model:
+            image_bytes = await model.download_image(_SHUIYUAN_UPLOAD_PATH)
+        self.assertIsNotNone(image_bytes)
+        self.assertGreater(len(image_bytes), 1000)
+        is_jpeg = image_bytes[:3] == b"\xff\xd8\xff"
+        is_png = image_bytes[:4] == b"\x89PNG"
+        self.assertTrue(is_jpeg or is_png, "Should be valid image format (JPEG or PNG)")
+        logging.info("download_image OK: %d bytes", len(image_bytes))
+
+
+# ── 图片下载/编码工具 ─────────────────────────────────────────────────
+
+class TestDownloadAndEncode(unittest.IsolatedAsyncioTestCase):
+    async def test_encode_local_file(self):
+        """本地文件应正确转为 base64 data URL"""
+        ref_files = list(_REFERENCE_DIR.glob("*"))
+        if not ref_files:
+            self.skipTest("No reference images found")
+        ref_path = str(ref_files[0])
+
+        data_url = await _download_and_encode(None, ref_path)
+        self.assertIsNotNone(data_url)
+        self.assertTrue(data_url.startswith("data:image/"))
+        b64_part = data_url.split(",", 1)[1]
+        decoded = base64.b64decode(b64_part)
+        self.assertGreater(len(decoded), 100)
+
+    async def test_encode_http_url(self):
+        """HTTP URL 应正确下载并编码"""
+        async with aiohttp.ClientSession() as session:
+            data_url = await _download_and_encode(session, "https://www.python.org/static/img/python-logo.png")
+        self.assertIsNotNone(data_url)
+        self.assertTrue(data_url.startswith("data:image/png;base64,"))
+
+    def test_pass_through_data_url(self):
+        """已是 data URL 应直接返回"""
+        result = asyncio.run(_download_and_encode(None, "data:image/png;base64,abc123"))
+        self.assertEqual(result, "data:image/png;base64,abc123")
+
+
+# ── URL 提取工具 ──────────────────────────────────────────────────────
+
+class TestExtractImageURL(unittest.TestCase):
+    def test_standard_markdown(self):
+        self.assertEqual(_extract_image_url("![desc](https://example.com/img.png)"), "https://example.com/img.png")
+
+    def test_upload_format(self):
+        self.assertEqual(_extract_image_url("![img](upload://abc123.jpeg)"), "upload://abc123.jpeg")
+
+    def test_data_url(self):
+        self.assertEqual(_extract_image_url("![img](data:image/png;base64,abc123)"), "data:image/png;base64,abc123")
+
+    def test_plain_text_returns_none(self):
+        self.assertIsNone(_extract_image_url("hello world"))
+
+    def test_none_input_returns_none(self):
+        self.assertIsNone(_extract_image_url(None))
 
 
 if __name__ == "__main__":
-    _DEFAULT_PROMPT = (
-        "一幅高细节的二次元风格插画：一个带有狼耳和蓬松尾巴的少年坐在卧室书桌前。他有凌乱的银灰色短发和温柔的蓝色眼睛，单手托着脸，神情略显疲惫又安静。他穿着一件宽松的浅色连帽卫衣。"
-
-        "书桌上摆满了生活化的小物件：一台打开的笔记本电脑（屏幕是蓝色主题网页）、一部正在播放幻想类游戏画面的手机、一份汉堡和薯条、一杯外带饮料。桌上还有一个发光的南瓜灯和一个可爱的粉色小猪摆件。"
-
-        "他身后的墙上贴着旅行照片（京都塔、大阪城）、一张写有手写标注的日历、一些中日英混合的便利贴，以及一张车票或机票。"
-
-        "右侧窗户透进温暖的金色夕阳光，照亮房间并形成柔和阴影，窗外是傍晚的彩色云霞天空。整体氛围温馨、安静、治愈，具有生活感。"
-
-        "二次元插画风格，光影柔和，暖色调，高细节，构图干净，日常感，画面精致。anime style, anime art, manga style, highly detailed, soft lighting, masterpiece, high quality."
-    )
-    prompt = sys.argv[1] if len(sys.argv) > 1 else _DEFAULT_PROMPT
-    asyncio.run(test_image_generation(prompt))
+    unittest.main(verbosity=2)
