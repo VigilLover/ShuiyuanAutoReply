@@ -159,8 +159,8 @@ class MentionPetModel:
             response = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=messages,
-                reasoning_effort="max",
-                extra_body={"thinking": {"type": "enabled"}},
+                # reasoning_effort="max",
+                # extra_body={"thinking": {"type": "enabled"}},
             )
             text = (response.choices[0].message.content or "").strip()
             text = " ".join(text.split())
