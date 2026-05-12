@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -17,7 +18,7 @@ _MAX_TOTAL_REFERENCE_BYTES = 20 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 IMAGE_API_URL = os.getenv("IMAGE_GEN_API_URL", "https://www.openclaudecode.cn/v1/chat/completions")
-IMAGE_MODEL = os.getenv("IMAGE_GEN_MODEL", "gpt-image-2-pro")
+IMAGE_MODEL = os.getenv("IMAGE_GEN_MODEL", "gpt-image-2")
 
 _SUPPORTED_ASPECT_RATIOS = {
     "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
@@ -205,36 +206,50 @@ def create_image_generation_tool(model):
             if total_ref_bytes:
                 logger.info("Total reference images size: %.1fMB", total_ref_bytes / (1024 * 1024))
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    IMAGE_API_URL,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": IMAGE_MODEL,
-                        "messages": [
-                            {"role": "user", "content": content}
-                        ],
-                        "max_tokens": 4096,
-                        "image_config": {
-                            "aspect_ratio": aspect_ratio,
-                            "image_size": image_size,
+        # ── 生图 API 调用（含重试，应对代理层断连）──
+        payload = {
+            "model": IMAGE_MODEL,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": 4096,
+            "image_config": {
+                "aspect_ratio": aspect_ratio,
+                "image_size": image_size,
+            },
+        }
+        last_error = ""
+        for attempt in range(3):
+            if attempt > 0:
+                wait = 2 ** attempt  # 2s, 4s 指数退避
+                logger.info("Retrying image API call (attempt %d/3) after %ds...", attempt + 1, wait)
+                await asyncio.sleep(wait)
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        IMAGE_API_URL,
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
                         },
-                    },
-                    timeout=aiohttp.ClientTimeout(total=300),
-                ) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        return f"图片生成失败: API 返回 HTTP {resp.status_code}, {body[:200]}"
-                    data = await resp.json()
-            content = data["choices"][0]["message"]["content"]
-            logger.info("Image API response: %s", str(content)[:200])
-        except Exception as exc:
-            logger.error("Image API call failed: %s", exc)
-            return f"图片生成失败: API 调用异常 {exc}"
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=300),
+                    ) as resp:
+                        if resp.status != 200:
+                            body = await resp.text()
+                            return f"图片生成失败: API 返回 HTTP {resp.status}, {body[:200]}"
+                        data = await resp.json()
+                content = data["choices"][0]["message"]["content"]
+                logger.info("Image API response: %s", str(content)[:200])
+                break  # success
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+                last_error = str(exc)
+                logger.warning("Image API transient error (attempt %d/3): %s", attempt + 1, exc)
+                continue  # retry
+            except Exception as exc:
+                logger.error("Image API call failed: %s", exc)
+                return f"图片生成失败: API 调用异常 {exc}"
+        else:
+            logger.error("Image API call failed after 3 retries: %s", last_error)
+            return f"图片生成失败: API 调用异常 {last_error}"
 
         image_url = _extract_image_url(content)
         if not image_url:
