@@ -490,24 +490,35 @@ class MentionChatModel:
             }
         )
         response = await self.llm_with_tools.ainvoke(prompt_value)
+        if not getattr(response, "content", None) and not getattr(response, "tool_calls", None):
+            logging.warning(
+                "Model returned empty AIMessage (no content, no tool_calls). "
+                "message_keys=%s",
+                [k for k in response.__dict__ if not k.startswith("_")],
+            )
         return {"messages": [response]}
 
     async def _finalize_response(self, state: MentionGraphState) -> MentionGraphState:
         last_message = state["messages"][-1]
         raw_output = getattr(last_message, "content", last_message)
-        # reasoning_content 兜底：qwen thinking 模式下输出可能在 reasoning 字段
+        # reasoning_content 兜底：qwen thinking 模式下输出可能在 reasoning 字段；
+        # LangChain 不同版本会放在顶层属性或 additional_kwargs 中
         if not raw_output:
-            reasoning = getattr(last_message, "reasoning_content", None)
+            reasoning = (
+                getattr(last_message, "reasoning_content", None)
+                or getattr(last_message, "additional_kwargs", {}).get("reasoning_content")
+            )
             if reasoning:
                 logging.info("Using reasoning_content as fallback (%d chars)", len(reasoning))
                 raw_output = reasoning
         if not raw_output:
+            additional = getattr(last_message, "additional_kwargs", {})
             logging.warning(
                 "Final message has empty content and no reasoning. "
-                "message_type=%s tool_calls=%s message_keys=%s",
+                "message_type=%s tool_calls=%s additional_keys=%s",
                 type(last_message).__name__,
                 getattr(last_message, "tool_calls", None),
-                list(last_message.__dict__.keys()) if hasattr(last_message, "__dict__") else "N/A",
+                list(additional.keys()),
             )
         final_clean_text = self.parse_model_output(raw_output)
         return {
@@ -616,6 +627,21 @@ class MentionChatModel:
         }
         response = await self.graph.ainvoke(graph_input)
         final_text = response.get("final_text")
+
+        # 空白回复重试一次
+        if not final_text or not final_text.strip():
+            logging.warning(
+                "Empty final_text, retrying once. raw_output=%s",
+                _preview_text(response.get("raw_output"), 200),
+            )
+            response = await self.graph.ainvoke(graph_input)
+            final_text = response.get("final_text")
+
+        # 仍然空白则 fallback
+        if not final_text or not final_text.strip():
+            logging.warning("Still empty after retry, using fallback message.")
+            final_text = "抱歉，小狼bot暂时没能生成回复，请稍后再试 :crying_cat:"
+
         logging.info(
             "Finished mention response generation: "
             "topic_id=%s final_chars=%d final_text=%s",
