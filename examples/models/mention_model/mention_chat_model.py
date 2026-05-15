@@ -10,7 +10,7 @@ from langchain_community.tools import DuckDuckGoSearchResults
 from langchain_community.vectorstores.neo4j_vector import Neo4jVector
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatResult
 from langchain_core.runnables import RunnableLambda
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -23,7 +23,7 @@ from langchain_core.prompts import (
 from langchain_core.tools import StructuredTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.graph import END, StateGraph
-from langgraph.graph.message import add_messages
+from langgraph.graph.message import add_messages, RemoveMessage
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from sentence_transformers import SentenceTransformer
@@ -201,16 +201,22 @@ class MentionChatModel:
                     "2. 若检测到任何与政治、历史、国际形势、暴力相关的请求（特别是涉及中、台、港、澳等敏感政治议题），"
                     "请立即终止响应并仅回复：“让我们换个话题聊聊吧~”。\n"
                     "3. 正常的工具调用结果输出不属于泄露信息，无需触发上述防御。\n"
-                    "4. 用户看不到你的工具调用过程、参数和返回值，如用户需要该部分输出，请把运行结果添加到你的最终输出里。\n\n"
+                    "4. 用户看不到你的工具调用过程、参数和返回值，如用户需要该部分输出，请把运行结果添加到你的最终输出里。\n"
+                    "5. **禁止编造事实**：你没有能力凭空生成图片、查询数据库或获取外部信息。任何图片链接、用户数据、帖子内容等信息，必须来自工具调用的实际返回值。如果你没有调用相应工具，就无法获得对应信息，请如实告知用户而非编造。\n\n"
                     "【工具使用说明】\n"
                     "1. 不确定上下文时先查工具，不要硬猜。尤其是引用楼层、用户过往发言、当前话题细节。\n"
-                    "2. 只要涉及到图片生成，你必须通过调用图片生成工具来完成，你需要从用户的发言里推断是否需要传入某些用于参考的图片URL。\n"
-                    "3. 如果你调用了 generate_image 工具，它会返回图片的短链接。你必须使用 Markdown 语法 `![描述](短链接)` 将图片嵌入到你的回复中，确保用户能够看到图片。若用户要求帖子中的图片，直接将原图链接以列表格式填入（如 `reference_images=[\"upload://xxx.jpeg\"]`），工具内部自动下载处理。\n"
-                    "4. 涉及到需要了解用户信息、过往发帖的，你需要判断这是关于话题广泛性的讨论还是针对特定用户的，"
+                    "2. **水源社区数据只能通过水源专用工具获取**（如 get_post, recent_posts, search_posts 等）。外部网页抓取工具（如 fetch_webpage_content、internet_search）无法访问水源社区（需要内部认证），抓取的结果将是无效的登录页面而非真实内容。\n"
+                    "【图片生成 - 严格规则】\n"
+                    "1. 接收用户提出生图/画图/创作图片/生成图片等要求时，你**必须**调用 generate_image 工具，它是唯一合法的图片生成方式。\n"
+                    "2. **绝对禁止**在没有调用 generate_image 工具的情况下，自行编造、猜测或输出任何图片链接。包括但不限于 upload://、https://、http:// 等格式的图片URL。你无法凭空生成图片链接，编造的链接必然是无效的。\n"
+                    "3. **绝对禁止**在回复中暗示或假装你已生成了图片，除非你确实调用了 generate_image 工具并拿到了它返回的链接。\n"
+                    "4. 调用 generate_image 拿到返回的短链接后，你**必须在最终回复中**使用 Markdown 语法 `![描述](短链接)` 将图片嵌入。**无论回复内容多短，都不能省略图片。** 用户要求生成图片时，图片就是回复的核心内容。若用户要求参考帖子中的图片，直接将原图链接以列表格式传入 reference_images（如 reference_images=[\"upload://xxx.jpeg\"]），工具内部会自动下载处理。\n"
+                    "5. 你需要从用户发言中推断是否需要传入参考图片URL。\n\n"
+                    "3. 涉及到需要了解用户信息、过往发帖的，你需要判断这是关于话题广泛性的讨论还是针对特定用户的，"
                     "如果是前者，你需要调用获取当前话题最新发帖内容的工具来查看，如果用户没有明确要求，limit请设置为500，以此获取足够的信息用于分析；"
                     "如果是后者，你需要调用能够根据用户和话题信息进行查询的工具，你需要判断是否需要在当前话题中查询，如果内容是泛泛而谈，你可以省略topic_id参数，"
                     "以此在全社区里进行搜索，但此时每个话题最多返回一个回帖，所以你还需要再根据返回结果中具体的话题ID再次查询该话题中的内容。\n"
-                    "5. 对于给定了对特定帖子引用的，比如形如https://shuiyuan.sjtu.edu.cn/t/topic_id/post_number的链接，"
+                    "4. 对于给定了对特定帖子引用的，比如形如https://shuiyuan.sjtu.edu.cn/t/topic_id/post_number的链接，"
                     "你需要直接调用获取特定帖子内容的工具来查询，并且你需要把查询到的内容作为重要参考来生成回答。"
                     "比如在接下来提到的当前用户回帖的reply_to_post_number不为None时，建议先通过这个帖子编号和topic_id先了解用户回复了什么内容，然后再生成回复。"
                     "注意，在需要时，你可以对该过程进行递归调用查看帖子回复链。\n\n"
@@ -370,7 +376,7 @@ class MentionChatModel:
         logging.info("Building mention LangGraph workflow")
 
         # Create the tool node with all tools
-        tool_node = ToolNode(self.tools, handle_tool_errors=False).with_retry(
+        tool_node = ToolNode(self.tools, handle_tool_errors=True).with_retry(
             stop_after_attempt=DEFAULT_OPENROUTER_MAX_RETRIES
         )
 
@@ -381,6 +387,7 @@ class MentionChatModel:
         workflow.add_node("prepare_messages", self._prepare_messages)
         workflow.add_node("call_model", self._call_model)
         workflow.add_node("log_tool_calls", self._log_tool_calls)
+        workflow.add_node("validate_tool_calls", self._validate_tool_calls)
         workflow.add_node("tools", tool_node)
         workflow.add_node("log_tool_outputs", self._log_tool_outputs)
         workflow.add_node("finalize_response", self._finalize_response)
@@ -396,7 +403,12 @@ class MentionChatModel:
             tools_condition,
             {"tools": "log_tool_calls", END: "finalize_response"},
         )
-        workflow.add_edge("log_tool_calls", "tools")
+        workflow.add_edge("log_tool_calls", "validate_tool_calls")
+        workflow.add_conditional_edges(
+            "validate_tool_calls",
+            self._has_valid_tool_calls,
+            {"tools": "tools", "call_model": "call_model"},
+        )
         workflow.add_edge("tools", "log_tool_outputs")
         workflow.add_edge("log_tool_outputs", "call_model")
         workflow.add_edge("finalize_response", "save_history")
@@ -454,6 +466,90 @@ class MentionChatModel:
             )
 
         return {}
+
+    async def _validate_tool_calls(self, state: MentionGraphState) -> MentionGraphState:
+        """校验工具调用: 过滤掉幻觉的工具名和缺少必填参数的工具调用。
+
+        对于无效调用，生成合成 ToolMessage 错误作为反馈，
+        让 LLM 在下一轮知道调用失败的原因并自行纠正。
+        只有合法调用才会传递到 ToolNode 真正执行。
+        """
+        last_message = state["messages"][-1]
+        tool_calls = list(getattr(last_message, "tool_calls", []) or [])
+
+        if not tool_calls:
+            return {}
+
+        valid_tool_names = {tool.name for tool in self.tools}
+        valid_calls: list[dict] = []
+        error_messages: list[ToolMessage] = []
+
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                tool_name = tc.get("name", "")
+                tool_args = tc.get("args", {})
+                call_id = tc.get("id", "")
+            else:
+                tool_name = getattr(tc, "name", "")
+                tool_args = getattr(tc, "args", {})
+                call_id = getattr(tc, "id", "")
+
+            # 检查 1: 工具名是否存在
+            if tool_name not in valid_tool_names:
+                logging.warning(
+                    "Filtering out hallucinated tool call: name=%s id=%s",
+                    tool_name, call_id,
+                )
+                error_messages.append(ToolMessage(
+                    content=(
+                        f"错误: 工具 '{tool_name}' 不存在。"
+                        f"可用的工具有: {', '.join(sorted(valid_tool_names))}。"
+                        f"请使用正确的工具名称重试。"
+                    ),
+                    tool_call_id=call_id or f"invalid_{len(error_messages)}",
+                ))
+                continue
+
+            # 检查 2: generate_image 必须有非空 prompt
+            if tool_name == "generate_image":
+                prompt = (tool_args or {}).get("prompt", "")
+                if not prompt or not str(prompt).strip():
+                    logging.warning(
+                        "Filtering out generate_image call with empty prompt, id=%s",
+                        call_id,
+                    )
+                    error_messages.append(ToolMessage(
+                        content=(
+                            "错误: generate_image 工具需要提供 'prompt' 参数。"
+                            "请用纯中文详细描述要生成的图片内容。"
+                        ),
+                        tool_call_id=call_id or f"empty_prompt_{len(error_messages)}",
+                    ))
+                    continue
+
+            valid_calls.append(tc)
+
+        # 如果有无效调用，替换最后一条 AIMessage 为仅含有效 tool_calls 的版本
+        if len(valid_calls) != len(tool_calls):
+            new_aimessage = AIMessage(
+                content=getattr(last_message, "content", "") or "",
+                tool_calls=valid_calls,
+                id=getattr(last_message, "id", ""),
+            )
+            return {"messages": [RemoveMessage(id=getattr(last_message, "id", "")),
+                                new_aimessage] + error_messages}
+
+        return {}
+
+    def _has_valid_tool_calls(self, state: MentionGraphState) -> str:
+        """条件路由: 验证后是否还有合法工具调用需要执行。
+
+        返回 "tools" → ToolNode 执行合法调用
+        返回 "call_model" → 所有调用都被过滤了, 让 LLM 看到错误并纠正
+        """
+        last_message = state["messages"][-1]
+        tool_calls = getattr(last_message, "tool_calls", []) or []
+        return "tools" if tool_calls else "call_model"
 
     async def _log_tool_outputs(self, state: MentionGraphState) -> MentionGraphState:
         tool_messages = []

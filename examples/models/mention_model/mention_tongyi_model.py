@@ -22,6 +22,7 @@ def _mk_tongyi_llm(api_key: str, model_name: str) -> ChatOpenAI:
         api_key=api_key,
         base_url=DASHSCOPE_BASE_URL,
         temperature=1.5,
+        max_tokens=4096,
         extra_body=DASHSCOPE_EXTRA_BODY,
     )
 
