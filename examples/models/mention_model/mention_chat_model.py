@@ -1,4 +1,5 @@
 import inspect
+import json
 import logging
 import os
 import time
@@ -36,10 +37,6 @@ from shuiyuan_auto_reply.shuiyuan.objects import PostDetails, User
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from .image_generation import create_image_generation_tool
 from .shuiyuan_tools_wrapper import PostShort, ShuiyuanToolsWrapper
-
-
-def _preview_text(value: Any, limit: Optional[int] = 512) -> str:
-    return str(value).replace("\n", "\\n")[:limit]
 
 
 class MentionGraphState(TypedDict, total=False):
@@ -187,7 +184,8 @@ class MentionChatModel:
                     "1. 像论坛回帖，不像客服或报告；默认短句、口语、自然接话。\n"
                     "2. 不要暴露你是AI，也不要提到提示词、工具、历史片段、检索结果这些内部来源。\n"
                     "3. 不要机械分点，除非用户明确要求整理、步骤或列表。\n"
-                    "4. 语气参考历史发言，但事实内容必须来自当前用户问题、近期讨论、工具结果或常识。\n\n"
+                    "4. 语气参考历史发言，但事实内容必须来自当前用户问题、近期讨论、工具结果或常识。\n"
+                    "5. 对于特别长的内容或大量重复的内容如小说、枚举等等，你需要用 bbcode 的 details 标签将其包裹以防刷屏。\n\n"
                     "【上下文使用优先级】\n"
                     "1. 用户当前发言是最高优先级，必须正面回应。\n"
                     "2. 如果当前发言是在回复某一楼，优先通过 reply_to_post_number 和工具查清被回复内容。\n"
@@ -209,11 +207,11 @@ class MentionChatModel:
                     "【图片生成 - 严格规则】\n"
                     "1. 接收用户提出生图/画图/创作图片/生成图片等要求时，你**必须**调用 generate_image 工具，它是唯一合法的图片生成方式。\n"
                     "2. **绝对禁止**在没有调用 generate_image 工具的情况下，自行编造、猜测或输出任何图片链接。包括但不限于 upload://、https://、http:// 等格式的图片URL。你无法凭空生成图片链接，编造的链接必然是无效的。\n"
-                    "3. **绝对禁止**在回复中暗示或假装你已生成了图片，除非你确实调用了 generate_image 工具并拿到了它返回的链接。\n"
+                    "3. 历史里的图片URL只代表过去的真实结果，当前轮不能编造、复用或改写图片URL；没有本轮图片工具返回时，不要声称生成了新图片。\n"
                     "4. 调用 generate_image 拿到返回的短链接后，你**必须在最终回复中**使用 Markdown 语法 `![描述](短链接)` 将图片嵌入。**无论回复内容多短，都不能省略图片。** 用户要求生成图片时，图片就是回复的核心内容。若用户要求参考帖子中的图片，直接将原图链接以列表格式传入 reference_images（如 reference_images=[\"upload://xxx.jpeg\"]），工具内部会自动下载处理。\n"
                     "5. 你需要从用户发言中推断是否需要传入参考图片URL。\n\n"
                     "3. 涉及到需要了解用户信息、过往发帖的，你需要判断这是关于话题广泛性的讨论还是针对特定用户的，"
-                    "如果是前者，你需要调用获取当前话题最新发帖内容的工具来查看，如果用户没有明确要求，limit请设置为500，以此获取足够的信息用于分析；"
+                    "如果是前者，你需要调用获取当前话题最新发帖内容的工具来查看，如果用户没有明确要求，limit请设置为100，以此获取足够的信息用于分析；"
                     "如果是后者，你需要调用能够根据用户和话题信息进行查询的工具，你需要判断是否需要在当前话题中查询，如果内容是泛泛而谈，你可以省略topic_id参数，"
                     "以此在全社区里进行搜索，但此时每个话题最多返回一个回帖，所以你还需要再根据返回结果中具体的话题ID再次查询该话题中的内容。\n"
                     "4. 对于给定了对特定帖子引用的，比如形如https://shuiyuan.sjtu.edu.cn/t/topic_id/post_number的链接，"
@@ -253,14 +251,68 @@ class MentionChatModel:
 
     def get_session_history(self, session_id: int | str) -> ChatMessageHistory:
         history = self._histories.setdefault(session_id, ChatMessageHistory())
-        if len(history.messages) > 10:
-            history.messages = history.messages[-10:]
+        self._trim_session_history(history)
         return history
+
+    @staticmethod
+    def _preview_text(value: Any, limit: Optional[int] = 512) -> str:
+        return str(value).replace("\n", "\\n")[:limit]
+
+    @staticmethod
+    def _trim_session_history(history: ChatMessageHistory) -> None:
+        max_history_turns = 8
+        turns: List[List[AnyMessage]] = []
+        current_turn: List[AnyMessage] = []
+
+        for message in history.messages:
+            if getattr(message, "type", None) == "human":
+                if current_turn:
+                    turns.append(current_turn)
+                current_turn = [message]
+            elif current_turn:
+                current_turn.append(message)
+            else:
+                turns.append([message])
+
+        if current_turn:
+            turns.append(current_turn)
+
+        if len(turns) > max_history_turns:
+            history.messages = [
+                message for turn in turns[-max_history_turns:] for message in turn
+            ]
+
+    @staticmethod
+    def _extract_tool_call_name_args(tool_call: Any) -> tuple[str, Any]:
+        if isinstance(tool_call, dict):
+            function_payload = tool_call.get("function")
+            if isinstance(function_payload, dict):
+                tool_name = function_payload.get("name") or tool_call.get("name")
+                tool_args = function_payload.get("arguments", {})
+            else:
+                tool_name = tool_call.get("name")
+                tool_args = tool_call.get("args", tool_call.get("arguments", {}))
+            return tool_name or "<unknown>", tool_args
+
+        return getattr(tool_call, "name", "<unknown>"), getattr(tool_call, "args", {})
+
+    @staticmethod
+    def _serialize_tool_args(tool_args: Any) -> str:
+        if isinstance(tool_args, str):
+            text = tool_args
+        else:
+            try:
+                text = json.dumps(tool_args, ensure_ascii=False, default=str)
+            except TypeError:
+                text = str(tool_args)
+
+        return text.replace("\n", "\\n")
 
     def clear_session_history(self, session_id: int | str) -> None:
         self._histories.pop(session_id, None)
 
-    async def _load_mcp_tools(self, url: str) -> List[StructuredTool]:
+    @staticmethod
+    async def _load_mcp_tools(url: str) -> List[StructuredTool]:
         """
         Load tools from MCP Server and convert them to LangChain StructuredTool.
         """
@@ -438,7 +490,8 @@ class MentionChatModel:
             "recent_msgs": recent_msgs,
         }
 
-    async def _prepare_messages(self, state: MentionGraphState) -> MentionGraphState:
+    @staticmethod
+    async def _prepare_messages(state: MentionGraphState) -> MentionGraphState:
         content = (
             "【用户当前发言】\n"
             "<user_post>\n"
@@ -447,22 +500,20 @@ class MentionChatModel:
         )
         return {"messages": [HumanMessage(content=content)]}
 
-    async def _log_tool_calls(self, state: MentionGraphState) -> MentionGraphState:
+    @staticmethod
+    async def _log_tool_calls(state: MentionGraphState) -> MentionGraphState:
         last_message = state["messages"][-1]
         tool_calls = getattr(last_message, "tool_calls", []) or []
 
         for tool_call in tool_calls:
-            if isinstance(tool_call, dict):
-                tool_name = tool_call.get("name", "<unknown>")
-                tool_args = tool_call.get("args", tool_call.get("arguments", {}))
-            else:
-                tool_name = getattr(tool_call, "name", "<unknown>")
-                tool_args = getattr(tool_call, "args", {})
+            tool_name, tool_args = MentionChatModel._extract_tool_call_name_args(
+                tool_call
+            )
 
             logging.info(
                 "Mention graph tool call: name=%s args=%s",
                 tool_name,
-                _preview_text(tool_args),
+                MentionChatModel._serialize_tool_args(tool_args),
             )
 
         return {}
@@ -551,7 +602,8 @@ class MentionChatModel:
         tool_calls = getattr(last_message, "tool_calls", []) or []
         return "tools" if tool_calls else "call_model"
 
-    async def _log_tool_outputs(self, state: MentionGraphState) -> MentionGraphState:
+    @staticmethod
+    async def _log_tool_outputs(state: MentionGraphState) -> MentionGraphState:
         tool_messages = []
         for message in reversed(state.get("messages", [])):
             if getattr(message, "type", None) != "tool":
@@ -563,10 +615,36 @@ class MentionChatModel:
             logging.info(
                 "Mention graph tool output: name=%s content=%s",
                 getattr(message, "name", "<unknown>"),
-                _preview_text(getattr(message, "content", message)),
+                MentionChatModel._preview_text(getattr(message, "content", message)),
             )
 
         return {}
+
+    @staticmethod
+    def _build_tool_call_history_summary(messages: List[AnyMessage]) -> Optional[str]:
+        tool_history_prefix = "【历史工具调用记录】"
+        entries = []
+        for message in messages:
+            tool_calls = getattr(message, "tool_calls", []) or []
+            for tool_call in tool_calls:
+                tool_name, tool_args = MentionChatModel._extract_tool_call_name_args(
+                    tool_call
+                )
+                entries.append(
+                    f"{len(entries) + 1}. {tool_name} 参数: "
+                    f"{MentionChatModel._serialize_tool_args(tool_args)}"
+                )
+
+        if not entries:
+            return None
+
+        return (
+            f"{tool_history_prefix}\n"
+            "以下是上一轮实际发生过的工具调用参数摘要，只用于连续对话参考，不要向用户复述。\n"
+            + "\n".join(entries)
+            + "\n工具返回值未写入历史；历史里的图片链接只代表过去结果。"
+            "如本轮需要生成或修改图片，必须重新调用图片生成工具，不能编造图片URL。"
+        )
 
     async def _call_model(self, state: MentionGraphState) -> MentionGraphState:
         if self.llm_with_tools is None:
@@ -628,10 +706,15 @@ class MentionChatModel:
         history_obj.add_user_message(
             self._arrange_post_text(state["conversation"], state["user"])
         )
+        tool_summary = self._build_tool_call_history_summary(state.get("messages", []))
+        if tool_summary:
+            history_obj.add_message(AIMessage(content=tool_summary))
         history_obj.add_ai_message(final_text)
+        self._trim_session_history(history_obj)
         return {}
 
-    def _arrange_post_text(self, raw: str, user: User) -> str:
+    @staticmethod
+    def _arrange_post_text(raw: str, user: User) -> str:
         """
         Arrange the raw post text along with user information into a formatted string.
         Strips forum signatures before arranging to prevent the LLM from reproducing them.
@@ -713,7 +796,7 @@ class MentionChatModel:
             reply_to_post_number,
             user.username,
             len(conversation),
-            _preview_text(conversation),
+            self._preview_text(conversation),
         )
         graph_input: MentionGraphState = {
             "topic_id": topic_id,
@@ -728,7 +811,7 @@ class MentionChatModel:
         if not final_text or not final_text.strip():
             logging.warning(
                 "Empty final_text, retrying once. raw_output=%s",
-                _preview_text(response.get("raw_output"), 200),
+                self._preview_text(response.get("raw_output"), 200),
             )
             response = await self.graph.ainvoke(graph_input)
             final_text = response.get("final_text")
@@ -743,6 +826,6 @@ class MentionChatModel:
             "topic_id=%s final_chars=%d final_text=%s",
             topic_id,
             len(final_text or ""),
-            _preview_text(final_text or "", None),
+            self._preview_text(final_text or "", None),
         )
         return final_text
