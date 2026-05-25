@@ -3,15 +3,14 @@ import asyncio
 import logging
 import os
 from typing import Dict, List, Optional
-from urllib.parse import quote
 
+from neo4j import GraphDatabase as _GraphDatabase
 from neomodel import (
     ArrayProperty,
     DateTimeProperty,
     FloatProperty,
     StringProperty,
     StructuredNode,
-    config,
     db,
 )
 from pydantic import BaseModel
@@ -57,7 +56,15 @@ class AsyncNeo4jDatabaseManager:
         if self._configured:
             return
 
-        config.DATABASE_URL = self._build_database_url()
+        url = self.database_url.strip()
+        driver_kwargs = {}
+        raw_auth = (self.database_auth or "").strip()
+        if raw_auth:
+            username, password = ast.literal_eval(raw_auth)
+            driver_kwargs["auth"] = (username, password)
+
+        driver = _GraphDatabase.driver(url, **driver_kwargs)
+        db.set_connection(driver=driver)
         self._configured = True
 
     @staticmethod
@@ -72,24 +79,6 @@ class AsyncNeo4jDatabaseManager:
             "yes",
             "on",
         }
-
-    def _build_database_url(self) -> str:
-        raw_url = self.database_url.strip()
-        raw_auth = (self.database_auth or "").strip()
-
-        if not raw_url:
-            raise ValueError("NEO4J_DB_URL is not set")
-
-        if "@" in raw_url or not raw_auth:
-            return raw_url
-
-        username, password = ast.literal_eval(raw_auth)
-
-        if "://" in raw_url:
-            scheme, rest = raw_url.split("://", 1)
-            return f"{scheme}://{quote(str(username))}:{quote(str(password))}@{rest}"
-
-        return f"bolt://{quote(str(username))}:{quote(str(password))}@{raw_url}"
 
     def _run_cypher(self, query: str, params: Optional[Dict] = None):
         self._ensure_configured()
