@@ -11,7 +11,6 @@ from neomodel import (
     FloatProperty,
     StringProperty,
     StructuredNode,
-    db,
 )
 from pydantic import BaseModel
 
@@ -63,8 +62,7 @@ class AsyncNeo4jDatabaseManager:
             username, password = ast.literal_eval(raw_auth)
             driver_kwargs["auth"] = (username, password)
 
-        driver = _GraphDatabase.driver(url, **driver_kwargs)
-        db.set_connection(driver=driver)
+        self._driver = _GraphDatabase.driver(url, **driver_kwargs)
         self._configured = True
 
     @staticmethod
@@ -82,7 +80,9 @@ class AsyncNeo4jDatabaseManager:
 
     def _run_cypher(self, query: str, params: Optional[Dict] = None):
         self._ensure_configured()
-        return db.cypher_query(query, params=params or {})
+        with self._driver.session() as session:
+            result = session.run(query, parameters=params or {})
+            return [list(record.values()) for record in result], result.keys()
 
     async def initialize(self):
         """
