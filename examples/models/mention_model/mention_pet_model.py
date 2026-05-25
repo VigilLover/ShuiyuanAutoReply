@@ -5,22 +5,7 @@ import logging
 from typing import Optional, Dict, Any
 
 from openai import AsyncOpenAI
-from sentence_transformers import SentenceTransformer
-from langchain_core.embeddings import Embeddings
-from langchain_community.vectorstores.neo4j_vector import Neo4jVector
 
-
-class M3EEmbeddings(Embeddings):
-    def __init__(self, model_name: str = "moka-ai/m3e-base"):
-        self.model = SentenceTransformer(model_name)
-
-    def embed_documents(self, texts):
-        embeddings = self.model.encode(texts, normalize_embeddings=True)
-        return embeddings.tolist()
-
-    def embed_query(self, text):
-        embedding = self.model.encode(text, normalize_embeddings=True)
-        return embedding.tolist()
 
 class MentionPetModel:
     """
@@ -34,11 +19,11 @@ class MentionPetModel:
         endings_path: Optional[str] = None,
         persona: str = "wolf_lumine",
     ):
-        from shuiyuan_auto_reply.constants import assets_directory
+        from shuiyuan_auto_reply.constants import settings
 
-        self.filepath = filepath or os.path.join(assets_directory, "pet_responses.json")
-        self.state_path = state_path or os.path.join(assets_directory, "pet_state.json")
-        self.endings_path = endings_path or os.path.join(assets_directory, "pet_endings.json")
+        self.filepath = filepath or os.path.join(settings.assets_directory, "pet_responses.json")
+        self.state_path = state_path or os.path.join(settings.assets_directory, "pet_state.json")
+        self.endings_path = endings_path or os.path.join(settings.assets_directory, "pet_endings.json")
         self.persona = persona
 
         self.client = AsyncOpenAI(
@@ -47,42 +32,20 @@ class MentionPetModel:
         )
         self.model_name = os.getenv("PET_REPLY_MODEL", "deepseek-v4-pro")
 
-        self.retriever = None
-        self._init_retriever()
-
-    def _init_retriever(self) -> None:
-        """初始化 Neo4j 检索器，失败时降级为无历史上下文模式。"""
-        neo4j_url = os.getenv("NEO4J_DB_URL")
-        neo4j_auth = os.getenv("NEO4J_DB_AUTH")
-        if not neo4j_url or not neo4j_auth:
-            logging.warning("==> [MentionPetModel] NEO4J env not found, style retriever disabled.")
-            return
-
-        try:
-            username, password = eval(neo4j_auth)
-            self.retriever = Neo4jVector.from_existing_graph(
-                embedding=M3EEmbeddings(),
-                url=neo4j_url,
-                username=username,
-                password=password,
-                index_name="sentence_embeddings",
-                node_label="Sentence",
-                text_node_properties=["text"],
-                embedding_node_property="embedding",
-            ).as_retriever(search_kwargs={"k": 8, "filter": {"userid": self.persona}})
-            logging.info(f"==> [MentionPetModel] Style retriever initialized for persona={self.persona}.")
-        except Exception as e:
-            logging.warning(f"==> [MentionPetModel] Failed to init style retriever: {str(e)}")
-            self.retriever = None
-
     async def _get_style_context(self, user_text: str) -> str:
         """从 Neo4j 检索历史发言作为语气参考。"""
-        if not self.retriever or not user_text.strip():
+        if not user_text.strip():
             return ""
 
         try:
-            docs = await self.retriever.ainvoke(user_text)
-            context = "\n".join([doc.page_content for doc in docs if getattr(doc, "page_content", None)])
+            from shuiyuan_auto_reply.database.neo4j_mgr import create_global_async_neo4j_manager
+
+            neo4j_manager = await create_global_async_neo4j_manager()
+            if neo4j_manager is None:
+                return ""
+
+            style_items = await neo4j_manager.search_similar(user_text, top_k=8)
+            context = "\n".join(item.text for item in style_items)
             return context.strip()
         except Exception as e:
             logging.warning(f"==> [MentionPetModel] Failed to fetch style context: {str(e)}")

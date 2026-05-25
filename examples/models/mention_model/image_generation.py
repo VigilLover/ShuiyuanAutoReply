@@ -8,7 +8,7 @@ from datetime import datetime
 
 import aiohttp
 
-from shuiyuan_auto_reply.constants import assets_directory
+from shuiyuan_auto_reply.constants import settings
 
 # 单张参考图最大体积 (10MB)，超过则跳过
 _MAX_REFERENCE_BYTES = 10 * 1024 * 1024
@@ -284,7 +284,7 @@ def create_image_generation_tool(model):
             return f"图片生成失败: 下载图片异常 {exc}"
 
         try:
-            backup_dir = output_dir or os.path.join(assets_directory, "generated_images")
+            backup_dir = output_dir or os.path.join(settings.assets_directory, "generated_images")
             os.makedirs(backup_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             safe_prompt = prompt[:20].replace(" ", "_").replace("/", "_")

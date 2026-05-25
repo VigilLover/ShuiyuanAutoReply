@@ -4,7 +4,7 @@ import re
 import traceback
 from typing import Dict, List, Optional
 
-from shuiyuan_auto_reply.constants import auto_reply_tag
+from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.shuiyuan.objects import User, UserActionDetails
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from shuiyuan_auto_reply.shuiyuan.user_action_model import BaseUserActionModel
@@ -281,7 +281,7 @@ class MentionModel(BaseUserActionModel):
         for poll_title, options in results.items():
             # Poll title line
             reply_lines.append(f"## {poll_title}")
-            # Any error reported for this poll
+            # Error reported for this poll
             if isinstance(options, str):
                 reply_lines.append(f"错误：{options}")
                 continue
@@ -390,7 +390,7 @@ class MentionModel(BaseUserActionModel):
 
         try:
             # If the post is an auto-reply send by the bot, we should skip it
-            if auto_reply_tag in post_details.raw and post_details.username == self.username:
+            if settings.contains_auto_reply_tag(post_details.raw) and post_details.username == self.username:
                 logging.info(f"==> [MentionModel] Post {action.post_id} is an auto-reply. Skipping.")
                 return
 
