@@ -34,6 +34,10 @@ class Settings:
         return os.getenv("EMBEDDING_MODEL_NAME", "moka-ai/m3e-base")
 
     @property
+    def embedding_cache_folder(self) -> str | None:
+        return os.getenv("EMBEDDING_CACHE_FOLDER")
+
+    @property
     def embedding_dims(self) -> int:
         value = os.getenv("EMBEDDING_DIMS")
         if value is None:

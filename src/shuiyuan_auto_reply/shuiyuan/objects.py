@@ -11,6 +11,7 @@ class User:
     id: int
     username: str
     name: Optional[str]
+    avatar_template: Optional[str] = None
 
 
 @dataclass

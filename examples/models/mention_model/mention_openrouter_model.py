@@ -7,8 +7,11 @@ from langchain_openai import ChatOpenAI
 from shuiyuan_auto_reply.openrouter.openrouter_model import (
     DEFAULT_OPENROUTER_MAX_RETRIES,
     OPENROUTER_BASE_URL,
+    openrouter_async_http_client,
     openrouter_headers,
+    openrouter_http_client,
     openrouter_model,
+    openrouter_proxy_from_env,
 )
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
@@ -44,6 +47,7 @@ class MentionOpenRouterModel(MentionChatModel):
             },
         ]
         _register_openrouter_tool_types(self.openai_tools)
+        proxy = openrouter_proxy_from_env()
 
         self.llm = ChatOpenAI(
             model=openrouter_model("OPENROUTER_MENTION_MODEL"),
@@ -51,6 +55,8 @@ class MentionOpenRouterModel(MentionChatModel):
             base_url=OPENROUTER_BASE_URL,
             temperature=0.8,
             default_headers=openrouter_headers(),
+            http_client=openrouter_http_client(proxy=proxy, trust_env=False),
+            http_async_client=openrouter_async_http_client(proxy=proxy, trust_env=False),
             max_retries=DEFAULT_OPENROUTER_MAX_RETRIES,
         )
 

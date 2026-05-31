@@ -4,6 +4,7 @@ Only important information for LLM is kept here.
 
 from typing import Optional
 
+from shuiyuan_auto_reply.shuiyuan.constants import base_url
 from shuiyuan_auto_reply.shuiyuan.objects import PostDetails, User
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
@@ -16,19 +17,27 @@ class UserShort:
     id: int
     username: str
     name: Optional[str]
+    avatar: Optional[str] = None
 
-    def __init__(self, user: User):
+    def __init__(self, user: User, include_avatar: bool = False):
         self.id = user.id
         self.username = user.username
         self.name = user.name
+        self.avatar = None
+        if include_avatar and user.avatar_template:
+            avatar_path = user.avatar_template.replace("{size}", "288")
+            if avatar_path.startswith(("http://", "https://")):
+                self.avatar = avatar_path
+            else:
+                self.avatar = f"{base_url}{avatar_path}"
 
     def __str__(self):
-        return (
-            f"ID: 【{self.id}】 Username: 【{self.username}】"
-            + f" Name: 【{self.name}】"
-            if self.name
-            else "" + "\n"
-        )
+        text = f"ID: 【{self.id}】 Username: 【{self.username}】"
+        if self.name:
+            text += f" Name: 【{self.name}】"
+        if self.avatar:
+            text += f" avatar: 【{self.avatar}】"
+        return text + "\n"
 
     def __repr__(self):
         return self.__str__()

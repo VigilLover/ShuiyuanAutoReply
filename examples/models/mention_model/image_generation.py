@@ -634,12 +634,14 @@ def create_image_generation_tool(model):
 
         提示词(prompt)编写规则（根据是否有参考图区别对待）：
         - 有参考图（reference_images 非空）：prompt 只需用纯中文简要描述原本要求，不要自行添加任何风格词或细节描写，让参考图主导视觉，并且强调"根据给定的参考图生成图片"。
+        - 需要参考水源用户头像时，先通过 search_user 或 search_user_by_id 获取 avatar，再把 avatar URL 传入 reference_images。
         - 无参考图（reference_images 为空）：必须用纯中文进行极其详细的画面描述，涵盖外貌、服饰、姿态、光影、背景、氛围等。如果绘画对象是人物，画风默认二次元精美插画，强调"唯美、精细、干净通透"，避免过度锐化、畸变与崩坏。若用户提供设定/附件/印象，必须将关键元素具象化融入画面。
 
         :param prompt: 详细的纯中文生图提示词。
         :param aspect_ratio: 画面宽高比，默认 1:1。支持 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9, 1:4, 4:1, 1:8, 8:1。
         :param image_size: 保留用于兼容已有工具调用；当前始终使用固定 1K 分辨率，传入其他值会被忽略。
-        :param reference_images: 参考图片 URL 列表。传入 Python 列表格式如 [“upload://xxx.jpeg”]，支持 upload://、http(s)://、data: 等格式。        :param output_dir: 可选的自定义输出目录，用于保存生成的图片备份。
+        :param reference_images: 参考图片 URL 列表。传入 Python 列表格式如 ["upload://xxx.jpeg"]，支持 upload://、http(s)://、data: 等格式。
+        :param output_dir: 可选的自定义输出目录，用于保存生成的图片备份。
         :return: 图片的短链接。你必须用 `![描述](链接)` 格式嵌入回复中。
         """
         api_key = os.getenv("IMAGE_GEN_API_KEY", "").strip()
