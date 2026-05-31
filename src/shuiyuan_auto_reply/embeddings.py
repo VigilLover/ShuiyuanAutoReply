@@ -1,3 +1,4 @@
+import logging
 import threading
 from _thread import LockType
 from typing import ClassVar, List, Optional, cast
@@ -24,13 +25,31 @@ class SharedTextEmbeddings(Embeddings):
         return cls._instance
 
     @classmethod
+    def _load_sentence_transformer(cls, model_name: str) -> SentenceTransformer:
+        cache_folder = settings.embedding_cache_folder
+        try:
+            return SentenceTransformer(
+                model_name,
+                cache_folder=cache_folder,
+                local_files_only=True,
+            )
+        except Exception as exc:
+            logging.info(
+                "Embedding model %r was not available from local cache; "
+                "falling back to Hugging Face download. Error: %s",
+                model_name,
+                exc,
+            )
+            return SentenceTransformer(model_name, cache_folder=cache_folder)
+
+    @classmethod
     def get_sentence_transformer(cls) -> SentenceTransformer:
         model_name = settings.embedding_model_name
         with cls._lock:
             model = cls._model
             if model is None:
                 cls._model_name = model_name
-                model = SentenceTransformer(model_name)
+                model = cls._load_sentence_transformer(model_name)
                 cls._model = model
             elif cls._model_name != model_name:
                 raise RuntimeError(

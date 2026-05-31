@@ -15,29 +15,47 @@ class ShuiyuanToolsWrapper:
         self.shuiyuan_model = shuiyuan_model
         self.image_tool = OpenRouterImageTool(shuiyuan_model)
 
-    async def search_user_by_term(self, term: str) -> List[UserShort] | str:
+    async def search_user_by_term(
+        self,
+        term: str,
+        include_avatar: bool = False,
+    ) -> List[UserShort] | str:
         """
         Search for users by a search term.
 
         :param term: The search term to use for finding users. It has to be NON-EMPTY.
+        :param include_avatar: Whether to include each user's avatar. Default is False.
+            Set to True only if the avatar is needed for image generation or editing.
         :return: A list of UserShort instances matching the search term or error message.
         """
         try:
             users = await self.shuiyuan_model.search_user_by_term(term)
-            return [UserShort(user) for user in users]
+            return [UserShort(user, include_avatar=include_avatar) for user in users]
         except Exception as e:
             return str(e)
 
-    async def search_user_by_user_id(self, user_id: int) -> UserShort | None | str:
+    async def search_user_by_user_id(
+        self,
+        user_id: int,
+        include_avatar: bool = False,
+    ) -> UserShort | None | str:
         """
         Search for a user by their user ID.
 
         :param user_id: The ID of the user to search for.
+        :param include_avatar: Whether to include each user's avatar. Default is False.
+            Set to True only if the avatar is needed for image generation or editing.
         :return: An instance of UserShort for the user with the given ID or error message.
         """
         try:
             user = await self.shuiyuan_model.search_user_by_user_id(user_id)
-            return UserShort(user) if user else None
+            if user and include_avatar and user.avatar_template is None:
+                full_user = await self.shuiyuan_model.get_user_by_username(
+                    user.username
+                )
+                if full_user:
+                    user = full_user
+            return UserShort(user, include_avatar=include_avatar) if user else None
         except Exception as e:
             return str(e)
 
