@@ -30,9 +30,9 @@ class MentionOpenRouterModel(MentionChatModel):
     A model for managing OpenRouter-backed conversation data.
     """
 
-    def __init__(self, model: ShuiyuanModel):
+    def __init__(self, model: ShuiyuanModel, username: str = "wolf_lumine"):
         # Initialize the base class first to set up retriever and other components
-        super().__init__(model)
+        super().__init__(model, username=username)
 
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:

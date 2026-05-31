@@ -3,8 +3,10 @@ import base64
 import io
 import json
 import logging
+import math
 import os
 import re
+import socket as _socket
 import time
 from datetime import datetime
 
@@ -17,17 +19,76 @@ from shuiyuan_auto_reply.constants import settings
 _MAX_REFERENCE_BYTES = 10 * 1024 * 1024
 _MAX_TOTAL_REFERENCE_BYTES = 20 * 1024 * 1024
 _DEFAULT_IMAGE_MODEL = "gpt-image-2"
+_FIXED_IMAGE_SIZE = "1K"
 _DEFAULT_TIMEOUT_SECONDS = 600.0
-_MAX_API_ATTEMPTS = 2
+_DEFAULT_MAX_API_ATTEMPTS = 3
+_MAX_CONFIGURED_API_ATTEMPTS = 10
+_DEFAULT_RETRY_BASE_DELAY_SECONDS = 5.0
 _RETRYABLE_HTTP_STATUSES = {408, 429}
+_TCP_KEEPALIVE_IDLE_SECONDS = 30  # macOS: TCP_KEEPALIVE; Linux: TCP_KEEPIDLE
+_TCP_KEEPALIVE_INTERVAL_SECONDS = 15
+_TCP_KEEPALIVE_COUNT = 3
+_NATIVE_SIZE_ALIGNMENT = 16
+_NATIVE_MIN_PIXELS = 655_360
+_NATIVE_MAX_PIXELS = 8_294_400
+_NATIVE_MAX_EDGE = 3840
+_NATIVE_MAX_ASPECT_RATIO = 3.0
 
 logger = logging.getLogger(__name__)
+
+# Shared session with TCP keepalive to prevent proxy/routing timeout during long image generation.
+_shared_session: aiohttp.ClientSession | None = None
+_shared_session_lock = asyncio.Lock()
+
+
+class _KeepaliveConnector(aiohttp.TCPConnector):
+    """TCPConnector that enables OS-level TCP keepalive on every connection."""
+
+    async def _wrap_create_connection(self, *args, **kwargs):
+        transport, protocol = await super()._wrap_create_connection(*args, **kwargs)
+        sock = transport.get_extra_info("socket")
+        if sock is not None:
+            sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+            # macOS uses TCP_KEEPALIVE (0x10), Linux uses TCP_KEEPIDLE
+            for option in ("TCP_KEEPIDLE", "TCP_KEEPALIVE"):
+                opt_id = getattr(_socket, option, None)
+                if opt_id is not None:
+                    try:
+                        sock.setsockopt(_socket.IPPROTO_TCP, opt_id, _TCP_KEEPALIVE_IDLE_SECONDS)
+                    except OSError:
+                        pass
+                    break
+            # Set keepalive interval and count on platforms that support them
+            if hasattr(_socket, "TCP_KEEPINTVL"):
+                try:
+                    sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, _TCP_KEEPALIVE_INTERVAL_SECONDS)
+                except OSError:
+                    pass
+            if hasattr(_socket, "TCP_KEEPCNT"):
+                try:
+                    sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, _TCP_KEEPALIVE_COUNT)
+                except OSError:
+                    pass
+        return transport, protocol
+
+
+async def _get_shared_session() -> aiohttp.ClientSession:
+    global _shared_session
+    if _shared_session is None or _shared_session.closed:
+        async with _shared_session_lock:
+            if _shared_session is None or _shared_session.closed:
+                connector = _KeepaliveConnector(
+                    force_close=False,
+                    limit=4,
+                    ttl_dns_cache=300,
+                )
+                _shared_session = aiohttp.ClientSession(connector=connector)
+    return _shared_session
 
 _SUPPORTED_ASPECT_RATIOS = {
     "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
     "1:4", "4:1", "1:8", "8:1",
 }
-_SUPPORTED_IMAGE_SIZES = {"0.5K", "512", "1K", "2K", "4K"}
 _DATA_URL_RE = re.compile(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", re.DOTALL)
 
 
@@ -60,14 +121,115 @@ def _image_timeout_seconds() -> float:
         return _DEFAULT_TIMEOUT_SECONDS
 
 
+def _image_max_api_attempts() -> int:
+    raw_value = os.getenv("IMAGE_GEN_MAX_ATTEMPTS", str(_DEFAULT_MAX_API_ATTEMPTS))
+    try:
+        attempts = int(raw_value)
+        if not 1 <= attempts <= _MAX_CONFIGURED_API_ATTEMPTS:
+            raise ValueError
+        return attempts
+    except ValueError:
+        logger.warning(
+            "Invalid IMAGE_GEN_MAX_ATTEMPTS=%r; using %d (valid range: 1-%d)",
+            raw_value,
+            _DEFAULT_MAX_API_ATTEMPTS,
+            _MAX_CONFIGURED_API_ATTEMPTS,
+        )
+        return _DEFAULT_MAX_API_ATTEMPTS
+
+
+def _image_retry_base_delay_seconds() -> float:
+    raw_value = os.getenv(
+        "IMAGE_GEN_RETRY_BASE_DELAY_SECONDS",
+        str(_DEFAULT_RETRY_BASE_DELAY_SECONDS),
+    )
+    try:
+        delay = float(raw_value)
+        if delay < 0:
+            raise ValueError
+        return delay
+    except ValueError:
+        logger.warning(
+            "Invalid IMAGE_GEN_RETRY_BASE_DELAY_SECONDS=%r; using %.0fs",
+            raw_value,
+            _DEFAULT_RETRY_BASE_DELAY_SECONDS,
+        )
+        return _DEFAULT_RETRY_BASE_DELAY_SECONDS
+
+
+def _image_request_timeout(timeout_seconds: float) -> aiohttp.ClientTimeout:
+    return aiohttp.ClientTimeout(
+        total=None,
+        connect=30.0,
+        sock_read=timeout_seconds,
+    )
+
+
+def _uses_native_images_endpoint(api_url: str) -> bool:
+    return api_url.rstrip("/").lower().endswith("/v1/images/generations")
+
+
+def _aligned_native_edge(value: float, *, direction: str = "nearest") -> int:
+    units = value / _NATIVE_SIZE_ALIGNMENT
+    if direction == "up":
+        units = math.ceil(units)
+    elif direction == "down":
+        units = math.floor(units)
+    else:
+        units = round(units)
+    return max(_NATIVE_SIZE_ALIGNMENT, int(units) * _NATIVE_SIZE_ALIGNMENT)
+
+
+def _native_image_size(aspect_ratio: str) -> str:
+    short_edge = 1024
+    width_ratio, height_ratio = (int(value) for value in aspect_ratio.split(":", 1))
+    requested_ratio = width_ratio / height_ratio
+    output_ratio = min(
+        max(requested_ratio, 1 / _NATIVE_MAX_ASPECT_RATIO),
+        _NATIVE_MAX_ASPECT_RATIO,
+    )
+    if requested_ratio != output_ratio:
+        logger.warning(
+            "Native image endpoint does not support aspect ratio %s; clamping to %.0f:1 limit",
+            aspect_ratio,
+            _NATIVE_MAX_ASPECT_RATIO,
+        )
+
+    if output_ratio >= 1:
+        width = _aligned_native_edge(short_edge * output_ratio)
+        height = _aligned_native_edge(short_edge)
+    else:
+        width = _aligned_native_edge(short_edge)
+        height = _aligned_native_edge(short_edge / output_ratio)
+
+    pixel_count = width * height
+    if pixel_count < _NATIVE_MIN_PIXELS:
+        scale = math.sqrt(_NATIVE_MIN_PIXELS / pixel_count)
+        width = _aligned_native_edge(width * scale, direction="up")
+        height = _aligned_native_edge(height * scale, direction="up")
+
+    pixel_count = width * height
+    if max(width, height) > _NATIVE_MAX_EDGE or pixel_count > _NATIVE_MAX_PIXELS:
+        scale = min(
+            _NATIVE_MAX_EDGE / max(width, height),
+            math.sqrt(_NATIVE_MAX_PIXELS / pixel_count),
+        )
+        width = _aligned_native_edge(width * scale, direction="down")
+        height = _aligned_native_edge(height * scale, direction="down")
+
+    if width > height * _NATIVE_MAX_ASPECT_RATIO:
+        width = int(height * _NATIVE_MAX_ASPECT_RATIO)
+    elif height > width * _NATIVE_MAX_ASPECT_RATIO:
+        height = int(width * _NATIVE_MAX_ASPECT_RATIO)
+    return f"{width}x{height}"
+
+
 def _extract_image_url(content: str) -> str | None:
-    """从 chat completions 返回的 Markdown 内容中提取图片 URL（含 data URL）"""
+    """从完整回复中提取最后一张 Markdown 图片，跳过流中的中间预览图。"""
     if not isinstance(content, str):
         return None
-    match = re.search(r"!\[.*?\]\(([^)]+)\)", content)
-    if match:
-        return match.group(1)
-    return None
+    matches = re.findall(r"!\[.*?\]\(([^)]+)\)", content)
+    return matches[-1] if matches else None
 
 
 def _text_content(value: object) -> str:
@@ -94,6 +256,16 @@ def _completion_content(payload: object) -> str:
     if not content:
         raise _ImageAPIError("API 响应未包含可用的图片内容.")
     return content
+
+
+def _image_generation_url(payload: object) -> str:
+    try:
+        image_url = payload["data"][0]["url"]
+    except (KeyError, IndexError, TypeError):
+        raise _ImageAPIError("API 响应未包含 data[0].url.") from None
+    if not isinstance(image_url, str) or not image_url:
+        raise _ImageAPIError("API 响应未包含可用的图片 URL.")
+    return image_url
 
 
 def _stream_content_piece(payload: object) -> str:
@@ -177,14 +349,24 @@ def _consume_sse_event(event: bytes, pieces: list[str]) -> tuple[bool, bool]:
     content_piece = _stream_content_piece(payload)
     if content_piece:
         pieces.append(content_piece)
-    return False, False
+    try:
+        finish_reason = payload["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        finish_reason = None
+    return finish_reason is not None, False
 
 
-async def _read_json_completion(response: aiohttp.ClientResponse) -> str:
+async def _read_json_completion(
+    response: aiohttp.ClientResponse,
+    *,
+    native_images_endpoint: bool = False,
+) -> str:
     try:
         payload = await response.json(content_type=None)
     except (aiohttp.ClientError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise _ImageAPIError(f"API 响应不是有效 JSON: {exc}") from exc
+    if native_images_endpoint:
+        return _image_generation_url(payload)
     return _completion_content(payload)
 
 
@@ -240,13 +422,18 @@ async def _read_streaming_completion(
 
     if response_is_sse:
         if pending.strip() and not done:
-            _, non_json_event = _consume_sse_event(pending, pieces)
+            done, non_json_event = _consume_sse_event(pending, pieces)
             if non_json_event:
                 non_json_event_count += 1
         if non_json_event_count:
             logger.info(
                 "Image API retained %d non-JSON SSE progress event(s) while awaiting output",
                 non_json_event_count,
+            )
+        if not done:
+            raise _ImageAPIError(
+                "API SSE 响应在最终完成标记前结束，已忽略可能的临时图片.",
+                retryable=True,
             )
         if not pieces:
             raise _ImageAPIError("API SSE 响应未包含可用的图片内容.")
@@ -266,8 +453,9 @@ async def _request_image_content(
     *,
     stream: bool,
     timeout_seconds: float,
+    native_images_endpoint: bool = False,
 ) -> str:
-    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    timeout = _image_request_timeout(timeout_seconds)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -276,28 +464,33 @@ async def _request_image_content(
         headers["Accept"] = "text/event-stream"
 
     request_started_at = time.monotonic()
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(api_url, headers=headers, data=payload_bytes) as response:
-            if response.status != 200:
-                body = (await response.text())[:200]
-                message = f"API 返回 HTTP {response.status}, {body}"
-                retryable = (
-                    response.status in _RETRYABLE_HTTP_STATUSES
-                    or response.status >= 500
+    session = await _get_shared_session()
+    async with session.post(api_url, headers=headers, data=payload_bytes, timeout=timeout) as response:
+        if response.status != 200:
+            body = (await response.text())[:200]
+            message = f"API 返回 HTTP {response.status}, {body}"
+            retryable = (
+                response.status in _RETRYABLE_HTTP_STATUSES
+                or response.status >= 500
+            )
+            if stream and 400 <= response.status < 500 and not retryable:
+                message += (
+                    "；当前中转站可能不支持 stream=true，请确认接口能力，"
+                    "或临时设置 IMAGE_GEN_STREAM=false 诊断"
                 )
-                if stream and 400 <= response.status < 500 and not retryable:
-                    message += (
-                        "；当前中转站可能不支持 stream=true，请确认接口能力，"
-                        "或临时设置 IMAGE_GEN_STREAM=false 诊断"
-                    )
-                raise _ImageAPIError(message, retryable=retryable)
+            raise _ImageAPIError(message, retryable=retryable)
 
-            if stream:
-                return await _read_streaming_completion(
-                    response,
-                    request_started_at=request_started_at,
-                )
-            return await _read_json_completion(response)
+        if native_images_endpoint:
+            return await _read_json_completion(
+                response,
+                native_images_endpoint=True,
+            )
+        if stream:
+            return await _read_streaming_completion(
+                response,
+                request_started_at=request_started_at,
+            )
+        return await _read_json_completion(response)
 
 
 async def _download_and_encode(
@@ -445,7 +638,7 @@ def create_image_generation_tool(model):
 
         :param prompt: 详细的纯中文生图提示词。
         :param aspect_ratio: 画面宽高比，默认 1:1。支持 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9, 1:4, 4:1, 1:8, 8:1。
-        :param image_size: 图片分辨率，默认 1K。支持 0.5K, 512, 1K, 2K, 4K。
+        :param image_size: 保留用于兼容已有工具调用；当前始终使用固定 1K 分辨率，传入其他值会被忽略。
         :param reference_images: 参考图片 URL 列表。传入 Python 列表格式如 [“upload://xxx.jpeg”]，支持 upload://、http(s)://、data: 等格式。        :param output_dir: 可选的自定义输出目录，用于保存生成的图片备份。
         :return: 图片的短链接。你必须用 `![描述](链接)` 格式嵌入回复中。
         """
@@ -459,8 +652,13 @@ def create_image_generation_tool(model):
 
         if aspect_ratio not in _SUPPORTED_ASPECT_RATIOS:
             aspect_ratio = "1:1"
-        if image_size not in _SUPPORTED_IMAGE_SIZES:
-            image_size = "1K"
+        if image_size != _FIXED_IMAGE_SIZE:
+            logger.info(
+                "Ignoring requested image_size=%s; using fixed image_size=%s",
+                image_size,
+                _FIXED_IMAGE_SIZE,
+            )
+        image_size = _FIXED_IMAGE_SIZE
 
         if reference_images is None:
             pass
@@ -484,6 +682,7 @@ def create_image_generation_tool(model):
             reference_images = None
 
         content: list[dict] = [{"type": "text", "text": prompt}]
+        reference_data_urls: list[str] = []
         total_ref_bytes = 0
         if reference_images:
             async with aiohttp.ClientSession() as session:
@@ -500,37 +699,60 @@ def create_image_generation_tool(model):
                         )
                         break
                     total_ref_bytes += estimated_bytes
+                    reference_data_urls.append(data_url)
                     content.append({
                         "type": "image_url",
                         "image_url": {"url": data_url},
                     })
 
-        stream = _env_bool("IMAGE_GEN_STREAM", False)
+        native_images_endpoint = _uses_native_images_endpoint(api_url)
+        configured_stream = _env_bool("IMAGE_GEN_STREAM", False)
+        stream = configured_stream and not native_images_endpoint
+        if native_images_endpoint and configured_stream:
+            logger.warning(
+                "IMAGE_GEN_STREAM=true is ignored for /v1/images/generations; "
+                "the Right Code endpoint documents a complete JSON response"
+            )
         timeout_seconds = _image_timeout_seconds()
-        payload = {
-            "model": image_model,
-            "messages": [{"role": "user", "content": content}],
-            "max_tokens": 4096,
-            "image_config": {
-                "aspect_ratio": aspect_ratio,
-                "image_size": image_size,
-            },
-            "stream": stream,
-        }
+        max_api_attempts = _image_max_api_attempts()
+        retry_base_delay_seconds = _image_retry_base_delay_seconds()
+        if native_images_endpoint:
+            payload = {
+                "model": image_model,
+                "prompt": prompt,
+                "image": reference_data_urls,
+                "size": _native_image_size(aspect_ratio),
+                "response_format": "url",
+            }
+        else:
+            payload = {
+                "model": image_model,
+                "messages": [{"role": "user", "content": content}],
+                "max_tokens": 4096,
+                "image_config": {
+                    "aspect_ratio": aspect_ratio,
+                    "image_size": image_size,
+                },
+                "stream": stream,
+            }
         payload_bytes = json.dumps(
             payload,
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
         logger.info(
-            "Submitting image generation: model=%s stream=%s reference_images=%d "
-            "reference_bytes=%d request_bytes=%d timeout=%.0fs",
+            "Submitting image generation: model=%s endpoint_mode=%s stream=%s reference_images=%d "
+            "reference_bytes=%d request_bytes=%d timeout=%.0fs max_attempts=%d "
+            "retry_base_delay=%.1fs",
             image_model,
+            "images" if native_images_endpoint else "chat",
             stream,
-            len(content) - 1,
+            len(reference_data_urls),
             total_ref_bytes,
             len(payload_bytes),
             timeout_seconds,
+            max_api_attempts,
+            retry_base_delay_seconds,
         )
 
         queued_at = time.monotonic()
@@ -541,15 +763,17 @@ def create_image_generation_tool(model):
                 "Image generation request acquired single-flight slot after %.2fs",
                 time.monotonic() - queued_at,
             )
-            for attempt in range(_MAX_API_ATTEMPTS):
+            for attempt in range(max_api_attempts):
                 if attempt:
+                    wait_seconds = retry_base_delay_seconds * (2 ** (attempt - 1))
                     logger.warning(
-                        "Retrying image API call (attempt %d/%d) after a transient failure; "
+                        "Retrying image API call (attempt %d/%d) in %.1fs after a transient failure; "
                         "the upstream may still bill or complete the prior request",
                         attempt + 1,
-                        _MAX_API_ATTEMPTS,
+                        max_api_attempts,
+                        wait_seconds,
                     )
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(wait_seconds)
                 started_at = time.monotonic()
                 try:
                     generated_content = await _request_image_content(
@@ -558,6 +782,7 @@ def create_image_generation_tool(model):
                         payload_bytes,
                         stream=stream,
                         timeout_seconds=timeout_seconds,
+                        native_images_endpoint=native_images_endpoint,
                     )
                     logger.info(
                         "Image API request completed: attempt=%d duration=%.2fs content_chars=%d",
@@ -568,11 +793,11 @@ def create_image_generation_tool(model):
                     break
                 except _ImageAPIError as exc:
                     last_error = str(exc)
-                    if exc.retryable and attempt < _MAX_API_ATTEMPTS - 1:
+                    if exc.retryable and attempt < max_api_attempts - 1:
                         logger.warning(
                             "Image API retryable response (attempt %d/%d): %s",
                             attempt + 1,
-                            _MAX_API_ATTEMPTS,
+                            max_api_attempts,
                             exc,
                         )
                         continue
@@ -583,19 +808,26 @@ def create_image_generation_tool(model):
                     logger.warning(
                         "Image API transient error (attempt %d/%d): %s",
                         attempt + 1,
-                        _MAX_API_ATTEMPTS,
+                        max_api_attempts,
                         last_error,
                     )
-                    if attempt < _MAX_API_ATTEMPTS - 1:
+                    if attempt < max_api_attempts - 1:
                         continue
-                    return f"图片生成失败: API 调用异常 {last_error}"
+                    return (
+                        f"图片生成失败: API 连接异常（{max_api_attempts} 次尝试均失败）"
+                        f"，最后错误: {last_error}"
+                    )
                 except Exception as exc:
                     logger.exception("Image API call failed")
                     return f"图片生成失败: API 调用异常 {exc}"
             else:
                 return f"图片生成失败: API 调用异常 {last_error}"
 
-        image_url = _extract_image_url(generated_content)
+        image_url = (
+            generated_content
+            if native_images_endpoint
+            else _extract_image_url(generated_content)
+        )
         if not image_url:
             return "图片生成失败: 未在响应中找到图片 URL."
 

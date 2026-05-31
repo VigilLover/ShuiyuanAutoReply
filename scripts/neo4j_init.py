@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 
 import dotenv
 import pandas as pd
@@ -28,8 +29,8 @@ async def init_database(username: str):
         if neo4j_manager is None:
             raise RuntimeError("NEO4J_DB_URL is not configured")
         # Initialize the Neo4j database
-        global_async_neo4j_manager.userid = username
-        await global_async_neo4j_manager.initialize()
+        neo4j_manager.userid = username
+        await neo4j_manager.initialize()
 
         # The signature has to be removed before storing the sentences
         sig_re = r"<div data-signature>.*?</div>"
@@ -60,8 +61,17 @@ async def init_database(username: str):
             data_to_import = list(set(data_to_import))
             # Log the number of records to be imported
             logging.info(f"Number of records to import: {len(data_to_import)}")
+            backfilled_count = await neo4j_manager.backfill_legacy_userid(
+                data_to_import,
+                username,
+            )
+            if backfilled_count:
+                logging.info(
+                    "Backfilled userid for %s legacy Sentence nodes.",
+                    backfilled_count,
+                )
             # Wait for all import routines to complete
-            await neo4j_manager.store_sentences(data_to_import)
+            await neo4j_manager.store_sentences(data_to_import, userid=username)
             logging.info("Data imported successfully!")
         else:
             logging.warning(f"CSV file {file_path} not found. Skipping data import.")

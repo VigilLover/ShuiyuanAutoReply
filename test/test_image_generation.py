@@ -17,7 +17,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import aiohttp
 from aiohttp import web
@@ -30,6 +30,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from examples.models.mention_model.image_generation import (
     _download_and_encode,
     _extract_image_url,
+    _image_request_timeout,
+    _native_image_size,
     create_image_generation_tool,
 )
 
@@ -48,9 +50,9 @@ def _require_live_image_api(testcase):
         testcase.skipTest("Set RUN_IMAGE_GEN_INTEGRATION=1 to run live image API tests")
 
 
-def _png_data_url() -> str:
+def _png_data_url(color=(30, 100, 220, 128)) -> str:
     buffer = io.BytesIO()
-    Image.new("RGBA", (4, 4), (30, 100, 220, 128)).save(buffer, format="PNG")
+    Image.new("RGBA", (4, 4), color).save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
 
@@ -121,6 +123,8 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
                 "IMAGE_GEN_MODEL": "test-image-model",
                 "IMAGE_GEN_STREAM": "false",
                 "IMAGE_GEN_TIMEOUT_SECONDS": "5",
+                "IMAGE_GEN_MAX_ATTEMPTS": "1",
+                "IMAGE_GEN_RETRY_BASE_DELAY_SECONDS": "5",
             },
             clear=False,
         )
@@ -141,6 +145,16 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         await site.start()
         port = site._server.sockets[0].getsockname()[1]
         os.environ["IMAGE_GEN_API_URL"] = f"http://127.0.0.1:{port}/v1/chat/completions"
+
+    async def _start_images_server(self, handler):
+        app = web.Application()
+        app.router.add_post("/v1/images/generations", handler)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        os.environ["IMAGE_GEN_API_URL"] = f"http://127.0.0.1:{port}/v1/images/generations"
 
     @staticmethod
     def _json_completion():
@@ -206,6 +220,85 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         self.assertIn("API SSE 返回错误事件", result)
         self.assertEqual(attempts, 1)
 
+    async def test_stream_only_uploads_final_image_after_finish_reason(self):
+        os.environ["IMAGE_GEN_STREAM"] = "true"
+        preview = _png_data_url((220, 30, 30, 255))
+        final = _png_data_url((30, 100, 220, 255))
+        uploads_seen_after_preview = None
+
+        async def handler(request):
+            nonlocal uploads_seen_after_preview
+            self.requests.append(await request.json())
+            response = web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+            )
+            await response.prepare(request)
+            preview_chunk = {
+                "choices": [
+                    {
+                        "delta": {"content": f"![preview]({preview})"},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+            await response.write(f"data: {json.dumps(preview_chunk)}\n\n".encode())
+            await asyncio.sleep(0.02)
+            uploads_seen_after_preview = len(self.model.uploaded_images)
+            final_chunk = {
+                "choices": [
+                    {
+                        "delta": {"content": f"![final]({final})"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+            await response.write(f"data: {json.dumps(final_chunk)}\n\n".encode())
+            await response.write_eof()
+            return response
+
+        await self._start_server(handler)
+        tool = create_image_generation_tool(self.model)
+        result = await tool("最终图片", output_dir=self.output_dir.name)
+
+        self.assertEqual(result, "upload://mockShortPath1.jpeg")
+        self.assertEqual(uploads_seen_after_preview, 0)
+        self.assertEqual(len(self.model.uploaded_images), 1)
+        backup = next(Path(self.output_dir.name).glob("*.png"))
+        with Image.open(backup) as image:
+            self.assertEqual(image.getpixel((0, 0)), (30, 100, 220, 255))
+
+    async def test_stream_disconnect_before_final_marker_ignores_preview(self):
+        os.environ["IMAGE_GEN_STREAM"] = "true"
+        os.environ["IMAGE_GEN_MAX_ATTEMPTS"] = "1"
+        preview = _png_data_url((220, 30, 30, 255))
+
+        async def handler(request):
+            response = web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+            )
+            await response.prepare(request)
+            preview_chunk = {
+                "choices": [
+                    {
+                        "delta": {"content": f"![preview]({preview})"},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+            await response.write(f"data: {json.dumps(preview_chunk)}\n\n".encode())
+            await response.write_eof()
+            return response
+
+        await self._start_server(handler)
+        tool = create_image_generation_tool(self.model)
+        result = await tool("中断流", output_dir=self.output_dir.name)
+
+        self.assertIn("最终完成标记前结束", result)
+        self.assertEqual(self.model.uploaded_images, [])
+        self.assertEqual(list(Path(self.output_dir.name).glob("*")), [])
+
     async def test_stream_request_accepts_json_response_and_reads_runtime_config(self):
         os.environ["IMAGE_GEN_STREAM"] = "true"
 
@@ -237,7 +330,58 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "upload://mockShortPath1.jpeg")
         self.assertFalse(self.requests[0]["stream"])
 
-    async def test_disconnect_retries_once_then_succeeds(self):
+    async def test_native_images_endpoint_uses_right_code_contract(self):
+        os.environ["IMAGE_GEN_STREAM"] = "true"
+        reference = _png_data_url()
+
+        async def handler(request):
+            self.requests.append(await request.json())
+            return web.json_response({"data": [{"url": _png_data_url()}]})
+
+        await self._start_images_server(handler)
+        tool = create_image_generation_tool(self.model)
+        result = await tool(
+            "原生图片接口",
+            aspect_ratio="3:4",
+            image_size="1K",
+            reference_images=[reference],
+            output_dir=self.output_dir.name,
+        )
+
+        self.assertEqual(result, "upload://mockShortPath1.jpeg")
+        self.assertEqual(
+            self.requests[0],
+            {
+                "model": "test-image-model",
+                "prompt": "原生图片接口",
+                "image": [reference],
+                "size": "1024x1360",
+                "response_format": "url",
+            },
+        )
+
+    async def test_native_images_endpoint_uses_fixed_1k_for_other_requested_sizes(self):
+        async def handler(request):
+            self.requests.append(await request.json())
+            return web.json_response({"data": [{"url": _png_data_url()}]})
+
+        await self._start_images_server(handler)
+        tool = create_image_generation_tool(self.model)
+        for requested_size in ("512", "4K"):
+            result = await tool(
+                "固定清晰度",
+                aspect_ratio="3:4",
+                image_size=requested_size,
+                output_dir=self.output_dir.name,
+            )
+            self.assertTrue(result.startswith("upload://"))
+
+        self.assertEqual(
+            [request["size"] for request in self.requests],
+            ["1024x1360", "1024x1360"],
+        )
+
+    async def test_disconnect_is_not_retried_by_safe_default(self):
         attempts = 0
 
         async def handler(request):
@@ -251,16 +395,14 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_server(handler)
         tool = create_image_generation_tool(self.model)
-        with patch(
-            "examples.models.mention_model.image_generation.asyncio.sleep",
-            new=AsyncMock(),
-        ):
-            result = await tool("断连重试", output_dir=self.output_dir.name)
+        result = await tool("断连不重提", output_dir=self.output_dir.name)
 
-        self.assertEqual(result, "upload://mockShortPath1.jpeg")
-        self.assertEqual(attempts, 2)
+        self.assertIn("未提供断线续取能力", result)
+        self.assertEqual(attempts, 1)
+        self.assertEqual(self.model.uploaded_images, [])
 
-    async def test_repeated_disconnect_stops_after_two_submissions(self):
+    async def test_explicit_multiple_attempts_repeat_submissions_with_exponential_backoff(self):
+        os.environ["IMAGE_GEN_MAX_ATTEMPTS"] = "4"
         attempts = 0
 
         async def handler(request):
@@ -275,14 +417,43 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         with patch(
             "examples.models.mention_model.image_generation.asyncio.sleep",
             new=AsyncMock(),
-        ):
+        ) as mocked_sleep:
             result = await tool("连续断连", output_dir=self.output_dir.name)
 
-        self.assertTrue(result.startswith("图片生成失败: API 调用异常"))
-        self.assertEqual(attempts, 2)
+        self.assertIn("已执行的重试均为独立请求", result)
+        self.assertEqual(attempts, 4)
+        self.assertEqual(
+            mocked_sleep.await_args_list,
+            [call(5.0), call(10.0), call(20.0)],
+        )
         self.assertEqual(self.model.uploaded_images, [])
 
+    async def test_retry_count_and_base_delay_can_be_configured(self):
+        os.environ["IMAGE_GEN_MAX_ATTEMPTS"] = "3"
+        os.environ["IMAGE_GEN_RETRY_BASE_DELAY_SECONDS"] = "0.25"
+        attempts = 0
+
+        async def handler(request):
+            nonlocal attempts
+            attempts += 1
+            await request.read()
+            request.transport.close()
+            return web.Response()
+
+        await self._start_server(handler)
+        tool = create_image_generation_tool(self.model)
+        with patch(
+            "examples.models.mention_model.image_generation.asyncio.sleep",
+            new=AsyncMock(),
+        ) as mocked_sleep:
+            result = await tool("配置重连", output_dir=self.output_dir.name)
+
+        self.assertTrue(result.startswith("图片生成失败: API 调用异常"))
+        self.assertEqual(attempts, 3)
+        self.assertEqual(mocked_sleep.await_args_list, [call(0.25), call(0.5)])
+
     async def test_retryable_http_status_retries_once(self):
+        os.environ["IMAGE_GEN_MAX_ATTEMPTS"] = "2"
         attempts = 0
 
         async def handler(request):
@@ -370,7 +541,7 @@ class TestImageGenerationBasic(unittest.IsolatedAsyncioTestCase):
             "一幅简单的二次元风格插画，1:1。一只白色的卡通小猫坐在木地板上，"
             "背景为纯浅蓝色，阳光从左侧窗户照入。简洁干净，无多余细节。"
         )
-        result = await gen_img(prompt, aspect_ratio="1:1", image_size="0.5K", output_dir=str(_OUTPUT_DIR))
+        result = await gen_img(prompt, aspect_ratio="1:1", image_size="1K", output_dir=str(_OUTPUT_DIR))
         logging.info("Result: %s", str(result)[:200])
         self.assertTrue(result)
         self.assertFalse(result.startswith("图片生成失败"))
@@ -538,11 +709,42 @@ class TestExtractImageURL(unittest.TestCase):
     def test_data_url(self):
         self.assertEqual(_extract_image_url("![img](data:image/png;base64,abc123)"), "data:image/png;base64,abc123")
 
+    def test_multiple_images_returns_final_url(self):
+        self.assertEqual(
+            _extract_image_url("![preview](https://example.com/a.png) ![final](https://example.com/b.png)"),
+            "https://example.com/b.png",
+        )
+
     def test_plain_text_returns_none(self):
         self.assertIsNone(_extract_image_url("hello world"))
 
     def test_none_input_returns_none(self):
         self.assertIsNone(_extract_image_url(None))
+
+
+class TestImageRequestTimeout(unittest.TestCase):
+    def test_stream_timeout_limits_silence_without_total_deadline(self):
+        timeout = _image_request_timeout(True, 600)
+        self.assertIsNone(timeout.total)
+        self.assertEqual(timeout.connect, 600)
+        self.assertEqual(timeout.sock_read, 600)
+
+    def test_non_stream_timeout_retains_total_deadline(self):
+        timeout = _image_request_timeout(False, 600)
+        self.assertEqual(timeout.total, 600)
+
+
+class TestNativeImageSize(unittest.TestCase):
+    def test_edges_are_aligned_for_custom_portrait_ratio(self):
+        self.assertEqual(_native_image_size("3:4"), "1024x1360")
+
+    def test_extreme_ratio_fits_native_limits_at_max_allowed_size(self):
+        width, height = map(int, _native_image_size("1:8").split("x"))
+        self.assertEqual(width % 16, 0)
+        self.assertEqual(height % 16, 0)
+        self.assertLessEqual(max(width, height), 3840)
+        self.assertLessEqual(width * height, 8_294_400)
+        self.assertLessEqual(max(width, height) / min(width, height), 3)
 
 
 if __name__ == "__main__":

@@ -44,7 +44,11 @@ class MentionPetModel:
             if neo4j_manager is None:
                 return ""
 
-            style_items = await neo4j_manager.search_similar(user_text, top_k=8)
+            style_items = await neo4j_manager.search_similar(
+                user_text,
+                top_k=8,
+                userid=self.persona,
+            )
             context = "\n".join(item.text for item in style_items)
             return context.strip()
         except Exception as e:

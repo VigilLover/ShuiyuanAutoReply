@@ -21,6 +21,7 @@ from shuiyuan_auto_reply.embeddings import get_global_sentence_transformer
 class SentenceNode(StructuredNode):
     __label__ = "Sentence"
 
+    userid = StringProperty(required=True)
     text = StringProperty(required=True)
     embedding = ArrayProperty(FloatProperty(), required=True)
     created_at = DateTimeProperty(default_now=True)
@@ -49,6 +50,7 @@ class AsyncNeo4jDatabaseManager:
         self.model = get_global_sentence_transformer()
         self.embedding_dims = settings.embedding_dims
         self.database_name = "neo4j"
+        self.userid: Optional[str] = None
         self._configured = False
 
     def _ensure_configured(self) -> None:
@@ -105,25 +107,43 @@ class AsyncNeo4jDatabaseManager:
             """,
         )
 
-    async def _store_sentence(self, text: str, embedding: List[float]):
+    async def _store_sentence(self, text: str, embedding: List[float], userid: str):
         """
         Asynchronously store a sentence with its embedding into the database.
         """
         return await asyncio.to_thread(
-            lambda: SentenceNode(text=text, embedding=embedding).save()
+            self._run_cypher,
+            """
+            MERGE (n:Sentence {userid: $userid, text: $text})
+            SET n.embedding = $embedding,
+                n.created_at = datetime()
+            """,
+            {
+                "userid": userid,
+                "text": text,
+                "embedding": embedding,
+            },
         )
 
-    async def store_sentences(self, sentences: List[str]):
+    async def store_sentences(self, sentences: List[str], userid: Optional[str] = None):
         """
         Asynchronously compute the embedding and store the sentence.
         """
+        userid = userid or self.userid
+        if not userid:
+            raise ValueError("userid must be provided when storing sentences")
+        if not sentences:
+            return
+
         # Encode the sentence to get its embedding
         embeddings = self.model.encode(sentences)
 
         # Batch writes to avoid creating too many concurrent tasks.
         store_routine = []
         for sentence, embedding in zip(sentences, embeddings):
-            store_routine.append(self._store_sentence(sentence, embedding.tolist()))
+            store_routine.append(
+                self._store_sentence(sentence, embedding.tolist(), userid)
+            )
             # Every 100 sentences, wait for current batch to finish
             if len(store_routine) >= 100:
                 await asyncio.gather(*store_routine)
@@ -132,14 +152,57 @@ class AsyncNeo4jDatabaseManager:
         if store_routine:
             await asyncio.gather(*store_routine)
 
+    async def clear_sentences(self, userid: str) -> int:
+        """
+        Delete all stored sentences for a specific Shuiyuan user/persona.
+        """
+        rows, _ = await asyncio.to_thread(
+            self._run_cypher,
+            """
+            MATCH (n:Sentence {userid: $userid})
+            WITH count(n) AS deleted_count, collect(n) AS nodes
+            FOREACH (node IN nodes | DETACH DELETE node)
+            RETURN deleted_count
+            """,
+            {"userid": userid},
+        )
+        return int(rows[0][0]) if rows else 0
+
+    async def backfill_legacy_userid(self, sentences: List[str], userid: str) -> int:
+        """
+        Attach userid to legacy Sentence nodes that were imported before userid existed.
+        """
+        if not sentences:
+            return 0
+
+        rows, _ = await asyncio.to_thread(
+            self._run_cypher,
+            """
+            MATCH (n:Sentence)
+            WHERE n.userid IS NULL AND n.text IN $sentences
+            SET n.userid = $userid
+            RETURN count(n) AS updated_count
+            """,
+            {
+                "sentences": sentences,
+                "userid": userid,
+            },
+        )
+        return int(rows[0][0]) if rows else 0
+
     async def search_similar(
         self,
         query_text: str,
         top_k: int = 10,
+        userid: Optional[str] = None,
     ) -> List[SentenceResponse]:
         """
         Asynchronously search for similar sentences based on the query text.
         """
+        userid = userid or self.userid
+        if not userid:
+            raise ValueError("userid must be provided when searching sentences")
+
         # Calculate embedding for the query text
         embedding = self.model.encode([query_text])[0].tolist()
 
@@ -149,12 +212,14 @@ class AsyncNeo4jDatabaseManager:
             """
             CALL db.index.vector.queryNodes('sentence_embeddings', $top_k, $embedding)
             YIELD node, score
+            WHERE node.userid = $userid
             RETURN node.text AS text, score
             ORDER BY score DESC
             """,
             {
                 "embedding": embedding,
                 "top_k": top_k,
+                "userid": userid,
             },
         )
         return [SentenceResponse(text=r[0], score=r[1]) for r in rows]

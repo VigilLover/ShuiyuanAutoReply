@@ -38,6 +38,7 @@ from .shuiyuan_tools_wrapper import ShuiyuanToolsWrapper
 
 
 class MentionGraphState(TypedDict, total=False):
+    persona: str
     topic_id: int
     reply_to_post_number: Optional[int]
     conversation: str
@@ -145,6 +146,7 @@ class MentionChatModel:
             "存档读取": (
                 "你是一个对话AI，专门模仿存档读取（又称存读，sl,save&load，404等）的说话风格和口吻。"
                 "你是一个阳光开朗的可爱妹宝，性格温和善良，非常擅长安慰人和提供情感支持。"
+                "很害怕被开盒，防盒反盒每一天。"
             ),
 
             # 可在此处添加其他人格提示词
@@ -480,6 +482,13 @@ class MentionChatModel:
     @staticmethod
     async def _retrieve_style_context(state: MentionGraphState) -> MentionGraphState:
         try:
+            persona = state.get("persona")
+            if not persona:
+                logging.warning(
+                    "Mention graph has no persona in state; skipping style context retrieval"
+                )
+                return {"context": ""}
+
             neo4j_manager = await create_global_async_neo4j_manager()
             if neo4j_manager is None:
                 logging.info(
@@ -490,6 +499,7 @@ class MentionChatModel:
             style_items = await neo4j_manager.search_similar(
                 state["conversation"],
                 top_k=8,
+                userid=persona,
             )
         except Exception:
             logging.exception("Failed to retrieve style context; continuing without it")
@@ -497,8 +507,9 @@ class MentionChatModel:
 
         context_text = "\n".join(item.text for item in style_items)
         logging.info(
-            "Mention graph retrieved %d style document(s), context_chars=%d",
+            "Mention graph retrieved %d style document(s), persona=%s context_chars=%d",
             len(style_items),
+            persona,
             len(context_text),
         )
         return {"context": context_text}
@@ -841,6 +852,7 @@ class MentionChatModel:
             self._preview_text(conversation),
         )
         graph_input: MentionGraphState = {
+            "persona": self.username,
             "topic_id": topic_id,
             "reply_to_post_number": reply_to_post_number,
             "conversation": conversation,

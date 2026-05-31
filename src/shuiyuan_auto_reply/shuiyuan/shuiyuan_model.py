@@ -351,19 +351,22 @@ class ShuiyuanModel:
         voter_data = await response.json()
         return from_dict(VoterDetails, voter_data)
 
-    async def get_actions(self, username: str, filter: List[int]) -> UserActions:
+    async def get_actions(
+        self, username: str, filter: List[int], offset: int = 0
+    ) -> UserActions:
         """
         Get the latest actions for a given username and filter.
 
         :param username: The username to check actions for.
         :param filter: The list of action types to filter.
+        :param offset: The pagination offset used by Discourse user actions.
         :return: An instance of UserActions containing the mention information.
         """
         response = await self._rate_limited_request(
             "get",
             action_url,
             params={
-                "offset": 0,
+                "offset": offset,
                 "username": username,
                 "filter": ",".join(map(str, filter)),
             },
@@ -799,4 +802,3 @@ def _global_ignore_illegal_cookies() -> None:
 
 
 _global_ignore_illegal_cookies()
-

@@ -204,7 +204,7 @@ class UserActionDetails:
     deleted: bool
     hidden: bool
     post_type: int
-    category_id: int
+    category_id: Optional[int]
     closed: bool
     archived: bool
 
