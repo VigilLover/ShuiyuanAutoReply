@@ -638,9 +638,22 @@ class MentionChatModel:
                 content=getattr(last_message, "content", "") or "",
                 tool_calls=valid_calls,
                 id=getattr(last_message, "id", ""),
+                name=getattr(last_message, "name", None),
+                additional_kwargs=dict(
+                    getattr(last_message, "additional_kwargs", {}) or {}
+                ),
+                response_metadata=dict(
+                    getattr(last_message, "response_metadata", {}) or {}
+                ),
+                usage_metadata=getattr(last_message, "usage_metadata", None),
             )
-            return {"messages": [RemoveMessage(id=getattr(last_message, "id", "")),
-                                new_aimessage] + error_messages}
+            return {
+                "messages": [
+                    RemoveMessage(id=getattr(last_message, "id", "")),
+                    new_aimessage,
+                ]
+                + error_messages
+            }
 
         return {}
 

@@ -43,8 +43,8 @@ class MentionModel(BaseUserActionModel):
         self.nickname = self.config["nickname"]
 
         # 模型选择：运行时二选一，不用的注释掉即可
-        self.pumpkin = MentionTongyiModel(model, username=persona)
-        # self.pumpkin = MentionDeepSeekModel(model, username=persona)
+        # self.pumpkin = MentionTongyiModel(model, username=persona)
+        self.pumpkin = MentionDeepSeekModel(model, username=persona)
         self.pet_model = MentionPetModel(persona=persona)
     @staticmethod
     def _parse_prompt_text(raw: str, prompt: str) -> Optional[str]:
