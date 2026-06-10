@@ -31,6 +31,7 @@ from examples.models.mention_model.image_generation import (
     _download_and_encode,
     _extract_image_url,
     _image_request_timeout,
+    _normalize_image_api_url,
     _native_image_size,
     create_image_generation_tool,
 )
@@ -268,6 +269,45 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         with Image.open(backup) as image:
             self.assertEqual(image.getpixel((0, 0)), (30, 100, 220, 255))
 
+    async def test_stream_usage_chunk_marks_final_response(self):
+        os.environ["IMAGE_GEN_STREAM"] = "true"
+        final = _png_data_url((30, 100, 220, 255))
+
+        async def handler(request):
+            self.requests.append(await request.json())
+            response = web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+            )
+            await response.prepare(request)
+            content_chunk = {
+                "choices": [
+                    {
+                        "delta": {"content": f"![final]({final})"},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+            usage_chunk = {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+            await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+            await response.write(f"data: {json.dumps(usage_chunk)}\n\n".encode())
+            await response.write_eof()
+            return response
+
+        await self._start_server(handler)
+        tool = create_image_generation_tool(self.model)
+        result = await tool("usage 最终标签", output_dir=self.output_dir.name)
+
+        self.assertEqual(result, "upload://mockShortPath1.jpeg")
+        self.assertEqual(len(self.model.uploaded_images), 1)
+
     async def test_stream_disconnect_before_final_marker_ignores_preview(self):
         os.environ["IMAGE_GEN_STREAM"] = "true"
         os.environ["IMAGE_GEN_MAX_ATTEMPTS"] = "1"
@@ -316,7 +356,8 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests[0]["model"], "runtime-model-after-import")
         self.assertTrue(self.requests[0]["stream"])
 
-    async def test_non_stream_is_the_default_transport(self):
+    async def test_stream_is_the_default_transport(self):
+        """stream=true 是默认值，因为 SSE 进度事件防止 Cloudflare 60s 空闲超时"""
         os.environ.pop("IMAGE_GEN_STREAM", None)
 
         async def handler(request):
@@ -325,10 +366,27 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_server(handler)
         tool = create_image_generation_tool(self.model)
-        result = await tool("默认非流", output_dir=self.output_dir.name)
+        result = await tool("默认流式", output_dir=self.output_dir.name)
 
         self.assertEqual(result, "upload://mockShortPath1.jpeg")
-        self.assertFalse(self.requests[0]["stream"])
+        self.assertTrue(self.requests[0]["stream"])
+
+    async def test_singular_chat_completion_url_is_normalized(self):
+        async def handler(request):
+            self.requests.append(await request.json())
+            return web.json_response(self._json_completion())
+
+        await self._start_server(handler)
+        os.environ["IMAGE_GEN_API_URL"] = os.environ["IMAGE_GEN_API_URL"].replace(
+            "/v1/chat/completions",
+            "/v1/chat/completion",
+        )
+        os.environ["IMAGE_GEN_STREAM"] = "false"
+        tool = create_image_generation_tool(self.model)
+        result = await tool("单数接口自动修正", output_dir=self.output_dir.name)
+
+        self.assertEqual(result, "upload://mockShortPath1.jpeg")
+        self.assertEqual(len(self.requests), 1)
 
     async def test_native_images_endpoint_uses_right_code_contract(self):
         os.environ["IMAGE_GEN_STREAM"] = "true"
@@ -448,7 +506,8 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         ) as mocked_sleep:
             result = await tool("配置重连", output_dir=self.output_dir.name)
 
-        self.assertTrue(result.startswith("图片生成失败: API 调用异常"))
+        self.assertIn("API 连接异常", result)
+        self.assertIn("无法接收该次 response", result)
         self.assertEqual(attempts, 3)
         self.assertEqual(mocked_sleep.await_args_list, [call(0.25), call(0.5)])
 
@@ -715,6 +774,18 @@ class TestExtractImageURL(unittest.TestCase):
             "https://example.com/b.png",
         )
 
+    def test_bare_upload_url(self):
+        self.assertEqual(
+            _extract_image_url("生成好了 upload://abc123.jpeg"),
+            "upload://abc123.jpeg",
+        )
+
+    def test_json_url_payload(self):
+        self.assertEqual(
+            _extract_image_url('{"image_url":"https://example.com/img.png"}'),
+            "https://example.com/img.png",
+        )
+
     def test_plain_text_returns_none(self):
         self.assertIsNone(_extract_image_url("hello world"))
 
@@ -723,15 +794,19 @@ class TestExtractImageURL(unittest.TestCase):
 
 
 class TestImageRequestTimeout(unittest.TestCase):
-    def test_stream_timeout_limits_silence_without_total_deadline(self):
-        timeout = _image_request_timeout(True, 600)
+    def test_timeout_limits_silence_without_total_deadline(self):
+        timeout = _image_request_timeout(600)
         self.assertIsNone(timeout.total)
-        self.assertEqual(timeout.connect, 600)
+        self.assertEqual(timeout.connect, 30.0)
         self.assertEqual(timeout.sock_read, 600)
 
-    def test_non_stream_timeout_retains_total_deadline(self):
-        timeout = _image_request_timeout(False, 600)
-        self.assertEqual(timeout.total, 600)
+
+class TestImageAPIURL(unittest.TestCase):
+    def test_normalizes_singular_chat_completion_endpoint(self):
+        self.assertEqual(
+            _normalize_image_api_url("https://www.right.codes/draw/v1/chat/completion"),
+            "https://www.right.codes/draw/v1/chat/completions",
+        )
 
 
 class TestNativeImageSize(unittest.TestCase):

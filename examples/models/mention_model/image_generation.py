@@ -38,7 +38,9 @@ logger = logging.getLogger(__name__)
 
 # Shared session with TCP keepalive to prevent proxy/routing timeout during long image generation.
 _shared_session: aiohttp.ClientSession | None = None
-_shared_session_lock = asyncio.Lock()
+_shared_session_loop: asyncio.AbstractEventLoop | None = None
+_shared_session_lock: asyncio.Lock | None = None
+_shared_session_lock_loop: asyncio.AbstractEventLoop | None = None
 
 
 class _KeepaliveConnector(aiohttp.TCPConnector):
@@ -73,7 +75,23 @@ class _KeepaliveConnector(aiohttp.TCPConnector):
 
 
 async def _get_shared_session() -> aiohttp.ClientSession:
-    global _shared_session
+    global _shared_session, _shared_session_loop, _shared_session_lock, _shared_session_lock_loop
+    loop = asyncio.get_running_loop()
+    if _shared_session_lock is None or _shared_session_lock_loop is not loop:
+        _shared_session_lock = asyncio.Lock()
+        _shared_session_lock_loop = loop
+
+    stale_session = (
+        _shared_session is not None
+        and not _shared_session.closed
+        and _shared_session_loop is not loop
+    )
+    if stale_session:
+        logger.info("Recreating image API session for the current event loop")
+        await _shared_session.close()
+        _shared_session = None
+        _shared_session_loop = None
+
     if _shared_session is None or _shared_session.closed:
         async with _shared_session_lock:
             if _shared_session is None or _shared_session.closed:
@@ -83,6 +101,7 @@ async def _get_shared_session() -> aiohttp.ClientSession:
                     ttl_dns_cache=300,
                 )
                 _shared_session = aiohttp.ClientSession(connector=connector)
+                _shared_session_loop = loop
     return _shared_session
 
 _SUPPORTED_ASPECT_RATIOS = {
@@ -165,6 +184,18 @@ def _image_request_timeout(timeout_seconds: float) -> aiohttp.ClientTimeout:
     )
 
 
+def _normalize_image_api_url(api_url: str) -> str:
+    normalized = api_url.strip()
+    lower_url = normalized.rstrip("/").lower()
+    if lower_url.endswith("/v1/chat/completion"):
+        normalized = normalized.rstrip("/") + "s"
+        logger.warning(
+            "IMAGE_GEN_API_URL ended with /v1/chat/completion; using documented "
+            "/v1/chat/completions endpoint instead"
+        )
+    return normalized
+
+
 def _uses_native_images_endpoint(api_url: str) -> bool:
     return api_url.rstrip("/").lower().endswith("/v1/images/generations")
 
@@ -224,12 +255,94 @@ def _native_image_size(aspect_ratio: str) -> str:
     return f"{width}x{height}"
 
 
+def _extract_url_from_text(content: str) -> str | None:
+    markdown_matches = re.findall(r"!\[.*?\]\(([^)]+)\)", content)
+    if markdown_matches:
+        return markdown_matches[-1]
+
+    data_matches = re.findall(r"data:image/[a-zA-Z0-9.+-]+;base64,[^\s)]+", content)
+    if data_matches:
+        return data_matches[-1]
+
+    upload_matches = re.findall(r"upload://[^\s)]+", content)
+    if upload_matches:
+        return upload_matches[-1]
+
+    http_matches = re.findall(r"https?://[^\s)]+", content)
+    return http_matches[-1].rstrip(".,，。") if http_matches else None
+
+
+def _extract_url_from_json(value: object) -> str | None:
+    if isinstance(value, dict):
+        # 直接检查常见 key
+        for key in ("url", "image_url", "short_path", "short_url"):
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                image_url = _extract_url_from_text(candidate)
+                if image_url:
+                    return image_url
+        # 检查 image_url 对象格式: {"image_url": {"url": "https://..."}}
+        image_url_obj = value.get("image_url")
+        if isinstance(image_url_obj, dict):
+            url = image_url_obj.get("url")
+            if isinstance(url, str):
+                image_url = _extract_url_from_text(url)
+                if image_url:
+                    return image_url
+        # 检查 type=image_url 的内容块
+        if value.get("type") == "image_url":
+            if isinstance(image_url_obj, dict):
+                url = image_url_obj.get("url")
+                if isinstance(url, str):
+                    image_url = _extract_url_from_text(url)
+                    if image_url:
+                        return image_url
+        # 递归搜索子项
+        for item in value.values():
+            image_url = _extract_url_from_json(item)
+            if image_url:
+                return image_url
+    elif isinstance(value, list):
+        for item in reversed(value):
+            image_url = _extract_url_from_json(item)
+            if image_url:
+                return image_url
+    elif isinstance(value, str):
+        return _extract_url_from_text(value)
+    return None
+
+
 def _extract_image_url(content: str) -> str | None:
-    """从完整回复中提取最后一张 Markdown 图片，跳过流中的中间预览图。"""
+    """从完整回复中提取最后一张图片，跳过流中的中间预览图。"""
     if not isinstance(content, str):
         return None
-    matches = re.findall(r"!\[.*?\]\(([^)]+)\)", content)
-    return matches[-1] if matches else None
+    stripped = content.strip()
+    if stripped.startswith(("{", "[")):
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            payload = None
+        if payload is not None:
+            # 优先尝试 images/generations 格式（data[0].url）
+            try:
+                return _image_generation_url(payload)
+            except _ImageAPIError:
+                pass
+            # 再尝试通用的 JSON 递归提取
+            image_url = _extract_url_from_json(payload)
+            if image_url:
+                return image_url
+
+    image_url = _extract_url_from_text(content)
+    if image_url:
+        return image_url
+
+    # 所有方法都失败时，记录原始内容便于调试
+    logger.warning(
+        "Failed to extract image URL from response content (first 500 chars): %.500s",
+        content,
+    )
+    return None
 
 
 def _text_content(value: object) -> str:
@@ -240,8 +353,17 @@ def _text_content(value: object) -> str:
         for item in value:
             if isinstance(item, str):
                 pieces.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                pieces.append(item["text"])
+            elif isinstance(item, dict):
+                # 保留 text 类型内容
+                if isinstance(item.get("text"), str):
+                    pieces.append(item["text"])
+                # 提取 image_url 中的 URL（OpenAI 兼容的多模态响应格式）
+                elif item.get("type") == "image_url":
+                    image_url_obj = item.get("image_url")
+                    if isinstance(image_url_obj, dict):
+                        url = image_url_obj.get("url", "")
+                        if isinstance(url, str) and url:
+                            pieces.append(url)
         return "".join(pieces)
     return ""
 
@@ -252,9 +374,28 @@ def _completion_content(payload: object) -> str:
     except (KeyError, IndexError, TypeError):
         raise _ImageAPIError("API 响应未包含 choices[0].message.") from None
 
-    content = _text_content(message.get("content") if isinstance(message, dict) else None)
+    if not isinstance(message, dict):
+        raise _ImageAPIError("API 响应 choices[0].message 格式异常.")
+
+    content = _text_content(message.get("content"))
+
+    # 回退：某些 API 将生成图片放在 message.images 字段
     if not content:
+        images = message.get("images")
+        if isinstance(images, list) and images:
+            image_url = _extract_url_from_json(images)
+            if image_url:
+                return image_url
+
+    if not content:
+        logger.error(
+            "API response content is empty. Raw message keys: %s; "
+            "content snippet: %.500s",
+            list(message.keys()) if isinstance(message, dict) else type(message),
+            str(message.get("content"))[:500] if isinstance(message, dict) else str(message)[:500],
+        )
         raise _ImageAPIError("API 响应未包含可用的图片内容.")
+
     return content
 
 
@@ -353,7 +494,9 @@ def _consume_sse_event(event: bytes, pieces: list[str]) -> tuple[bool, bool]:
         finish_reason = payload["choices"][0].get("finish_reason")
     except (KeyError, IndexError, TypeError, AttributeError):
         finish_reason = None
-    return finish_reason is not None, False
+    # Right Code documents that the final stream chunk carries usage. Some
+    # relays send that chunk without another content delta or [DONE] marker.
+    return finish_reason is not None or "usage" in payload, False
 
 
 async def _read_json_completion(
@@ -645,7 +788,7 @@ def create_image_generation_tool(model):
         :return: 图片的短链接。你必须用 `![描述](链接)` 格式嵌入回复中。
         """
         api_key = os.getenv("IMAGE_GEN_API_KEY", "").strip()
-        api_url = os.getenv("IMAGE_GEN_API_URL", "").strip()
+        api_url = _normalize_image_api_url(os.getenv("IMAGE_GEN_API_URL", ""))
         image_model = os.getenv("IMAGE_GEN_MODEL", "").strip() or _DEFAULT_IMAGE_MODEL
         if not api_key:
             return "图片生成失败: IMAGE_GEN_API_KEY 未配置."
@@ -708,12 +851,22 @@ def create_image_generation_tool(model):
                     })
 
         native_images_endpoint = _uses_native_images_endpoint(api_url)
-        configured_stream = _env_bool("IMAGE_GEN_STREAM", False)
+        configured_stream = _env_bool("IMAGE_GEN_STREAM", True)
+        # 流式只在 chat completions 端点有效
         stream = configured_stream and not native_images_endpoint
-        if native_images_endpoint and configured_stream:
+        if native_images_endpoint:
             logger.warning(
-                "IMAGE_GEN_STREAM=true is ignored for /v1/images/generations; "
-                "the Right Code endpoint documents a complete JSON response"
+                "Using /v1/images/generations endpoint without streaming. "
+                "The upstream proxy (Cloudflare/Caddy) enforces a ~60s idle timeout; "
+                "long image tasks may be disconnected before completion. "
+                "Use /v1/chat/completions with IMAGE_GEN_STREAM=true instead."
+            )
+        elif not stream:
+            logger.warning(
+                "IMAGE_GEN_STREAM=false disables SSE streaming. "
+                "Without streaming, the connection may be killed by the ~60s proxy "
+                "idle timeout during long generations. Enabling streaming is strongly "
+                "recommended for reliable image generation."
             )
         timeout_seconds = _image_timeout_seconds()
         max_api_attempts = _image_max_api_attempts()
@@ -815,6 +968,14 @@ def create_image_generation_tool(model):
                     )
                     if attempt < max_api_attempts - 1:
                         continue
+                    if isinstance(exc, aiohttp.ServerDisconnectedError):
+                        return (
+                            f"图片生成失败: API 连接异常（{max_api_attempts} 次尝试均失败），"
+                            "服务端可能仍在后台完成并产生图片，但当前客户端连接已经断开，"
+                            "无法接收该次 response；未提供断线续取能力，"
+                            "已执行的重试均为独立请求。"
+                            f"最后错误: {last_error}"
+                        )
                     return (
                         f"图片生成失败: API 连接异常（{max_api_attempts} 次尝试均失败）"
                         f"，最后错误: {last_error}"
@@ -830,6 +991,18 @@ def create_image_generation_tool(model):
             if native_images_endpoint
             else _extract_image_url(generated_content)
         )
+        # 回退：非 native 端点也可能返回 data[0].url 格式，尝试作为 JSON 解析
+        if not image_url and not native_images_endpoint:
+            try:
+                payload = json.loads(generated_content)
+                image_url = _image_generation_url(payload)
+            except (json.JSONDecodeError, _ImageAPIError):
+                pass
+        # 最后回退：尝试直接从 generated_content 中提取 HTTP URL（整个字符串就是 URL）
+        if not image_url:
+            trimmed = generated_content.strip()
+            if trimmed.startswith("http://") or trimmed.startswith("https://"):
+                image_url = trimmed
         if not image_url:
             return "图片生成失败: 未在响应中找到图片 URL."
 
