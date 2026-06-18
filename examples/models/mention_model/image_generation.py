@@ -18,6 +18,10 @@ from shuiyuan_auto_reply.constants import settings
 # Single and combined reference-image limits. Base64 increases the wire size.
 _MAX_REFERENCE_BYTES = 10 * 1024 * 1024
 _MAX_TOTAL_REFERENCE_BYTES = 20 * 1024 * 1024
+# Reference image compression: resize to at most this many pixels on the longest edge.
+# Reduces server-side processing time to stay under the ~60s Cloudflare/Caddy proxy timeout.
+_MAX_REFERENCE_LONG_EDGE = 1024
+_REFERENCE_JPEG_QUALITY = 80
 _DEFAULT_IMAGE_MODEL = "gpt-image-2"
 _FIXED_IMAGE_SIZE = "1K"
 _DEFAULT_TIMEOUT_SECONDS = 600.0
@@ -117,13 +121,6 @@ class _ImageAPIError(Exception):
         self.retryable = retryable
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() not in {"0", "false", "no", "off"}
-
-
 def _image_timeout_seconds() -> float:
     raw_value = os.getenv("IMAGE_GEN_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS))
     try:
@@ -184,20 +181,10 @@ def _image_request_timeout(timeout_seconds: float) -> aiohttp.ClientTimeout:
     )
 
 
-def _normalize_image_api_url(api_url: str) -> str:
-    normalized = api_url.strip()
-    lower_url = normalized.rstrip("/").lower()
-    if lower_url.endswith("/v1/chat/completion"):
-        normalized = normalized.rstrip("/") + "s"
-        logger.warning(
-            "IMAGE_GEN_API_URL ended with /v1/chat/completion; using documented "
-            "/v1/chat/completions endpoint instead"
-        )
-    return normalized
-
-
-def _uses_native_images_endpoint(api_url: str) -> bool:
-    return api_url.rstrip("/").lower().endswith("/v1/images/generations")
+def _image_api_endpoint(base_url: str, image_operation: str) -> str:
+    if image_operation not in {"generations", "edits"}:
+        raise ValueError(f"Unsupported image operation: {image_operation}")
+    return f"{base_url.strip().rstrip('/')}/images/{image_operation}"
 
 
 def _aligned_native_edge(value: float, *, direction: str = "nearest") -> int:
@@ -211,7 +198,7 @@ def _aligned_native_edge(value: float, *, direction: str = "nearest") -> int:
     return max(_NATIVE_SIZE_ALIGNMENT, int(units) * _NATIVE_SIZE_ALIGNMENT)
 
 
-def _native_image_size(aspect_ratio: str) -> str:
+def _openai_image_size(aspect_ratio: str) -> str:
     short_edge = 1024
     width_ratio, height_ratio = (int(value) for value in aspect_ratio.split(":", 1))
     requested_ratio = width_ratio / height_ratio
@@ -221,7 +208,7 @@ def _native_image_size(aspect_ratio: str) -> str:
     )
     if requested_ratio != output_ratio:
         logger.warning(
-            "Native image endpoint does not support aspect ratio %s; clamping to %.0f:1 limit",
+            "OpenAI Images endpoint does not support aspect ratio %s; clamping to %.0f:1 limit",
             aspect_ratio,
             _NATIVE_MAX_ASPECT_RATIO,
         )
@@ -255,356 +242,48 @@ def _native_image_size(aspect_ratio: str) -> str:
     return f"{width}x{height}"
 
 
-def _extract_url_from_text(content: str) -> str | None:
-    markdown_matches = re.findall(r"!\[.*?\]\(([^)]+)\)", content)
-    if markdown_matches:
-        return markdown_matches[-1]
-
-    data_matches = re.findall(r"data:image/[a-zA-Z0-9.+-]+;base64,[^\s)]+", content)
-    if data_matches:
-        return data_matches[-1]
-
-    upload_matches = re.findall(r"upload://[^\s)]+", content)
-    if upload_matches:
-        return upload_matches[-1]
-
-    http_matches = re.findall(r"https?://[^\s)]+", content)
-    return http_matches[-1].rstrip(".,，。") if http_matches else None
-
-
-def _extract_url_from_json(value: object) -> str | None:
-    if isinstance(value, dict):
-        # 直接检查常见 key
-        for key in ("url", "image_url", "short_path", "short_url"):
-            candidate = value.get(key)
-            if isinstance(candidate, str):
-                image_url = _extract_url_from_text(candidate)
-                if image_url:
-                    return image_url
-        # 检查 image_url 对象格式: {"image_url": {"url": "https://..."}}
-        image_url_obj = value.get("image_url")
-        if isinstance(image_url_obj, dict):
-            url = image_url_obj.get("url")
-            if isinstance(url, str):
-                image_url = _extract_url_from_text(url)
-                if image_url:
-                    return image_url
-        # 检查 type=image_url 的内容块
-        if value.get("type") == "image_url":
-            if isinstance(image_url_obj, dict):
-                url = image_url_obj.get("url")
-                if isinstance(url, str):
-                    image_url = _extract_url_from_text(url)
-                    if image_url:
-                        return image_url
-        # 递归搜索子项
-        for item in value.values():
-            image_url = _extract_url_from_json(item)
-            if image_url:
-                return image_url
-    elif isinstance(value, list):
-        for item in reversed(value):
-            image_url = _extract_url_from_json(item)
-            if image_url:
-                return image_url
-    elif isinstance(value, str):
-        return _extract_url_from_text(value)
-    return None
-
-
-def _extract_image_url(content: str) -> str | None:
-    """从完整回复中提取最后一张图片，跳过流中的中间预览图。"""
-    if not isinstance(content, str):
-        return None
-    stripped = content.strip()
-    if stripped.startswith(("{", "[")):
-        try:
-            payload = json.loads(stripped)
-        except json.JSONDecodeError:
-            payload = None
-        if payload is not None:
-            # 优先尝试 images/generations 格式（data[0].url）
-            try:
-                return _image_generation_url(payload)
-            except _ImageAPIError:
-                pass
-            # 再尝试通用的 JSON 递归提取
-            image_url = _extract_url_from_json(payload)
-            if image_url:
-                return image_url
-
-    image_url = _extract_url_from_text(content)
-    if image_url:
-        return image_url
-
-    # 所有方法都失败时，记录原始内容便于调试
-    logger.warning(
-        "Failed to extract image URL from response content (first 500 chars): %.500s",
-        content,
-    )
-    return None
-
-
-def _text_content(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        pieces = []
-        for item in value:
-            if isinstance(item, str):
-                pieces.append(item)
-            elif isinstance(item, dict):
-                # 保留 text 类型内容
-                if isinstance(item.get("text"), str):
-                    pieces.append(item["text"])
-                # 提取 image_url 中的 URL（OpenAI 兼容的多模态响应格式）
-                elif item.get("type") == "image_url":
-                    image_url_obj = item.get("image_url")
-                    if isinstance(image_url_obj, dict):
-                        url = image_url_obj.get("url", "")
-                        if isinstance(url, str) and url:
-                            pieces.append(url)
-        return "".join(pieces)
-    return ""
-
-
-def _completion_content(payload: object) -> str:
-    try:
-        message = payload["choices"][0]["message"]
-    except (KeyError, IndexError, TypeError):
-        raise _ImageAPIError("API 响应未包含 choices[0].message.") from None
-
-    if not isinstance(message, dict):
-        raise _ImageAPIError("API 响应 choices[0].message 格式异常.")
-
-    content = _text_content(message.get("content"))
-
-    # 回退：某些 API 将生成图片放在 message.images 字段
-    if not content:
-        images = message.get("images")
-        if isinstance(images, list) and images:
-            image_url = _extract_url_from_json(images)
-            if image_url:
-                return image_url
-
-    if not content:
-        logger.error(
-            "API response content is empty. Raw message keys: %s; "
-            "content snippet: %.500s",
-            list(message.keys()) if isinstance(message, dict) else type(message),
-            str(message.get("content"))[:500] if isinstance(message, dict) else str(message)[:500],
-        )
-        raise _ImageAPIError("API 响应未包含可用的图片内容.")
-
-    return content
-
-
-def _image_generation_url(payload: object) -> str:
-    try:
-        image_url = payload["data"][0]["url"]
-    except (KeyError, IndexError, TypeError):
-        raise _ImageAPIError("API 响应未包含 data[0].url.") from None
-    if not isinstance(image_url, str) or not image_url:
-        raise _ImageAPIError("API 响应未包含可用的图片 URL.")
-    return image_url
-
-
-def _stream_content_piece(payload: object) -> str:
-    try:
-        choice = payload["choices"][0]
-    except (KeyError, IndexError, TypeError):
-        return ""
-    if not isinstance(choice, dict):
-        return ""
-
-    delta = choice.get("delta")
-    if isinstance(delta, dict):
-        content = _text_content(delta.get("content"))
-        if content:
-            return content
-
-    message = choice.get("message")
-    if isinstance(message, dict):
-        return _text_content(message.get("content"))
-    return ""
-
-
-def _take_sse_event(buffer: bytes) -> tuple[bytes | None, bytes]:
-    delimiters = []
-    for separator in (b"\n\n", b"\r\n\r\n"):
-        index = buffer.find(separator)
-        if index >= 0:
-            delimiters.append((index, len(separator)))
-    if not delimiters:
-        return None, buffer
-    index, separator_length = min(delimiters)
-    return buffer[:index], buffer[index + separator_length:]
-
-
-def _sse_data(event: bytes) -> bytes | None:
-    data_lines = []
-    for line in event.replace(b"\r\n", b"\n").split(b"\n"):
-        if line.startswith(b"data:"):
-            data_lines.append(line[5:].lstrip(b" "))
-    if not data_lines:
-        return None
-    return b"\n".join(data_lines)
-
-
-def _sse_event_type(event: bytes) -> str:
-    for line in event.replace(b"\r\n", b"\n").split(b"\n"):
-        if line.startswith(b"event:"):
-            return line[6:].strip().decode("utf-8", errors="replace").lower()
-    return ""
-
-
-def _consume_sse_event(event: bytes, pieces: list[str]) -> tuple[bool, bool]:
-    raw_data = _sse_data(event)
-    if raw_data is None:
-        return False, False
-    raw_data = raw_data.strip()
-    if not raw_data:
-        return False, False
-    if raw_data == b"[DONE]":
-        return True, False
-
-    event_type = _sse_event_type(event)
-    try:
-        text = raw_data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise _ImageAPIError(f"API SSE 响应包含无效 UTF-8 数据: {exc}") from exc
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        if event_type in {"error", "failed", "failure"}:
-            raise _ImageAPIError(f"API SSE 返回错误事件: {text[:200]}")
-        # Some compatible relays emit human-readable progress or heartbeat data.
-        # Keep it out of protocol errors; Markdown image extraction ignores it.
-        pieces.append(text)
-        return False, True
-
-    if event_type in {"error", "failed", "failure"}:
-        raise _ImageAPIError(f"API SSE 返回错误事件: {str(payload)[:200]}")
-    if isinstance(payload, dict) and payload.get("error"):
-        raise _ImageAPIError(f"API SSE 返回错误: {str(payload['error'])[:200]}")
-    content_piece = _stream_content_piece(payload)
-    if content_piece:
-        pieces.append(content_piece)
-    try:
-        finish_reason = payload["choices"][0].get("finish_reason")
-    except (KeyError, IndexError, TypeError, AttributeError):
-        finish_reason = None
-    # Right Code documents that the final stream chunk carries usage. Some
-    # relays send that chunk without another content delta or [DONE] marker.
-    return finish_reason is not None or "usage" in payload, False
-
-
-async def _read_json_completion(
-    response: aiohttp.ClientResponse,
-    *,
-    native_images_endpoint: bool = False,
-) -> str:
+async def _read_images_response(response: aiohttp.ClientResponse) -> bytes:
     try:
         payload = await response.json(content_type=None)
     except (aiohttp.ClientError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise _ImageAPIError(f"API 响应不是有效 JSON: {exc}") from exc
-    if native_images_endpoint:
-        return _image_generation_url(payload)
-    return _completion_content(payload)
-
-
-async def _read_streaming_completion(
-    response: aiohttp.ClientResponse,
-    *,
-    request_started_at: float,
-) -> str:
-    pending = b""
-    pieces: list[str] = []
-    response_is_sse: bool | None = None
-    first_bytes_logged = False
-    non_json_event_count = 0
-    done = False
-
-    async for chunk in response.content.iter_chunked(64 * 1024):
-        if not chunk:
-            continue
-        if not first_bytes_logged:
-            logger.info(
-                "Image API first response bytes received after %.2fs",
-                time.monotonic() - request_started_at,
-            )
-            first_bytes_logged = True
-        pending += chunk
-
-        if response_is_sse is None:
-            leading = pending.lstrip()
-            if leading.startswith((b"data:", b"event:", b":")):
-                response_is_sse = True
-                logger.info("Image API response mode: SSE stream")
-            elif leading.startswith((b"{", b"[")):
-                response_is_sse = False
-                logger.warning(
-                    "Image API response mode: complete JSON despite stream=true; "
-                    "the relay may remain silent while generating"
-                )
-            elif len(leading) > 32:
-                raise _ImageAPIError("API 流式响应既不是 SSE 也不是 JSON.")
-
-        if response_is_sse:
-            while True:
-                event, pending = _take_sse_event(pending)
-                if event is None:
-                    break
-                done, non_json_event = _consume_sse_event(event, pieces)
-                if non_json_event:
-                    non_json_event_count += 1
-                if done:
-                    break
-        if done:
-            break
-
-    if response_is_sse:
-        if pending.strip() and not done:
-            done, non_json_event = _consume_sse_event(pending, pieces)
-            if non_json_event:
-                non_json_event_count += 1
-        if non_json_event_count:
-            logger.info(
-                "Image API retained %d non-JSON SSE progress event(s) while awaiting output",
-                non_json_event_count,
-            )
-        if not done:
-            raise _ImageAPIError(
-                "API SSE 响应在最终完成标记前结束，已忽略可能的临时图片.",
-                retryable=True,
-            )
-        if not pieces:
-            raise _ImageAPIError("API SSE 响应未包含可用的图片内容.")
-        return "".join(pieces)
 
     try:
-        payload = json.loads(pending.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise _ImageAPIError(f"API 响应不是有效 JSON 或 SSE: {exc}") from exc
-    return _completion_content(payload)
+        image = payload["data"][0]
+    except (KeyError, IndexError, TypeError):
+        raise _ImageAPIError("API 响应未包含 data[0].") from None
+    if not isinstance(image, dict):
+        raise _ImageAPIError("API 响应 data[0] 格式异常.")
+
+    b64_json = image.get("b64_json")
+    if isinstance(b64_json, str) and b64_json:
+        try:
+            return base64.b64decode(b64_json, validate=True)
+        except Exception as exc:
+            raise _ImageAPIError(f"API 响应 b64_json 不是有效 base64: {exc}") from exc
+
+    image_url = image.get("url")
+    if isinstance(image_url, str) and image_url:
+        try:
+            return await _generated_image_bytes(image_url)
+        except Exception as exc:
+            raise _ImageAPIError(f"下载图片异常 {exc}") from exc
+
+    raise _ImageAPIError("API 响应未包含 data[0].b64_json 或 data[0].url.")
 
 
-async def _request_image_content(
+async def _request_image_bytes(
     api_url: str,
     api_key: str,
     payload_bytes: bytes,
     *,
-    stream: bool,
     timeout_seconds: float,
-    native_images_endpoint: bool = False,
-) -> str:
+) -> bytes:
     timeout = _image_request_timeout(timeout_seconds)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    if stream:
-        headers["Accept"] = "text/event-stream"
 
     request_started_at = time.monotonic()
     session = await _get_shared_session()
@@ -616,24 +295,14 @@ async def _request_image_content(
                 response.status in _RETRYABLE_HTTP_STATUSES
                 or response.status >= 500
             )
-            if stream and 400 <= response.status < 500 and not retryable:
-                message += (
-                    "；当前中转站可能不支持 stream=true，请确认接口能力，"
-                    "或临时设置 IMAGE_GEN_STREAM=false 诊断"
-                )
             raise _ImageAPIError(message, retryable=retryable)
 
-        if native_images_endpoint:
-            return await _read_json_completion(
-                response,
-                native_images_endpoint=True,
-            )
-        if stream:
-            return await _read_streaming_completion(
-                response,
-                request_started_at=request_started_at,
-            )
-        return await _read_json_completion(response)
+        image_bytes = await _read_images_response(response)
+        logger.info(
+            "Image API response received after %.2fs",
+            time.monotonic() - request_started_at,
+        )
+        return image_bytes
 
 
 async def _download_and_encode(
@@ -645,16 +314,18 @@ async def _download_and_encode(
 ) -> str | None:
     """下载图片并转为 base64 data URL，整合了水源认证下载。"""
     if url.startswith("data:"):
-        encoded_data = url.split(",", 1)[1] if "," in url else ""
-        estimated_bytes = int(len(encoded_data) * 3 / 4)
-        if estimated_bytes > max_bytes:
-            logger.warning(
-                "Reference data URL exceeds max size: %d > %d, skipping",
-                estimated_bytes,
-                max_bytes,
-            )
-            return None
-        return url
+        match = _DATA_URL_RE.match(url)
+        if match:
+            try:
+                image_bytes = base64.b64decode(match.group("data"), validate=True)
+            except Exception:
+                logger.warning("Failed to decode data URL, skipping")
+                return None
+            mime = match.group("mime")
+            # 保留原始 MIME 类型的扩展名
+            ext = ".png" if "png" in mime else ".jpg"
+            return _encode_bytes(image_bytes, f"data_url{ext}", max_bytes)
+        return None
 
     is_upload = url.startswith("upload://")
     is_short_path = url.startswith("/uploads/short-url/")
@@ -705,11 +376,60 @@ async def _download_and_encode(
     return _encode_bytes(image_bytes, url, max_bytes)
 
 
+def _compress_reference_image(image_bytes: bytes) -> bytes:
+    """压缩参考图片以加速服务端处理，目标是保持在 Cloudflare 60s 超时内完成。
+
+    对超过 _MAX_REFERENCE_LONG_EDGE 的图片进行缩放，并转为 JPEG。
+    """
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            original_size = len(image_bytes)
+            original_mode = img.mode
+            width, height = img.size
+            long_edge = max(width, height)
+
+            if long_edge <= _MAX_REFERENCE_LONG_EDGE and original_size <= 200 * 1024:
+                return image_bytes  # 已经够小，无需压缩
+
+            # 缩放长边到 _MAX_REFERENCE_LONG_EDGE
+            if long_edge > _MAX_REFERENCE_LONG_EDGE:
+                ratio = _MAX_REFERENCE_LONG_EDGE / long_edge
+                new_size = (int(width * ratio), int(height * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+
+            # 转为 RGB（JPEG 不支持 RGBA/P）
+            if img.mode in ("RGBA", "P", "LA"):
+                img = img.convert("RGB")
+
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=_REFERENCE_JPEG_QUALITY)
+            compressed = buffer.getvalue()
+
+            logger.info(
+                "Compressed reference: %dx%d → %dx%d, %d→%d bytes (%.0f%%), "
+                "mode %s→RGB",
+                width, height,
+                img.size[0], img.size[1],
+                original_size, len(compressed),
+                len(compressed) / original_size * 100 if original_size else 0,
+                original_mode,
+            )
+            return compressed
+    except Exception as exc:
+        logger.warning("Reference image compression failed, using original: %s", exc)
+        return image_bytes
+
+
 def _encode_bytes(image_bytes: bytes, source_hint: str, max_bytes: int) -> str | None:
-    """将图片字节编码为 base64 data URL"""
+    """将图片字节压缩并编码为 base64 data URL"""
+    # 预压缩以减小服务端处理时间
+    image_bytes = _compress_reference_image(image_bytes)
+
     if len(image_bytes) > max_bytes:
         logger.warning("Reference image exceeds max size: %d > %d, skipping", len(image_bytes), max_bytes)
         return None
+
+    # 统一用 JPEG MIME（压缩后都是 JPEG），除非仍为 PNG
     ext = os.path.splitext(source_hint.split("?")[0])[1].lower()
     mime = "image/png" if ext == ".png" else "image/jpeg"
     encoded = base64.b64encode(image_bytes).decode("ascii")
@@ -788,7 +508,7 @@ def create_image_generation_tool(model):
         :return: 图片的短链接。你必须用 `![描述](链接)` 格式嵌入回复中。
         """
         api_key = os.getenv("IMAGE_GEN_API_KEY", "").strip()
-        api_url = _normalize_image_api_url(os.getenv("IMAGE_GEN_API_URL", ""))
+        api_url = os.getenv("IMAGE_GEN_API_URL", "").strip()
         image_model = os.getenv("IMAGE_GEN_MODEL", "").strip() or _DEFAULT_IMAGE_MODEL
         if not api_key:
             return "图片生成失败: IMAGE_GEN_API_KEY 未配置."
@@ -826,9 +546,9 @@ def create_image_generation_tool(model):
         else:
             reference_images = None
 
-        content: list[dict] = [{"type": "text", "text": prompt}]
         reference_data_urls: list[str] = []
         total_ref_bytes = 0
+        use_edit_endpoint = bool(reference_images)
         if reference_images:
             async with aiohttp.ClientSession() as session:
                 for url in reference_images:
@@ -845,50 +565,29 @@ def create_image_generation_tool(model):
                         break
                     total_ref_bytes += estimated_bytes
                     reference_data_urls.append(data_url)
-                    content.append({
-                        "type": "image_url",
-                        "image_url": {"url": data_url},
-                    })
+        if use_edit_endpoint and not reference_data_urls:
+            return "图片生成失败: 未能读取可用的参考图片."
 
-        native_images_endpoint = _uses_native_images_endpoint(api_url)
-        configured_stream = _env_bool("IMAGE_GEN_STREAM", True)
-        # 流式只在 chat completions 端点有效
-        stream = configured_stream and not native_images_endpoint
-        if native_images_endpoint:
-            logger.warning(
-                "Using /v1/images/generations endpoint without streaming. "
-                "The upstream proxy (Cloudflare/Caddy) enforces a ~60s idle timeout; "
-                "long image tasks may be disconnected before completion. "
-                "Use /v1/chat/completions with IMAGE_GEN_STREAM=true instead."
-            )
-        elif not stream:
-            logger.warning(
-                "IMAGE_GEN_STREAM=false disables SSE streaming. "
-                "Without streaming, the connection may be killed by the ~60s proxy "
-                "idle timeout during long generations. Enabling streaming is strongly "
-                "recommended for reliable image generation."
-            )
+        image_operation = "edits" if use_edit_endpoint else "generations"
+        request_url = _image_api_endpoint(api_url, image_operation)
         timeout_seconds = _image_timeout_seconds()
         max_api_attempts = _image_max_api_attempts()
         retry_base_delay_seconds = _image_retry_base_delay_seconds()
-        if native_images_endpoint:
+        image_size_value = _openai_image_size(aspect_ratio)
+        if use_edit_endpoint:
             payload = {
                 "model": image_model,
                 "prompt": prompt,
-                "image": reference_data_urls,
-                "size": _native_image_size(aspect_ratio),
-                "response_format": "url",
+                "images": [{"image_url": data_url} for data_url in reference_data_urls],
+                "size": image_size_value,
+                "n": 1,
             }
         else:
             payload = {
                 "model": image_model,
-                "messages": [{"role": "user", "content": content}],
-                "max_tokens": 4096,
-                "image_config": {
-                    "aspect_ratio": aspect_ratio,
-                    "image_size": image_size,
-                },
-                "stream": stream,
+                "prompt": prompt,
+                "size": image_size_value,
+                "n": 1,
             }
         payload_bytes = json.dumps(
             payload,
@@ -896,12 +595,11 @@ def create_image_generation_tool(model):
             separators=(",", ":"),
         ).encode("utf-8")
         logger.info(
-            "Submitting image generation: model=%s endpoint_mode=%s stream=%s reference_images=%d "
+            "Submitting image generation: model=%s endpoint=%s reference_images=%d "
             "reference_bytes=%d request_bytes=%d timeout=%.0fs max_attempts=%d "
             "retry_base_delay=%.1fs",
             image_model,
-            "images" if native_images_endpoint else "chat",
-            stream,
+            image_operation,
             len(reference_data_urls),
             total_ref_bytes,
             len(payload_bytes),
@@ -911,7 +609,7 @@ def create_image_generation_tool(model):
         )
 
         queued_at = time.monotonic()
-        generated_content = ""
+        image_bytes = b""
         last_error = ""
         async with generation_gate:
             logger.info(
@@ -931,19 +629,17 @@ def create_image_generation_tool(model):
                     await asyncio.sleep(wait_seconds)
                 started_at = time.monotonic()
                 try:
-                    generated_content = await _request_image_content(
-                        api_url,
+                    image_bytes = await _request_image_bytes(
+                        request_url,
                         api_key,
                         payload_bytes,
-                        stream=stream,
                         timeout_seconds=timeout_seconds,
-                        native_images_endpoint=native_images_endpoint,
                     )
                     logger.info(
-                        "Image API request completed: attempt=%d duration=%.2fs content_chars=%d",
+                        "Image API request completed: attempt=%d duration=%.2fs image_bytes=%d",
                         attempt + 1,
                         time.monotonic() - started_at,
-                        len(generated_content),
+                        len(image_bytes),
                     )
                     break
                 except _ImageAPIError as exc:
@@ -986,28 +682,7 @@ def create_image_generation_tool(model):
             else:
                 return f"图片生成失败: API 调用异常 {last_error}"
 
-        image_url = (
-            generated_content
-            if native_images_endpoint
-            else _extract_image_url(generated_content)
-        )
-        # 回退：非 native 端点也可能返回 data[0].url 格式，尝试作为 JSON 解析
-        if not image_url and not native_images_endpoint:
-            try:
-                payload = json.loads(generated_content)
-                image_url = _image_generation_url(payload)
-            except (json.JSONDecodeError, _ImageAPIError):
-                pass
-        # 最后回退：尝试直接从 generated_content 中提取 HTTP URL（整个字符串就是 URL）
-        if not image_url:
-            trimmed = generated_content.strip()
-            if trimmed.startswith("http://") or trimmed.startswith("https://"):
-                image_url = trimmed
-        if not image_url:
-            return "图片生成失败: 未在响应中找到图片 URL."
-
         try:
-            image_bytes = await _generated_image_bytes(image_url)
             extension, upload_bytes = _prepare_image_upload(image_bytes)
             logger.info(
                 "Got generated image: original_bytes=%d upload_jpeg_bytes=%d",
