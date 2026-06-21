@@ -305,6 +305,38 @@ async def _request_image_bytes(
         return image_bytes
 
 
+async def _request_image_bytes_multipart(
+    api_url: str,
+    api_key: str,
+    form_data: aiohttp.FormData,
+    *,
+    timeout_seconds: float,
+) -> bytes:
+    timeout = _image_request_timeout(timeout_seconds)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    request_started_at = time.monotonic()
+    session = await _get_shared_session()
+    async with session.post(api_url, headers=headers, data=form_data, timeout=timeout) as response:
+        if response.status != 200:
+            body = (await response.text())[:200]
+            message = f"API 返回 HTTP {response.status}, {body}"
+            retryable = (
+                response.status in _RETRYABLE_HTTP_STATUSES
+                or response.status >= 500
+            )
+            raise _ImageAPIError(message, retryable=retryable)
+
+        image_bytes = await _read_images_response(response)
+        logger.info(
+            "Image API multipart response received after %.2fs",
+            time.monotonic() - request_started_at,
+        )
+        return image_bytes
+
+
 async def _download_and_encode(
     session: aiohttp.ClientSession | None,
     url: str,
@@ -437,12 +469,26 @@ def _encode_bytes(image_bytes: bytes, source_hint: str, max_bytes: int) -> str |
     return f"data:{mime};base64,{encoded}"
 
 
+def _decode_data_url(data_url: str) -> tuple[bytes, str, str]:
+    match = _DATA_URL_RE.match(data_url)
+    if not match:
+        raise ValueError("无法解析 data URL")
+    mime_type = match.group("mime")
+    image_bytes = base64.b64decode(match.group("data"), validate=True)
+    extension = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+    }.get(mime_type.lower(), ".png")
+    return image_bytes, mime_type, extension
+
+
 async def _generated_image_bytes(image_url: str) -> bytes:
     if image_url.startswith("data:"):
-        match = _DATA_URL_RE.match(image_url)
-        if not match:
-            raise ValueError("无法解析 data URL")
-        return base64.b64decode(match.group("data"), validate=True)
+        image_bytes, _, _ = _decode_data_url(image_url)
+        return image_bytes
 
     async with aiohttp.ClientSession() as session:
         async with session.get(
@@ -575,13 +621,11 @@ def create_image_generation_tool(model):
         retry_base_delay_seconds = _image_retry_base_delay_seconds()
         image_size_value = _openai_image_size(aspect_ratio)
         if use_edit_endpoint:
-            payload = {
-                "model": image_model,
-                "prompt": prompt,
-                "images": [{"image_url": data_url} for data_url in reference_data_urls],
-                "size": image_size_value,
-                "n": 1,
-            }
+            edit_images: list[tuple[bytes, str, str]] = []
+            for index, data_url in enumerate(reference_data_urls):
+                reference_bytes, mime_type, extension = _decode_data_url(data_url)
+                edit_images.append((reference_bytes, mime_type, f"reference_{index}{extension}"))
+            payload_bytes_len = total_ref_bytes
         else:
             payload = {
                 "model": image_model,
@@ -589,11 +633,12 @@ def create_image_generation_tool(model):
                 "size": image_size_value,
                 "n": 1,
             }
-        payload_bytes = json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
+            request_body = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            payload_bytes_len = len(request_body)
         logger.info(
             "Submitting image generation: model=%s endpoint=%s reference_images=%d "
             "reference_bytes=%d request_bytes=%d timeout=%.0fs max_attempts=%d "
@@ -602,7 +647,7 @@ def create_image_generation_tool(model):
             image_operation,
             len(reference_data_urls),
             total_ref_bytes,
-            len(payload_bytes),
+            payload_bytes_len,
             timeout_seconds,
             max_api_attempts,
             retry_base_delay_seconds,
@@ -629,12 +674,32 @@ def create_image_generation_tool(model):
                     await asyncio.sleep(wait_seconds)
                 started_at = time.monotonic()
                 try:
-                    image_bytes = await _request_image_bytes(
-                        request_url,
-                        api_key,
-                        payload_bytes,
-                        timeout_seconds=timeout_seconds,
-                    )
+                    if use_edit_endpoint:
+                        request_body = aiohttp.FormData()
+                        request_body.add_field("model", image_model)
+                        request_body.add_field("prompt", prompt)
+                        request_body.add_field("size", image_size_value)
+                        request_body.add_field("n", "1")
+                        for reference_bytes, mime_type, filename in edit_images:
+                            request_body.add_field(
+                                "image",
+                                reference_bytes,
+                                filename=filename,
+                                content_type=mime_type,
+                            )
+                        image_bytes = await _request_image_bytes_multipart(
+                            request_url,
+                            api_key,
+                            request_body,
+                            timeout_seconds=timeout_seconds,
+                        )
+                    else:
+                        image_bytes = await _request_image_bytes(
+                            request_url,
+                            api_key,
+                            request_body,
+                            timeout_seconds=timeout_seconds,
+                        )
                     logger.info(
                         "Image API request completed: attempt=%d duration=%.2fs image_bytes=%d",
                         attempt + 1,

@@ -195,7 +195,25 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         async def edits_handler(request):
             seen_paths.append(request.path)
-            self.requests.append(await request.json())
+            self.assertTrue(request.content_type.startswith("multipart/"))
+            reader = await request.multipart()
+            fields = {}
+            images = []
+            async for part in reader:
+                if part.name == "image":
+                    images.append(
+                        {
+                            "filename": part.filename,
+                            "content_type": part.headers.get("Content-Type"),
+                            "bytes": await part.read(),
+                        }
+                    )
+                else:
+                    fields[part.name] = await part.text()
+            fields["image_count"] = len(images)
+            fields["image_content_types"] = [image["content_type"] for image in images]
+            fields["image_bytes"] = [len(image["bytes"]) for image in images]
+            self.requests.append(fields)
             return web.json_response(self._images_response_b64())
 
         await self._start_images_server(generations_handler, edits_handler)
@@ -214,9 +232,11 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             {
                 "model": "test-image-model",
                 "prompt": "参考图编辑",
-                "images": [{"image_url": reference}],
                 "size": "1024x1360",
-                "n": 1,
+                "n": "1",
+                "image_count": 1,
+                "image_content_types": ["image/png"],
+                "image_bytes": [len(base64.b64decode(reference.split(",", 1)[1]))],
             },
         )
 
