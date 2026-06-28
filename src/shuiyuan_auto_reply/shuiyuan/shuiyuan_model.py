@@ -10,7 +10,7 @@ import re
 import time
 import traceback
 from typing import ClassVar, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from dacite import from_dict
@@ -534,6 +534,33 @@ class ShuiyuanModel:
                 raise Exception(f"Failed to download image: {await response.text()}")
 
             return await response.read()
+
+    async def download_raw_image(self, image_url: str) -> bytes:
+        """
+        Download a Shuiyuan-hosted image path or URL with the authenticated session.
+
+        This is used for images that are not represented as upload:// short URLs,
+        such as user avatars.
+        """
+        parsed = urlparse(image_url)
+        if parsed.scheme in {"http", "https"}:
+            if parsed.netloc != urlparse(base_url).netloc:
+                raise ValueError("Invalid Shuiyuan image URL host.")
+            request_url = image_url
+        elif image_url.startswith("/"):
+            request_url = urljoin(base_url, image_url)
+        else:
+            raise ValueError("Invalid Shuiyuan image URL.")
+
+        response = await self._rate_limited_request(
+            "get",
+            URL(request_url, encoded=True),
+            allow_redirects=True,
+        )
+        if response.status != 200:
+            raise Exception(f"Failed to download Shuiyuan image: {await response.text()}")
+
+        return await response.read()
 
     async def close(self) -> None:
         """

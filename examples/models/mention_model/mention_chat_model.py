@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from abc import abstractmethod
+from types import SimpleNamespace
 from typing import Annotated, Any, Dict, List, Optional, Tuple, TypedDict
 
 from langchain_community.chat_message_histories import ChatMessageHistory
@@ -34,6 +35,14 @@ from shuiyuan_auto_reply.shuiyuan.objects import User
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from .image_generation import create_image_generation_tool
 from .mention_memory_model import MentionMemoryModel
+from .mention_multimodal import (
+    ImageInspectResult,
+    MentionImageInput,
+    build_mimo_content,
+    collect_post_image_inputs,
+    extract_image_urls,
+    normalize_shuiyuan_image_url,
+)
 from .shuiyuan_tools_wrapper import ShuiyuanToolsWrapper
 
 
@@ -51,6 +60,8 @@ class MentionGraphState(TypedDict, total=False):
     final_text: str
     history_obj: ChatMessageHistory
     messages: Annotated[List[AnyMessage], add_messages]
+    image_inputs: List[MentionImageInput]
+    supports_multimodal: bool
 
 
 class FallbackLLM(BaseChatModel):
@@ -191,7 +202,8 @@ class MentionChatModel:
                     "3. 历史里的图片URL只代表过去的真实结果，当前轮不能编造、复用或改写图片URL；没有本轮图片工具返回时，不要声称生成了新图片。\n"
                     "4. 调用 generate_image 拿到返回的短链接后，你**必须在最终回复中**使用 Markdown 语法 `![描述](短链接)` 将图片嵌入。**无论回复内容多短，都不能省略图片。** 用户要求生成图片时，图片就是回复的核心内容。\n"
                     "5. 你需要从用户发言和历史最终回复中推断是否需要传入参考图片URL。若用户要求参考帖子中的图片，直接将原图链接以列表格式传入 reference_images（如 reference_images=[\"upload://xxx.jpeg\"]），工具内部会自动下载处理。\n"
-                    "6. 如果图片生成或修改需要参考某个用户头像，先调用 search_user 或 search_user_by_id，并把 include_avatar 设为 True；拿到 avatar 后，将该头像 URL 放入 generate_image 的 reference_images。其他情况下保持 include_avatar 默认 False，以避免把头像模板放进上下文。不要猜测或编造头像模板。\n\n"
+                    "6. 如果图片生成或修改需要参考某个用户头像，先调用 search_user 或 search_user_by_id，并把 include_avatar 设为 True；拿到 avatar 后，将该头像 URL 放入 generate_image 的 reference_images。多用户参考时，prompt 中必须说明哪张参考图对应哪个用户（如「参考图1是用户A的头像，参考图2是用户B的头像」）。其他情况下保持 include_avatar 默认 False，以避免把头像模板放进上下文。不要猜测或编造头像模板。\n\n"
+                    + self._get_multimodal_prompt_rules() +
                     "3. 涉及到需要了解用户信息、过往发帖的，你需要判断这是关于话题广泛性的讨论还是针对特定用户的，"
                     "如果是前者，你需要调用获取当前话题最新发帖内容的工具来查看，如果用户没有明确要求，limit请设置为100，以此获取足够的信息用于分析；"
                     "如果是后者，你需要调用能够根据用户和话题信息进行查询的工具，你需要判断是否需要在当前话题中查询，如果内容是泛泛而谈，你可以省略topic_id参数，"
@@ -245,6 +257,12 @@ class MentionChatModel:
         self.tools: List[BaseTool] = []
         self.memory_model = MentionMemoryModel(self.embeddings)
         self.model = model
+        self.supports_multimodal = False
+        self.multimodal_search_image_limit = 0
+
+    def _get_multimodal_prompt_rules(self) -> str:
+        """图片理解相关的系统提示规则。子类覆盖以添加多模态图片理解规则。"""
+        return ""
 
     def get_session_history(self, session_id: int | str) -> ChatMessageHistory:
         history = self._histories.setdefault(session_id, ChatMessageHistory())
@@ -305,6 +323,52 @@ class MentionChatModel:
 
         return text.replace("\n", "\\n")
 
+    @staticmethod
+    def _env_positive_int(name: str, default: int) -> int:
+        raw_value = os.getenv(name)
+        if raw_value is None:
+            return default
+        try:
+            value = int(raw_value)
+        except ValueError:
+            logging.warning("Invalid integer for %s=%r, using %s", name, raw_value, default)
+            return default
+        return value if value > 0 else default
+
+    @staticmethod
+    def _existing_image_source_urls(state: MentionGraphState) -> list[str]:
+        return [
+            image.source_url
+            for image in state.get("image_inputs", []) or []
+            if getattr(image, "source_url", None)
+        ]
+
+    @staticmethod
+    def _existing_image_byte_count(state: MentionGraphState) -> int:
+        return sum(
+            max(0, getattr(image, "byte_count", 0) or 0)
+            for image in state.get("image_inputs", []) or []
+        )
+
+    @staticmethod
+    def _artifact_posts(artifact: object) -> list[object]:
+        if artifact is None:
+            return []
+        if isinstance(artifact, dict):
+            if artifact.get("source") != "inspect_image":
+                return []
+            return [artifact]
+        if isinstance(artifact, (list, tuple, set)):
+            return [
+                item
+                for item in artifact
+                if getattr(item, "source", None) == "inspect_image"
+                or (isinstance(item, dict) and item.get("source") == "inspect_image")
+            ]
+        if getattr(artifact, "source", None) != "inspect_image":
+            return []
+        return [artifact]
+
     def clear_session_history(self, session_id: int | str) -> None:
         self._histories.pop(session_id, None)
 
@@ -359,6 +423,42 @@ class MentionChatModel:
                         or f"Tool for calling {func_name}",
                     )
                 )
+
+        if getattr(self, "supports_multimodal", False):
+            async def inspect_image(image_url: str, description: str = "") -> tuple[str, ImageInspectResult]:
+                """
+                Read a Shuiyuan image or user avatar URL for MiMo multimodal understanding.
+
+                Use this when you need to understand the visual content of an image
+                from a post search result, a quoted Shuiyuan image URL, or a user avatar.
+                The URL must be a Shuiyuan upload short URL, upload:// URL, or Shuiyuan
+                user_avatar URL. Do not use this for external website images.
+
+                :param image_url: Shuiyuan image or avatar URL to inspect.
+                :param description: Optional description of this image (e.g. which user's
+                    avatar this is). Use this when inspecting multiple images to help the
+                    model distinguish them.
+                """
+                normalized = normalize_shuiyuan_image_url(image_url)
+                if normalized is None:
+                    return (
+                        "图片读取失败：inspect_image 只支持水源 upload://、short-url 或 user_avatar 图片 URL。",
+                        ImageInspectResult(image_urls=[], description=description),
+                    )
+                return (
+                    "图片已读取，将在下一轮结合该图片回答。",
+                    ImageInspectResult(image_urls=[normalized], description=description),
+                )
+
+            tools.append(
+                StructuredTool.from_function(
+                    coroutine=inspect_image,
+                    name="inspect_image",
+                    description=inspect.getdoc(inspect_image)
+                    or "读取水源图片供 MiMo 多模态理解。",
+                    response_format="content_and_artifact",
+                )
+            )
 
         # 注册图片生成工具 (本地实现, 生成后自动上传水源并返回 Markdown)
         gen_img_func = create_image_generation_tool(self.model)
@@ -441,12 +541,17 @@ class MentionChatModel:
         workflow.add_node("retrieve_style_context", self._retrieve_style_context)
         workflow.add_node("load_topic_context", self._load_topic_context)
         workflow.add_node("load_long_term_memory", self._load_long_term_memory)
+        if self.supports_multimodal:
+            workflow.add_node("load_current_images", self._load_current_images)
+            workflow.add_node("load_replied_post_images", self._load_replied_post_images)
         workflow.add_node("prepare_messages", self._prepare_messages)
         workflow.add_node("call_model", self._call_model)
         workflow.add_node("log_tool_calls", self._log_tool_calls)
         workflow.add_node("validate_tool_calls", self._validate_tool_calls)
         workflow.add_node("tools", tool_node)
         workflow.add_node("log_tool_outputs", self._log_tool_outputs)
+        if self.supports_multimodal:
+            workflow.add_node("collect_tool_output_images", self._collect_tool_output_images)
         workflow.add_node("finalize_response", self._finalize_response)
         workflow.add_node("save_history", self._save_history)
 
@@ -454,7 +559,12 @@ class MentionChatModel:
         workflow.set_entry_point("retrieve_style_context")
         workflow.add_edge("retrieve_style_context", "load_topic_context")
         workflow.add_edge("load_topic_context", "load_long_term_memory")
-        workflow.add_edge("load_long_term_memory", "prepare_messages")
+        if self.supports_multimodal:
+            workflow.add_edge("load_long_term_memory", "load_current_images")
+            workflow.add_edge("load_current_images", "load_replied_post_images")
+            workflow.add_edge("load_replied_post_images", "prepare_messages")
+        else:
+            workflow.add_edge("load_long_term_memory", "prepare_messages")
         workflow.add_edge("prepare_messages", "call_model")
         workflow.add_conditional_edges(
             "call_model",
@@ -468,7 +578,11 @@ class MentionChatModel:
             {"tools": "tools", "call_model": "call_model"},
         )
         workflow.add_edge("tools", "log_tool_outputs")
-        workflow.add_edge("log_tool_outputs", "call_model")
+        if self.supports_multimodal:
+            workflow.add_edge("log_tool_outputs", "collect_tool_output_images")
+            workflow.add_edge("collect_tool_output_images", "call_model")
+        else:
+            workflow.add_edge("log_tool_outputs", "call_model")
         workflow.add_edge("finalize_response", "save_history")
         workflow.add_edge("save_history", END)
 
@@ -543,6 +657,72 @@ class MentionChatModel:
         )
         return {"long_term_memory": memory_context}
 
+    async def _load_current_images(self, state: MentionGraphState) -> MentionGraphState:
+        supports_multimodal = bool(self.supports_multimodal)
+        existing_images = list(state.get("image_inputs", []) or [])
+        if not supports_multimodal:
+            return {
+                "supports_multimodal": False,
+                "image_inputs": existing_images,
+            }
+
+        max_images = self._env_positive_int("MIMO_MULTIMODAL_MAX_IMAGES", 4)
+        if len(existing_images) >= max_images:
+            return {
+                "supports_multimodal": True,
+                "image_inputs": existing_images[:max_images],
+            }
+
+        post = SimpleNamespace(
+            raw=state.get("conversation", ""),
+            cooked="",
+            image_urls=extract_image_urls(state.get("conversation", "")),
+        )
+        new_images = await collect_post_image_inputs(
+            [post],
+            shuiyuan_model=self.model,
+            origin="current_post",
+            max_images=max_images - len(existing_images),
+            existing_urls=self._existing_image_source_urls(state),
+            existing_byte_count=self._existing_image_byte_count(state),
+        )
+        return {
+            "supports_multimodal": True,
+            "image_inputs": existing_images + new_images,
+        }
+
+    async def _load_replied_post_images(self, state: MentionGraphState) -> MentionGraphState:
+        existing_images = list(state.get("image_inputs", []) or [])
+        if not state.get("supports_multimodal") or not state.get("reply_to_post_number"):
+            return {"image_inputs": existing_images}
+
+        max_images = self._env_positive_int("MIMO_MULTIMODAL_MAX_IMAGES", 4)
+        if len(existing_images) >= max_images:
+            return {"image_inputs": existing_images[:max_images]}
+
+        try:
+            replied_post = await self.model.get_post_details_by_post_number(
+                state["topic_id"],
+                state["reply_to_post_number"],
+            )
+        except Exception:
+            logging.exception(
+                "Failed to load replied post images: topic_id=%s post_number=%s",
+                state.get("topic_id"),
+                state.get("reply_to_post_number"),
+            )
+            return {"image_inputs": existing_images}
+
+        new_images = await collect_post_image_inputs(
+            [replied_post],
+            shuiyuan_model=self.model,
+            origin="replied_post",
+            max_images=max_images - len(existing_images),
+            existing_urls=self._existing_image_source_urls(state),
+            existing_byte_count=self._existing_image_byte_count(state),
+        )
+        return {"image_inputs": existing_images + new_images}
+
     @staticmethod
     async def _prepare_messages(state: MentionGraphState) -> MentionGraphState:
         content = (
@@ -551,6 +731,14 @@ class MentionChatModel:
             f"{state['conversation']}\n"
             "</user_post>"
         )
+        if state.get("supports_multimodal") and state.get("image_inputs"):
+            return {
+                "messages": [
+                    HumanMessage(
+                        content=build_mimo_content(content, state.get("image_inputs", []))
+                    )
+                ]
+            }
         return {"messages": [HumanMessage(content=content)]}
 
     @staticmethod
@@ -685,6 +873,53 @@ class MentionChatModel:
             )
 
         return {}
+
+    async def _collect_tool_output_images(self, state: MentionGraphState) -> MentionGraphState:
+        existing_images = list(state.get("image_inputs", []) or [])
+        if not state.get("supports_multimodal") or self.multimodal_search_image_limit <= 0:
+            return {"image_inputs": existing_images}
+
+        tool_messages = []
+        for message in reversed(state.get("messages", [])):
+            if getattr(message, "type", None) != "tool":
+                break
+            tool_messages.append(message)
+        tool_messages.reverse()
+
+        tool_posts: list[object] = []
+        for message in tool_messages:
+            tool_posts.extend(self._artifact_posts(getattr(message, "artifact", None)))
+
+        if not tool_posts:
+            return {"image_inputs": existing_images}
+
+        max_total_images = self._env_positive_int("MIMO_MULTIMODAL_MAX_IMAGES", 4)
+        remaining_total = max_total_images - len(existing_images)
+        if remaining_total <= 0:
+            return {"image_inputs": existing_images[:max_total_images]}
+
+        max_search_images = min(self.multimodal_search_image_limit, remaining_total)
+        new_images = await collect_post_image_inputs(
+            tool_posts,
+            shuiyuan_model=self.model,
+            origin="tool_output",
+            max_images=max_search_images,
+            existing_urls=self._existing_image_source_urls(state),
+            existing_byte_count=self._existing_image_byte_count(state),
+        )
+        if not new_images:
+            return {"image_inputs": existing_images}
+
+        image_message = HumanMessage(
+            content=build_mimo_content(
+                "以上图片来自 inspect_image 工具调用。如有描述标注，请根据标注区分不同图片的归属（如用户头像对应的用户）。",
+                new_images,
+            )
+        )
+        return {
+            "image_inputs": existing_images + new_images,
+            "messages": [image_message],
+        }
 
     @staticmethod
     def _build_tool_call_history_summary(messages: List[AnyMessage]) -> Optional[str]:

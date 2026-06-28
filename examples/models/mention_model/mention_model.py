@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 import re
 import traceback
@@ -12,6 +13,7 @@ from shuiyuan_auto_reply.shuiyuan.user_action_model import BaseUserActionModel
 from .mention_tongyi_model import MentionTongyiModel
 from .mention_openrouter_model import MentionOpenRouterModel
 from .mention_deepseek_model import MentionDeepSeekModel
+from .mention_mimo_model import MentionMimoModel
 from .mention_pet_model import MentionPetModel
 
 
@@ -42,9 +44,19 @@ class MentionModel(BaseUserActionModel):
         self.trigger_word = self.config["trigger"]
         self.nickname = self.config["nickname"]
 
-        # 模型选择：运行时二选一，不用的注释掉即可
-        # self.pumpkin = MentionTongyiModel(model, username=persona)
-        self.pumpkin = MentionDeepSeekModel(model, username=persona)
+        provider = os.getenv("MENTION_CHAT_PROVIDER", "deepseek").strip().lower()
+        provider_models = {
+            "deepseek": MentionDeepSeekModel,
+            "tongyi": MentionTongyiModel,
+            "openrouter": MentionOpenRouterModel,
+            "mimo": MentionMimoModel,
+        }
+        if provider not in provider_models:
+            raise ValueError(
+                "MENTION_CHAT_PROVIDER must be one of "
+                f"{', '.join(sorted(provider_models))}; got {provider!r}."
+            )
+        self.pumpkin = provider_models[provider](model, username=persona)
         self.pet_model = MentionPetModel(persona=persona)
     @staticmethod
     def _parse_prompt_text(raw: str, prompt: str) -> Optional[str]:
