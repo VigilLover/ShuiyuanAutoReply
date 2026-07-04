@@ -28,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from examples.models.mention_model.image_generation import (
     _download_and_encode,
+    _encode_bytes,
     _image_api_endpoint,
     _image_request_timeout,
     _openai_image_size,
@@ -170,14 +171,14 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
-        result = await tool("原生图片接口", aspect_ratio="3:4", output_dir=self.output_dir.name)
+        result = await tool("测试原生图片生成接口调用", aspect_ratio="3:4", output_dir=self.output_dir.name)
 
         self.assertEqual(result, "upload://mockShortPath1.jpeg")
         self.assertEqual(
             self.requests[0],
             {
                 "model": "test-image-model",
-                "prompt": "原生图片接口",
+                "prompt": "测试原生图片生成接口调用",
                 "size": "1024x1360",
                 "n": 1,
             },
@@ -200,10 +201,11 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             fields = {}
             images = []
             async for part in reader:
-                if part.name == "image":
+                if part.name == "image[]":
                     images.append(
                         {
                             "filename": part.filename,
+                            "field_name": part.name,
                             "content_type": part.headers.get("Content-Type"),
                             "bytes": await part.read(),
                         }
@@ -211,6 +213,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
                 else:
                     fields[part.name] = await part.text()
             fields["image_count"] = len(images)
+            fields["image_field_names"] = [image["field_name"] for image in images]
             fields["image_content_types"] = [image["content_type"] for image in images]
             fields["image_bytes"] = [len(image["bytes"]) for image in images]
             self.requests.append(fields)
@@ -219,7 +222,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         await self._start_images_server(generations_handler, edits_handler)
         tool = create_image_generation_tool(self.model)
         result = await tool(
-            "参考图编辑",
+            "参考图编辑测试生图功能验证",
             aspect_ratio="3:4",
             reference_images=[reference],
             output_dir=self.output_dir.name,
@@ -231,10 +234,11 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             self.requests[0],
             {
                 "model": "test-image-model",
-                "prompt": "参考图编辑",
+                "prompt": "参考图编辑测试生图功能验证",
                 "size": "1024x1360",
                 "n": "1",
                 "image_count": 1,
+                "image_field_names": ["image[]"],
                 "image_content_types": ["image/png"],
                 "image_bytes": [len(base64.b64decode(reference.split(",", 1)[1]))],
             },
@@ -247,10 +251,59 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
-        result = await tool("URL 响应", output_dir=self.output_dir.name)
+        result = await tool("测试URL响应图片的下载和上传", output_dir=self.output_dir.name)
 
         self.assertEqual(result, "upload://mockShortPath1.jpeg")
         self.assertEqual(len(self.model.uploaded_images), 1)
+
+    async def test_non_200_response_code_and_body_are_returned_to_tool_caller(self):
+        async def handler(request):
+            self.requests.append(await request.json())
+            return web.json_response(
+                {"error": {"message": "bad image prompt"}},
+                status=400,
+            )
+
+        await self._start_images_server(handler)
+        tool = create_image_generation_tool(self.model)
+        result = await tool("测试服务端错误信息回传给机器人", output_dir=self.output_dir.name)
+
+        self.assertIn("图片生成失败: API 返回 HTTP 400", result)
+        self.assertIn("bad image prompt", result)
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.model.uploaded_images, [])
+
+    async def test_numeric_prompt_values_are_rejected_before_server_request(self):
+        async def handler(request):
+            self.requests.append(await request.read())
+            return web.json_response(self._images_response_b64())
+
+        await self._start_images_server(handler)
+        tool = create_image_generation_tool(self.model)
+
+        for prompt in ("0", "1", 0, 1):
+            result = await tool(prompt, output_dir=self.output_dir.name)
+            self.assertTrue(result.startswith("图片生成失败"))
+
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.model.uploaded_images, [])
+
+    async def test_repeated_valid_prompt_still_submits_real_requests(self):
+        async def handler(request):
+            self.requests.append(await request.json())
+            return web.json_response(self._images_response_b64())
+
+        await self._start_images_server(handler)
+        tool = create_image_generation_tool(self.model)
+        prompt = "重复有效提示词也必须真实请求服务器"
+
+        first = await tool(prompt, output_dir=self.output_dir.name)
+        second = await tool(prompt, output_dir=self.output_dir.name)
+
+        self.assertEqual(first, "upload://mockShortPath1.jpeg")
+        self.assertEqual(second, "upload://mockShortPath2.jpeg")
+        self.assertEqual(len(self.requests), 2)
+        self.assertEqual([request["prompt"] for request in self.requests], [prompt, prompt])
 
     async def test_runtime_model_config_is_read_for_each_call(self):
         async def handler(request):
@@ -261,7 +314,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         tool = create_image_generation_tool(self.model)
         os.environ["IMAGE_GEN_MODEL"] = "runtime-model-after-import"
 
-        result = await tool("运行时配置", output_dir=self.output_dir.name)
+        result = await tool("测试运行时模型配置读取功能", output_dir=self.output_dir.name)
 
         self.assertEqual(result, "upload://mockShortPath1.jpeg")
         self.assertEqual(self.requests[0]["model"], "runtime-model-after-import")
@@ -280,7 +333,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
-        result = await tool("断连不重提", output_dir=self.output_dir.name)
+        result = await tool("测试断连不重提独立请求", output_dir=self.output_dir.name)
 
         self.assertIn("未提供断线续取能力", result)
         self.assertEqual(attempts, 1)
@@ -303,7 +356,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             "examples.models.mention_model.image_generation.asyncio.sleep",
             new=AsyncMock(),
         ) as mocked_sleep:
-            result = await tool("连续断连", output_dir=self.output_dir.name)
+            result = await tool("测试连续断连重试提交功能", output_dir=self.output_dir.name)
 
         self.assertIn("已执行的重试均为独立请求", result)
         self.assertEqual(attempts, 4)
@@ -331,7 +384,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             "examples.models.mention_model.image_generation.asyncio.sleep",
             new=AsyncMock(),
         ) as mocked_sleep:
-            result = await tool("配置重连", output_dir=self.output_dir.name)
+            result = await tool("测试配置重连次数和延迟参数", output_dir=self.output_dir.name)
 
         self.assertIn("API 连接异常", result)
         self.assertIn("无法接收该次 response", result)
@@ -355,7 +408,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             "examples.models.mention_model.image_generation.asyncio.sleep",
             new=AsyncMock(),
         ):
-            result = await tool("HTTP 重试", output_dir=self.output_dir.name)
+            result = await tool("测试HTTP状态码重试处理逻辑", output_dir=self.output_dir.name)
 
         self.assertEqual(result, "upload://mockShortPath1.jpeg")
         self.assertEqual(attempts, 2)
@@ -379,9 +432,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
-        first = asyncio.create_task(tool("请求一", output_dir=self.output_dir.name))
+        first = asyncio.create_task(tool("第一个并发生图测试请求任务", output_dir=self.output_dir.name))
         await asyncio.wait_for(first_started.wait(), timeout=1)
-        second = asyncio.create_task(tool("请求二", output_dir=self.output_dir.name))
+        second = asyncio.create_task(tool("第二个并发生图测试请求任务", output_dir=self.output_dir.name))
         await asyncio.sleep(0.05)
 
         self.assertEqual(submissions, 1)
@@ -566,6 +619,17 @@ class TestDownloadAndEncode(unittest.IsolatedAsyncioTestCase):
             _download_and_encode(None, "data:image/png;base64,aGVsbG8=", max_bytes=1)
         )
         self.assertIsNone(result)
+
+    def test_compressed_png_reference_is_labeled_as_jpeg(self):
+        buffer = io.BytesIO()
+        Image.new("RGB", (1300, 20), (200, 40, 40)).save(buffer, format="PNG")
+
+        result = _encode_bytes(buffer.getvalue(), "reference.png", max_bytes=1024 * 1024)
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result.startswith("data:image/jpeg;base64,"))
+        decoded = base64.b64decode(result.split(",", 1)[1])
+        self.assertTrue(decoded.startswith(b"\xff\xd8\xff"))
 
 
 class TestImageRequestTimeout(unittest.TestCase):

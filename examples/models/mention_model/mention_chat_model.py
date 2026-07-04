@@ -802,20 +802,36 @@ class MentionChatModel:
                 ))
                 continue
 
-            # 检查 2: generate_image 必须有非空 prompt
+            # 检查 2: generate_image 必须有合法 prompt
             if tool_name == "generate_image":
-                prompt = (tool_args or {}).get("prompt", "")
-                if not prompt or not str(prompt).strip():
+                prompt = str((tool_args or {}).get("prompt", "")).strip()
+                reject_reason: str | None = None
+                if not prompt:
+                    reject_reason = "generate_image 工具需要提供 'prompt' 参数。请用纯中文详细描述要生成的图片内容。"
+                elif len(prompt) < 10:
+                    reject_reason = (
+                        f"generate_image 的 prompt 过短（仅 {len(prompt)} 个字符），"
+                        "请提供至少 10 个字符的详细图片描述。"
+                    )
+                elif prompt.isdigit():
+                    reject_reason = (
+                        "generate_image 的 prompt 不能为纯数字。"
+                        "请用纯中文详细描述要生成的图片内容。"
+                    )
+                elif len(set(prompt)) <= 2:
+                    reject_reason = (
+                        "generate_image 的 prompt 无意义（字符种类过少）。"
+                        "请用纯中文详细描述要生成的图片内容。"
+                    )
+                if reject_reason is not None:
                     logging.warning(
-                        "Filtering out generate_image call with empty prompt, id=%s",
+                        "Filtering out generate_image call with invalid prompt=%r, id=%s",
+                        prompt[:80],
                         call_id,
                     )
                     error_messages.append(ToolMessage(
-                        content=(
-                            "错误: generate_image 工具需要提供 'prompt' 参数。"
-                            "请用纯中文详细描述要生成的图片内容。"
-                        ),
-                        tool_call_id=call_id or f"empty_prompt_{len(error_messages)}",
+                        content=f"错误: {reject_reason}",
+                        tool_call_id=call_id or f"invalid_prompt_{len(error_messages)}",
                     ))
                     continue
 
@@ -947,6 +963,37 @@ class MentionChatModel:
             "如本轮需要生成或修改图片，必须重新调用图片生成工具，不能编造图片URL。"
         )
 
+    _MAX_TOOL_LOOP_MESSAGES = 20
+
+    @staticmethod
+    def _trim_tool_loop_messages(messages: List[AnyMessage]) -> List[AnyMessage]:
+        """裁剪工具调用循环中累积的消息，防止上下文膨胀导致模型退化。
+
+        当消息数超过 _MAX_TOOL_LOOP_MESSAGES 时，保留前几条和最近的消息，
+        中间的旧工具结果用摘要替换，避免在后续 LLM 调用中传递完整历史。
+        """
+        if len(messages) <= MentionChatModel._MAX_TOOL_LOOP_MESSAGES:
+            return list(messages)
+
+        keep_head = 3
+        keep_tail = MentionChatModel._MAX_TOOL_LOOP_MESSAGES - keep_head - 1
+        trimmed = list(messages[:keep_head])
+        trimmed.append(
+            HumanMessage(
+                content=(
+                    f"[系统提示: 已省略中间 {len(messages) - keep_head - keep_tail} 条历史消息。"
+                    "请根据最近的上下文继续完成任务。]"
+                )
+            )
+        )
+        trimmed.extend(messages[-keep_tail:])
+        logging.info(
+            "Trimmed tool-loop messages: %d → %d messages",
+            len(messages),
+            len(trimmed),
+        )
+        return trimmed
+
     async def _call_model(self, state: MentionGraphState) -> MentionGraphState:
         if self.llm_with_tools is None:
             raise RuntimeError("MentionChatModel LLM is not initialized.")
@@ -963,7 +1010,7 @@ class MentionChatModel:
                 "long_term_memory": state.get("long_term_memory", "无相关长期记忆"),
                 "chat_history": state.get("chat_history", []),
                 "recent_msgs": state.get("recent_msgs", "无近期回帖记录"),
-                "messages": state.get("messages", []),
+                "messages": self._trim_tool_loop_messages(state.get("messages", [])),
             }
         )
         response = await self.llm_with_tools.ainvoke(prompt_value)

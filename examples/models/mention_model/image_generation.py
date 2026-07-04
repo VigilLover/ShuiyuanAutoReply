@@ -8,6 +8,7 @@ import os
 import re
 import socket as _socket
 import time
+import uuid
 from datetime import datetime
 
 import aiohttp
@@ -452,6 +453,18 @@ def _compress_reference_image(image_bytes: bytes) -> bytes:
         return image_bytes
 
 
+def _image_mime_from_bytes(image_bytes: bytes, fallback: str = "image/jpeg") -> str:
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    return fallback
+
+
 def _encode_bytes(image_bytes: bytes, source_hint: str, max_bytes: int) -> str | None:
     """将图片字节压缩并编码为 base64 data URL"""
     # 预压缩以减小服务端处理时间
@@ -461,9 +474,9 @@ def _encode_bytes(image_bytes: bytes, source_hint: str, max_bytes: int) -> str |
         logger.warning("Reference image exceeds max size: %d > %d, skipping", len(image_bytes), max_bytes)
         return None
 
-    # 统一用 JPEG MIME（压缩后都是 JPEG），除非仍为 PNG
     ext = os.path.splitext(source_hint.split("?")[0])[1].lower()
-    mime = "image/png" if ext == ".png" else "image/jpeg"
+    fallback_mime = "image/png" if ext == ".png" else "image/jpeg"
+    mime = _image_mime_from_bytes(image_bytes, fallback=fallback_mime)
     encoded = base64.b64encode(image_bytes).decode("ascii")
     logger.info("Encoded reference image: %s (%d bytes)", source_hint[:80], len(image_bytes))
     return f"data:{mime};base64,{encoded}"
@@ -561,6 +574,22 @@ def create_image_generation_tool(model):
         if not api_url:
             return "图片生成失败: IMAGE_GEN_API_URL 未配置."
 
+        # ── prompt 参数守卫 ──
+        prompt = str(prompt).strip()
+        if not prompt:
+            return "图片生成失败: prompt 不能为空，请提供图片描述."
+        if len(prompt) < 10:
+            return (
+                f"图片生成失败: prompt 过短（仅 {len(prompt)} 个字符），"
+                "请提供至少 10 个字符的详细图片描述."
+            )
+        if prompt.isdigit():
+            return "图片生成失败: prompt 不能为纯数字，请提供有效的图片描述."
+        if len(set(prompt)) <= 2:
+            return "图片生成失败: prompt 无意义（字符种类过少），请提供有效的图片描述."
+
+        request_id = uuid.uuid4().hex[:12]
+
         if aspect_ratio not in _SUPPORTED_ASPECT_RATIOS:
             aspect_ratio = "1:1"
         if image_size != _FIXED_IMAGE_SIZE:
@@ -640,9 +669,10 @@ def create_image_generation_tool(model):
             ).encode("utf-8")
             payload_bytes_len = len(request_body)
         logger.info(
-            "Submitting image generation: model=%s endpoint=%s reference_images=%d "
+            "Submitting image generation: request_id=%s model=%s endpoint=%s reference_images=%d "
             "reference_bytes=%d request_bytes=%d timeout=%.0fs max_attempts=%d "
-            "retry_base_delay=%.1fs",
+            "retry_base_delay=%.1fs prompt_preview=%r",
+            request_id,
             image_model,
             image_operation,
             len(reference_data_urls),
@@ -651,6 +681,7 @@ def create_image_generation_tool(model):
             timeout_seconds,
             max_api_attempts,
             retry_base_delay_seconds,
+            prompt[:200],
         )
 
         queued_at = time.monotonic()
@@ -658,18 +689,20 @@ def create_image_generation_tool(model):
         last_error = ""
         async with generation_gate:
             logger.info(
-                "Image generation request acquired single-flight slot after %.2fs",
+                "Image generation request acquired single-flight slot after %.2fs, request_id=%s",
                 time.monotonic() - queued_at,
+                request_id,
             )
             for attempt in range(max_api_attempts):
                 if attempt:
                     wait_seconds = retry_base_delay_seconds * (2 ** (attempt - 1))
                     logger.warning(
-                        "Retrying image API call (attempt %d/%d) in %.1fs after a transient failure; "
+                        "Retrying image API call (attempt %d/%d) in %.1fs request_id=%s; "
                         "the upstream may still bill or complete the prior request",
                         attempt + 1,
                         max_api_attempts,
                         wait_seconds,
+                        request_id,
                     )
                     await asyncio.sleep(wait_seconds)
                 started_at = time.monotonic()
@@ -682,7 +715,7 @@ def create_image_generation_tool(model):
                         request_body.add_field("n", "1")
                         for reference_bytes, mime_type, filename in edit_images:
                             request_body.add_field(
-                                "image",
+                                "image[]",
                                 reference_bytes,
                                 filename=filename,
                                 content_type=mime_type,
@@ -701,7 +734,8 @@ def create_image_generation_tool(model):
                             timeout_seconds=timeout_seconds,
                         )
                     logger.info(
-                        "Image API request completed: attempt=%d duration=%.2fs image_bytes=%d",
+                        "Image API request completed: request_id=%s attempt=%d duration=%.2fs image_bytes=%d",
+                        request_id,
                         attempt + 1,
                         time.monotonic() - started_at,
                         len(image_bytes),
