@@ -20,6 +20,8 @@ from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.domain import GeneratedImageArtifact
 from shuiyuan_auto_reply.infrastructure.persistence.state import state_directory
 
+from .mention_multimodal import normalize_shuiyuan_image_url
+
 # Single and combined reference-image limits. Base64 increases the wire size.
 _MAX_REFERENCE_BYTES = 10 * 1024 * 1024
 _MAX_TOTAL_REFERENCE_BYTES = 20 * 1024 * 1024
@@ -383,18 +385,31 @@ async def _download_and_encode(
             return _encode_bytes(image_bytes, f"data_url{ext}", max_bytes)
         return None
 
-    is_upload = url.startswith("upload://")
-    is_short_path = url.startswith("/uploads/short-url/")
-    if is_upload or is_short_path:
-        upload_url = url if is_upload else url.replace("/uploads/short-url/", "upload://")
+    # Shuiyuan image URLs need the authenticated forum session.  In particular,
+    # proxy/TUN DNS resolvers commonly map the public Shuiyuan host to a reserved
+    # synthetic address (for example 198.18.0.0/15), which the generic SSRF guard
+    # must reject.  Normalize only the explicitly supported Shuiyuan image paths
+    # and route them through the already host-restricted forum downloader instead.
+    shuiyuan_image_url = normalize_shuiyuan_image_url(url)
+    if shuiyuan_image_url is not None:
         if shuiyuan_model is not None:
             try:
-                image_bytes = await shuiyuan_model.download_image(upload_url)
+                if shuiyuan_image_url.startswith("upload://"):
+                    image_bytes = await shuiyuan_model.download_image(shuiyuan_image_url)
+                else:
+                    image_bytes = await shuiyuan_model.download_raw_image(shuiyuan_image_url)
             except Exception as exc:
-                logger.warning("Shuiyuan download_image failed for %s: %s", upload_url, exc)
+                logger.warning(
+                    "Shuiyuan reference image download failed for %s: %s",
+                    shuiyuan_image_url,
+                    exc,
+                )
                 return None
         else:
-            logger.warning("No ShuiyuanModel available, cannot download upload:// image: %s", upload_url)
+            logger.warning(
+                "No ShuiyuanModel available, cannot download Shuiyuan image: %s",
+                shuiyuan_image_url,
+            )
             return None
         return _encode_bytes(image_bytes, url, max_bytes)
 
@@ -967,12 +982,21 @@ class ImageGenerationService:
         image_size: str = "1K",
         reference_images: str | list[str] | None = None,
         output_dir: str | None = None,
-    ):
-        """Generate an image and return content plus a local GeneratedImageArtifact."""
-        return await self._generate(
+    ) -> tuple[str, GeneratedImageArtifact | None]:
+        """Return the two-part result required by ``content_and_artifact``.
+
+        The legacy generator returns a plain error string on validation, network,
+        and persistence failures.  Managed runtimes expose this method through a
+        LangChain tool whose response format is ``content_and_artifact``, so those
+        strings must be normalized as ``(content, None)`` as well.
+        """
+        result = await self._generate(
             prompt=prompt,
             aspect_ratio=aspect_ratio,
             image_size=image_size,
             reference_images=reference_images,
             output_dir=output_dir,
         )
+        if isinstance(result, tuple) and len(result) == 2:
+            return result
+        return str(result), None

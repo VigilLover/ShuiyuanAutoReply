@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.tools import StructuredTool
 
 from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegistry
 from shuiyuan_auto_reply.bootstrap.container import ApplicationContainer
@@ -238,6 +239,31 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ImageArtifactTests(unittest.IsolatedAsyncioTestCase):
+    async def test_managed_generation_failure_obeys_content_and_artifact_contract(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ,
+            {
+                "IMAGE_GEN_API_KEY": "",
+                "IMAGE_GEN_API_URL": "https://images.example/v1",
+            },
+            clear=False,
+        ):
+            store = SQLiteStateStore(Path(temp) / "state.sqlite3")
+            await store.initialize()
+            service = ImageGenerationService(SimpleNamespace(), store)
+            tool = StructuredTool.from_function(
+                coroutine=service.generate,
+                name="generate_image",
+                description="test managed image generation",
+                response_format="content_and_artifact",
+            )
+
+            result = await tool.ainvoke(
+                {"prompt": "一幅足够详细的测试图片描述"}
+            )
+
+            self.assertEqual(result, "图片生成失败: IMAGE_GEN_API_KEY 未配置.")
+
     async def test_managed_generation_saves_artifact_without_forum_upload(self):
         png = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="

@@ -16,7 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import aiohttp
 from aiohttp import web
@@ -586,6 +586,31 @@ class TestShuiyuanDownloadImage(unittest.IsolatedAsyncioTestCase):
 # ── 图片下载/编码工具 ─────────────────────────────────────────────────
 
 class TestDownloadAndEncode(unittest.IsolatedAsyncioTestCase):
+    async def test_shuiyuan_avatar_uses_authenticated_raw_image_download(self):
+        model = MagicMock()
+        model.download_image = AsyncMock()
+        model.download_raw_image = AsyncMock(
+            return_value=base64.b64decode(_png_data_url().split(",", 1)[1])
+        )
+        avatar_url = (
+            "https://shuiyuan.sjtu.edu.cn/user_avatar/"
+            "shuiyuan.sjtu.edu.cn/wolf_lumine/288/2066071_2.png"
+        )
+
+        result = await _download_and_encode(
+            None,
+            avatar_url,
+            shuiyuan_model=model,
+            strict_remote=True,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result.startswith("data:image/png;base64,"))
+        model.download_raw_image.assert_awaited_once_with(
+            "/user_avatar/shuiyuan.sjtu.edu.cn/wolf_lumine/288/2066071_2.png"
+        )
+        model.download_image.assert_not_called()
+
     async def test_encode_local_file(self):
         """本地文件应正确转为 base64 data URL"""
         ref_files = list(_REFERENCE_DIR.glob("*"))
