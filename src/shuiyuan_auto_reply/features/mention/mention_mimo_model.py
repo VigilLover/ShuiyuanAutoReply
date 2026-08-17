@@ -6,6 +6,7 @@ from langchain_openai import ChatOpenAI
 
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
+from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 
 from .mention_chat_model import MentionChatModel
 
@@ -108,8 +109,13 @@ class MentionMimoModel(MentionChatModel):
         model: ShuiyuanModel,
         username: str = "wolf_lumine",
         provider_settings: ProviderSettings | None = None,
+        prompt_scope: PromptScope = PromptScope.FORUM,
+        enabled_tools: set[str] | None = None,
+        disabled_mcp_tools: set[str] | None = None,
+        state_store=None,
+        system_prompt_override: str | None = None,
     ):
-        super().__init__(model, username=username)
+        super().__init__(model, username=username, prompt_scope=prompt_scope, enabled_tools=enabled_tools, disabled_mcp_tools=disabled_mcp_tools, state_store=state_store, system_prompt_override=system_prompt_override)
 
         current = provider_settings or ProviderSettings()
         api_key = current.mimo_api_key

@@ -3,12 +3,14 @@
 from typing import Protocol
 
 from shuiyuan_auto_reply.application.dispatch import BotContext
-from shuiyuan_auto_reply.domain import ConversationRef, ReplyRequest, ReplyResult
+from shuiyuan_auto_reply.domain import ChatMessage, ConversationRef, ReplyRequest, ReplyResult
 from .callback import CallbackMessageHandler
 
 
 class ChatBackend(Protocol):
-    async def reply(self, request: ReplyRequest) -> ReplyResult: ...
+    async def reply(
+        self, request: ReplyRequest, history: tuple[ChatMessage, ...] = ()
+    ) -> ReplyResult: ...
     async def clear(self, conversation: ConversationRef) -> None: ...
     async def aclose(self) -> None: ...
 
@@ -24,7 +26,7 @@ class ChatHandler:
         return True
 
     async def handle(self, context: BotContext) -> ReplyResult:
-        return await self._backend.reply(context.request)
+        return await self._backend.reply(context.request, context.history)
 
     async def clear_conversation(self, conversation: ConversationRef) -> None:
         await self._backend.clear(conversation)

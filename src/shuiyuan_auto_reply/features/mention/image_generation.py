@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import io
+import ipaddress
 import json
 import logging
 import math
@@ -10,11 +11,14 @@ import socket as _socket
 import time
 import uuid
 from datetime import datetime
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 from PIL import Image
 
 from shuiyuan_auto_reply.constants import settings
+from shuiyuan_auto_reply.domain import GeneratedImageArtifact
+from shuiyuan_auto_reply.infrastructure.persistence.state import state_directory
 
 # Single and combined reference-image limits. Base64 increases the wire size.
 _MAX_REFERENCE_BYTES = 10 * 1024 * 1024
@@ -353,17 +357,27 @@ async def _download_and_encode(
     *,
     shuiyuan_model=None,
     max_bytes: int = _MAX_REFERENCE_BYTES,
+    strict_remote: bool = False,
+    _redirects_remaining: int = 3,
 ) -> str | None:
     """下载图片并转为 base64 data URL，整合了水源认证下载。"""
     if url.startswith("data:"):
         match = _DATA_URL_RE.match(url)
         if match:
+            mime = match.group("mime").lower()
+            if strict_remote and mime not in {
+                "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"
+            }:
+                logger.warning("Blocked unsupported data URL MIME: %s", mime)
+                return None
             try:
                 image_bytes = base64.b64decode(match.group("data"), validate=True)
             except Exception:
                 logger.warning("Failed to decode data URL, skipping")
                 return None
-            mime = match.group("mime")
+            if len(image_bytes) > max_bytes:
+                logger.warning("Data URL reference image exceeds the size limit")
+                return None
             # 保留原始 MIME 类型的扩展名
             ext = ".png" if "png" in mime else ".jpg"
             return _encode_bytes(image_bytes, f"data_url{ext}", max_bytes)
@@ -385,6 +399,9 @@ async def _download_and_encode(
         return _encode_bytes(image_bytes, url, max_bytes)
 
     if not url.startswith(("http://", "https://")):
+        if strict_remote:
+            logger.warning("Blocked local reference image path")
+            return None
         try:
             with open(url, "rb") as file:
                 image_bytes = file.read()
@@ -401,21 +418,78 @@ async def _download_and_encode(
                     url,
                     shuiyuan_model=shuiyuan_model,
                     max_bytes=max_bytes,
+                    strict_remote=strict_remote,
+                    _redirects_remaining=_redirects_remaining,
                 )
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+        if strict_remote and not await _is_public_http_url(url):
+            logger.warning("Blocked non-public reference image URL: %s", url[:80])
+            return None
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=30),
+            allow_redirects=not strict_remote,
+        ) as response:
+            if strict_remote and 300 <= response.status < 400:
+                if _redirects_remaining <= 0:
+                    logger.warning("Reference image exceeded redirect limit")
+                    return None
+                location = response.headers.get("Location")
+                redirected = urljoin(url, location) if location else ""
+                if not redirected or not await _is_public_http_url(redirected):
+                    logger.warning("Blocked unsafe reference image redirect")
+                    return None
+                return await _download_and_encode(
+                    session,
+                    redirected,
+                    shuiyuan_model=shuiyuan_model,
+                    max_bytes=max_bytes,
+                    strict_remote=True,
+                    _redirects_remaining=_redirects_remaining - 1,
+                )
             if response.status != 200:
                 logger.warning("Download reference image failed: %s HTTP %s", url[:80], response.status)
                 return None
+            if strict_remote:
+                content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+                if not content_type.startswith("image/"):
+                    logger.warning("Reference URL did not return an image MIME type: %s", content_type)
+                    return None
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > max_bytes:
                 logger.warning("Reference image too large: %s bytes, skipping", content_length)
                 return None
             image_bytes = await response.read()
+            if len(image_bytes) > max_bytes:
+                logger.warning("Reference image exceeded size limit after download")
+                return None
     except Exception as exc:
         logger.warning("Download reference image error: %s %s", url[:80], exc)
         return None
 
     return _encode_bytes(image_bytes, url, max_bytes)
+
+
+async def _is_public_http_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        if parsed.username or parsed.password:
+            return False
+        addresses = await asyncio.get_running_loop().getaddrinfo(
+            parsed.hostname,
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+            type=_socket.SOCK_STREAM,
+        )
+        if not addresses:
+            return False
+        for address in addresses:
+            ip = ipaddress.ip_address(address[4][0])
+            if not ip.is_global:
+                return False
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def _compress_reference_image(image_bytes: bytes) -> bytes:
@@ -538,7 +612,7 @@ def _prepare_image_upload(image_bytes: bytes) -> tuple[str, bytes]:
     return extension, buffer.getvalue()
 
 
-def create_image_generation_tool(model):
+def create_image_generation_tool(model, *, state_store=None):
     """
     创建一个与 ShuiyuanModel 绑定的文生图工具函数.
 
@@ -599,6 +673,10 @@ def create_image_generation_tool(model):
 
         request_id = uuid.uuid4().hex[:12]
 
+        if state_store is not None and output_dir:
+            logger.warning("Ignoring output_dir for managed image generation")
+            output_dir = None
+
         if aspect_ratio not in _SUPPORTED_ASPECT_RATIOS:
             aspect_ratio = "1:1"
         if image_size != _FIXED_IMAGE_SIZE:
@@ -634,9 +712,21 @@ def create_image_generation_tool(model):
         total_ref_bytes = 0
         use_edit_endpoint = bool(reference_images)
         if reference_images:
+            if state_store is not None:
+                unsafe = [
+                    url for url in reference_images
+                    if not url.startswith(("data:", "upload://", "/uploads/short-url/", "http://", "https://"))
+                ]
+                if unsafe:
+                    return "图片生成失败: 网页运行时不允许读取本地参考图路径."
             async with aiohttp.ClientSession() as session:
                 for url in reference_images:
-                    data_url = await _download_and_encode(session, url, shuiyuan_model=model)
+                    data_url = await _download_and_encode(
+                        session,
+                        url,
+                        shuiyuan_model=model,
+                        strict_remote=state_store is not None,
+                    )
                     if not data_url:
                         continue
                     encoded_length = len(data_url.split(",", 1)[1]) if "," in data_url else len(data_url)
@@ -802,7 +892,11 @@ def create_image_generation_tool(model):
             return f"图片生成失败: 下载图片异常 {exc}"
 
         try:
-            backup_dir = output_dir or os.path.join(settings.assets_directory, "generated_images")
+            backup_dir = output_dir or (
+                str(state_directory() / "artifacts")
+                if state_store is not None
+                else os.path.join(settings.assets_directory, "generated_images")
+            )
             os.makedirs(backup_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             safe_prompt = prompt[:20].replace(" ", "_").replace("/", "_")
@@ -812,6 +906,38 @@ def create_image_generation_tool(model):
             logger.info("Saved backup to: %s", backup_path)
         except Exception as exc:
             logger.warning("Backup save failed (non-fatal): %s", exc)
+            if state_store is not None:
+                return f"图片生成失败: 保存本地图片异常 {exc}"
+
+        if state_store is not None:
+            artifact_id = str(uuid.uuid4())
+            try:
+                with Image.open(io.BytesIO(image_bytes)) as generated:
+                    width, height = generated.size
+                    mime_type = Image.MIME.get(generated.format or "", "image/png")
+                await state_store.register_artifact(
+                    artifact_id=artifact_id,
+                    local_path=backup_path,
+                    mime_type=mime_type,
+                    byte_count=len(image_bytes),
+                    width=width,
+                    height=height,
+                )
+                artifact = GeneratedImageArtifact(
+                    artifact_id=artifact_id,
+                    mime_type=mime_type,
+                    local_path=backup_path,
+                    byte_count=len(image_bytes),
+                    width=width,
+                    height=height,
+                )
+                return (
+                    f"图片生成成功：{artifact.uri}。请在最终回复中使用该地址展示图片。",
+                    artifact,
+                )
+            except Exception as exc:
+                logger.exception("Failed to register generated image artifact")
+                return f"图片生成失败: 保存本地 Artifact 异常 {exc}"
 
         try:
             response = await model.upload_image(upload_bytes)
@@ -822,3 +948,31 @@ def create_image_generation_tool(model):
             return f"图片生成失败: 上传到水源异常 {exc}"
 
     return generate_image
+
+
+class ImageGenerationService:
+    """Channel-neutral image generation that produces a local Artifact."""
+
+    def __init__(self, forum_model, state_store) -> None:
+        if state_store is None:
+            raise ValueError("ImageGenerationService requires the local state store")
+        self._generate = create_image_generation_tool(
+            forum_model, state_store=state_store
+        )
+
+    async def generate(
+        self,
+        prompt: str,
+        aspect_ratio: str = "1:1",
+        image_size: str = "1K",
+        reference_images: str | list[str] | None = None,
+        output_dir: str | None = None,
+    ):
+        """Generate an image and return content plus a local GeneratedImageArtifact."""
+        return await self._generate(
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            image_size=image_size,
+            reference_images=reference_images,
+            output_dir=output_dir,
+        )

@@ -2,6 +2,7 @@
   "version": "1",
   "default_persona": "wolf_lumine",
   "system_template": "policies/system_template.txt",
+  "web_system_template": "policies/web_system_template.txt",
   "capabilities": {
     "multimodal": "capabilities/multimodal.txt"
   },

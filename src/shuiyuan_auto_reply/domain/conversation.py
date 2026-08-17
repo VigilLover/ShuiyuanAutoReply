@@ -7,6 +7,7 @@ from enum import Enum
 class Channel(str, Enum):
     FORUM = "forum"
     API = "api"
+    WEB = "web"
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,8 +20,8 @@ class ActorRef:
     @property
     def memory_id(self) -> str:
         """Return an ID whose namespace cannot collide across channels."""
-        if self.channel is Channel.API:
-            return f"api:{self.external_id}"
+        if self.channel in {Channel.API, Channel.WEB}:
+            return f"{self.channel.value}:{self.external_id}"
         return self.external_id
 
 

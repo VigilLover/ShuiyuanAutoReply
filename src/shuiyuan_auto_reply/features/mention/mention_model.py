@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import random
 import re
 import traceback
@@ -16,15 +17,18 @@ from shuiyuan_auto_reply.application.handlers import (
 from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.domain import (
+    AttachmentRef,
     ActorRef,
     Channel,
     ConversationRef,
     DispatchMode,
     ForumContextRef,
     ReplyRequest,
+    ReplyResult,
 )
-from shuiyuan_auto_reply.infrastructure.persistence import InMemorySessionRepository
-from shuiyuan_auto_reply.infrastructure.forum import ForumOutputFormatter
+from shuiyuan_auto_reply.infrastructure.persistence import InMemorySessionRepository, SQLiteExecutionObserver, SQLiteSessionRepository
+from shuiyuan_auto_reply.infrastructure.forum import ForumMediaUploader, ForumOutputFormatter
+from shuiyuan_auto_reply.application.events import emit_event
 from shuiyuan_auto_reply.shuiyuan.objects import User, UserActionDetails
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from shuiyuan_auto_reply.shuiyuan.user_action_model import BaseUserActionModel
@@ -53,6 +57,8 @@ class MentionModel(BaseUserActionModel):
         persona: str,
         chat_model: Any,
         provider_settings: ProviderSettings | None = None,
+        state_store=None,
+        runtime_refresher=None,
     ):
         """
         Initialize the TopicModel with a ShuiyuanModel instance.
@@ -76,12 +82,19 @@ class MentionModel(BaseUserActionModel):
         self.nickname = self.config["nickname"]
 
         self.pumpkin = chat_model
+        self._runtime_lock = asyncio.Lock()
+        self._runtime_counts: dict[Any, int] = {chat_model: 0}
+        self._retired_runtimes: set[Any] = set()
+        self._closed_runtimes: set[Any] = set()
         self.pet_model = MentionPetModel(
             persona=persona, provider_settings=provider_settings
         )
         self.output_formatter = ForumOutputFormatter()
+        self.state_store = state_store
+        self.runtime_refresher = runtime_refresher
+        self.media_uploader = ForumMediaUploader(model, state_store)
         self.bot_service = BotService(
-            InMemorySessionRepository(),
+            SQLiteSessionRepository(state_store) if state_store else InMemorySessionRepository(),
             HandlerRegistry(
                 [
                     HelpHandler(
@@ -117,7 +130,63 @@ class MentionModel(BaseUserActionModel):
                     ),
                 ]
             ),
+            observer_factory=(lambda: SQLiteExecutionObserver(state_store)) if state_store else None,
         )
+
+    async def swap_chat_model(self, candidate: Any) -> None:
+        close_now = None
+        async with self._runtime_lock:
+            old = self.pumpkin
+            self.pumpkin = candidate
+            self._runtime_counts.setdefault(candidate, 0)
+            if self._runtime_counts.get(old, 0) == 0:
+                self._runtime_counts.pop(old, None)
+                self._closed_runtimes.add(old)
+                close_now = old
+            else:
+                self._retired_runtimes.add(old)
+        if close_now is not None:
+            await self._close_chat_runtime(close_now)
+
+    async def _acquire_chat_runtime(self):
+        async with self._runtime_lock:
+            runtime = self.pumpkin
+            self._runtime_counts[runtime] = self._runtime_counts.get(runtime, 0) + 1
+            return runtime
+
+    async def _release_chat_runtime(self, runtime) -> None:
+        close_now = False
+        async with self._runtime_lock:
+            remaining = self._runtime_counts.get(runtime, 1) - 1
+            self._runtime_counts[runtime] = remaining
+            if remaining == 0 and runtime in self._retired_runtimes:
+                self._retired_runtimes.discard(runtime)
+                self._runtime_counts.pop(runtime, None)
+                self._closed_runtimes.add(runtime)
+                close_now = True
+        if close_now:
+            await self._close_chat_runtime(runtime)
+
+    @staticmethod
+    async def _close_chat_runtime(runtime) -> None:
+        try:
+            await runtime.aclose()
+        except Exception:
+            logging.exception("Failed to close retired forum chat runtime")
+
+    async def aclose(self) -> None:
+        await super().aclose()
+        async with self._runtime_lock:
+            runtimes = tuple(
+                runtime
+                for runtime in self._runtime_counts
+                if runtime not in self._closed_runtimes
+            )
+            self._runtime_counts.clear()
+            self._retired_runtimes.clear()
+            self._closed_runtimes.update(runtimes)
+        for runtime in runtimes:
+            await self._close_chat_runtime(runtime)
 
     async def _handle_help(self, context: BotContext) -> str | None:
         return self._help_condition(context.request.content)
@@ -134,7 +203,7 @@ class MentionModel(BaseUserActionModel):
             return None
         return await self._clear_condition(context.request.content, forum.topic_id)
 
-    async def _handle_chat(self, context: BotContext) -> str | None:
+    async def _handle_chat(self, context: BotContext) -> str | ReplyResult | None:
         forum = context.request.forum_context
         if forum is None:
             return None
@@ -178,7 +247,7 @@ class MentionModel(BaseUserActionModel):
 
     async def _pumpkin_condition(
         self, topic_id: int, reply_to_post_number: Optional[int], raw: str, user: User
-    ) -> Optional[str]:
+    ) -> Optional[str | ReplyResult]:
         """
         Check if the raw content of a post contains the target trigger word.
 
@@ -196,8 +265,12 @@ class MentionModel(BaseUserActionModel):
 
         logging.info(f"==> [MentionModel] Triggered AI spawn with prompt: '{raw}' for user: {user.username}")
         # Let the Tongyi model respond based on conversation and similar responses
+        artifacts = ()
+        runtime = await self._acquire_chat_runtime()
         try:
-            reply = await self.pumpkin.get_pumpkin_response(topic_id, reply_to_post_number, raw, user)
+            reply, artifacts = await runtime.get_pumpkin_response(
+                topic_id, reply_to_post_number, raw, user, include_artifacts=True
+            )
         except ValueError as e:
             if "DataInspectionFailed" in str(e):
                 reply = "抱歉，您的输入包含不当内容，无法处理。"
@@ -208,9 +281,25 @@ class MentionModel(BaseUserActionModel):
         except Exception as e:
             reply = "抱歉，遇到了一些未知错误。"
             logging.error(f"==> [MentionModel] AI replied with Exception: {str(e)}")
+        finally:
+            await self._release_chat_runtime(runtime)
+
+        for artifact in artifacts:
+            media = await self.media_uploader.upload(artifact)
+            reply = reply.replace(artifact.uri, media.short_path)
+            await emit_event(
+                "forum.image_uploaded",
+                {"artifact_id": artifact.artifact_id, "short_path": media.short_path},
+            )
 
         logging.info(f"==> [MentionModel] AI replied with length {len(reply)}.")
-        return self.output_formatter.format_chat(reply, self.nickname)
+        formatted = self.output_formatter.format_chat(reply, self.nickname)
+        if artifacts:
+            return ReplyResult(
+                formatted,
+                tuple(AttachmentRef(a.uri, a.mime_type, a.artifact_id) for a in artifacts),
+            )
+        return formatted
 
     async def _clear_condition(self, raw: str, topic_id: int) -> Optional[str]:
         """
@@ -454,6 +543,14 @@ class MentionModel(BaseUserActionModel):
         :return: None
         """
         logging.info(f"==> [MentionModel] Event triggered for action_type={action.action_type} on post_id={action.post_id}")
+
+        if self.runtime_refresher is not None:
+            try:
+                await self.runtime_refresher()
+            except Exception:
+                logging.exception(
+                    "Failed to apply the latest forum runtime; keeping the previous runtime"
+                )
         
         # This is the text to reply to the post
         text: Optional[str] = None
@@ -516,6 +613,14 @@ class MentionModel(BaseUserActionModel):
                     reply_to_post_number=post_details.reply_to_post_number,
                 ),
             )
+            if self.state_store is not None:
+                try:
+                    topic = await self.model.get_topic_details(post_details.topic_id)
+                    await self.state_store.update_title_for_ref(
+                        request.conversation, topic.title
+                    )
+                except Exception:
+                    logging.exception("Failed to persist forum topic title")
             try:
                 result = await self.bot_service.reply(request)
             except LookupError:
@@ -545,4 +650,14 @@ class MentionModel(BaseUserActionModel):
                     action.topic_id,
                     action.post_number,
                 )
+                await emit_event(
+                    "forum.reply_published",
+                    {"topic_id": action.topic_id, "post_number": action.post_number},
+                )
+                if self.state_store is not None:
+                    await self.state_store.append_event_for_request(
+                        f"forum:{action.post_id}",
+                        "forum.reply_published",
+                        {"topic_id": action.topic_id, "post_number": action.post_number},
+                    )
                 logging.info(f"==> [MentionModel] Reply successfully sent to post {action.post_id}.")

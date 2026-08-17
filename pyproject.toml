@@ -10,6 +10,7 @@ authors = [{ name = "Hydroiodic_Acid", email = "liao_chengfan@sjtu.edu.cn" }]
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp",
+    "aiosqlite",
     "apscheduler",
     "dacite",
     "dashscope",
@@ -34,11 +35,16 @@ dependencies = [
     "sqlalchemy",
     "pytest>=9.0.3",
     "greenlet>=3.5.0",
+    "cryptography",
 ]
 
 [project.optional-dependencies]
 dev = ["black", "isort"]
 server = ["fastapi[all]"]
+
+[project.scripts]
+shuiyuan-bot = "shuiyuan_auto_reply.interfaces.cli.main:bot_main"
+shuiyuan-api = "shuiyuan_auto_reply.interfaces.cli.main:api_main"
 
 [tool.setuptools]
 include-package-data = true
@@ -52,6 +58,11 @@ include = ["shuiyuan_auto_reply*"]
 
 [tool.setuptools.package-data]
 shuiyuan_auto_reply = [
+    "prompts/manifest.json",
+    "prompts/personas/*.txt",
+    "prompts/policies/*.txt",
+    "prompts/capabilities/*.txt",
+    "interfaces/api/static/**/*",
     "assets/tarot_data.json",
     "assets/tarot_img/*.jpg",
     "assets/fonts/Noto_Color_Emoji/*.ttf",

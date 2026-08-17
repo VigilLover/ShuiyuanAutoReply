@@ -28,6 +28,9 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from shuiyuan_auto_reply.embeddings import get_global_text_embeddings
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
+from shuiyuan_auto_reply.application.ports.prompt import PromptScope
+from shuiyuan_auto_reply.application.events import emit_event
+from shuiyuan_auto_reply.domain import ChatMessage, GeneratedImageArtifact
 from shuiyuan_auto_reply.infrastructure.retrieval import Neo4jStyleRetriever
 from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 from shuiyuan_auto_reply.openrouter.openrouter_model import (
@@ -35,7 +38,7 @@ from shuiyuan_auto_reply.openrouter.openrouter_model import (
 )
 from shuiyuan_auto_reply.shuiyuan.objects import User
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
-from .image_generation import create_image_generation_tool
+from .image_generation import ImageGenerationService, create_image_generation_tool
 from .chat_pipeline import ChatOrchestrator
 from .mention_memory_model import MentionMemoryModel
 from .mention_multimodal import (
@@ -68,6 +71,8 @@ class MentionGraphState(TypedDict, total=False):
     messages: Annotated[List[AnyMessage], add_messages]
     image_inputs: List[MentionImageInput]
     supports_multimodal: bool
+    external_history: tuple[ChatMessage, ...] | None
+    generated_artifacts: list[GeneratedImageArtifact]
 
 
 class FallbackLLM(BaseChatModel):
@@ -145,7 +150,17 @@ class MentionChatModel:
     and can utilize tools provided by an MCP server as well as custom tools defined in the ShuiyuanModel.
     """
 
-    def __init__(self, model: ShuiyuanModel, username="wolf_lumine"):
+    def __init__(
+        self,
+        model: ShuiyuanModel,
+        username="wolf_lumine",
+        *,
+        prompt_scope: PromptScope = PromptScope.FORUM,
+        enabled_tools: set[str] | None = None,
+        disabled_mcp_tools: set[str] | None = None,
+        state_store=None,
+        system_prompt_override: str | None = None,
+    ):
         # The llm model should be defined in the subclass
         self.llm: BaseChatModel
         self.username = username
@@ -157,7 +172,15 @@ class MentionChatModel:
         capabilities = (
             {"multimodal"} if self._get_multimodal_prompt_rules() else set()
         )
-        system_prompt = prompt_repository.load(username, capabilities).system_prompt
+        system_prompt = prompt_repository.load(
+            username, capabilities, prompt_scope
+        ).system_prompt
+        if system_prompt_override is not None:
+            system_prompt = system_prompt_override
+        self.prompt_scope = prompt_scope
+        self.enabled_tools = enabled_tools
+        self.disabled_mcp_tools = disabled_mcp_tools or set()
+        self.state_store = state_store
 
         self.prompt = ChatPromptTemplate.from_messages(
             [
@@ -383,13 +406,22 @@ class MentionChatModel:
             )
 
         # 注册图片生成工具 (本地实现, 生成后自动上传水源并返回 Markdown)
-        gen_img_func = create_image_generation_tool(self.model)
+        if getattr(self, "state_store", None) is not None:
+            gen_img_func = ImageGenerationService(
+                self.model, self.state_store
+            ).generate
+        else:
+            # Compatibility path for direct legacy construction and its snapshots.
+            gen_img_func = create_image_generation_tool(self.model)
         tools.append(
             StructuredTool.from_function(
                 coroutine=gen_img_func,
                 name="generate_image",
                 description=inspect.getdoc(gen_img_func)
-                or "根据文字描述生成图片并自动上传到水源, 返回 Markdown 图片链接.",
+                or "根据文字描述生成图片并保存为本地 Artifact.",
+                response_format=(
+                    "content_and_artifact" if getattr(self, "state_store", None) is not None else "content"
+                ),
             )
         )
 
@@ -433,8 +465,45 @@ class MentionChatModel:
         await self.memory_model.initialize()
         memory_tools = self.memory_model.tools
 
-        # Create the native LangGraph tool loop with MCP, Shuiyuan, and memory tools.
-        all_function_like_tools = mcp_tools + shuiyuan_tools + memory_tools
+        # MCP uses an independent deny-list so newly discovered MCP tools are
+        # enabled by default. Other tools retain the existing allow-list behavior.
+        enabled_mcp_tools = [
+            tool for tool in mcp_tools if tool.name not in self.disabled_mcp_tools
+        ]
+        other_function_like_tools = shuiyuan_tools + memory_tools
+        tool_catalog = [
+            {"name": tool.name, "source": "mcp"} for tool in mcp_tools
+        ] + [
+            {"name": tool.name, "source": "forum-read/image"}
+            for tool in shuiyuan_tools
+        ] + [
+            {"name": tool.name, "source": "memory"} for tool in memory_tools
+        ] + [
+            {"name": str(tool.get("type")), "source": "provider-native"}
+            for tool in self.openai_tools
+            if tool.get("type")
+        ]
+        for item in tool_catalog:
+            if item["source"] == "mcp":
+                item["enabled"] = item["name"] not in self.disabled_mcp_tools
+            else:
+                item["enabled"] = (
+                    self.enabled_tools is None or item["name"] in self.enabled_tools
+                )
+        if self.state_store is not None:
+            await self.state_store.replace_tool_catalog(
+                self.prompt_scope.value, tool_catalog
+            )
+        if self.enabled_tools is not None:
+            other_function_like_tools = [
+                tool for tool in other_function_like_tools
+                if tool.name in self.enabled_tools
+            ]
+            self.openai_tools = [
+                tool for tool in self.openai_tools
+                if str(tool.get("type", "")) in self.enabled_tools
+            ]
+        all_function_like_tools = enabled_mcp_tools + other_function_like_tools
         all_tools = all_function_like_tools + self.openai_tools
         self.tools = all_function_like_tools
         logging.info(
@@ -540,6 +609,7 @@ class MentionChatModel:
             return {"context": ""}
 
         context_text = "\n".join(item.text for item in style_items)
+        await emit_event("context.style_loaded", {"count": len(style_items)})
         logging.info(
             "Mention graph retrieved %d style document(s), persona=%s context_chars=%d",
             len(style_items),
@@ -549,12 +619,23 @@ class MentionChatModel:
         return {"context": context_text}
 
     async def _load_topic_context(self, state: MentionGraphState) -> MentionGraphState:
-        history_obj = self.get_session_history(state["session_id"])
+        external_history = state.get("external_history")
+        if external_history is not None:
+            history_obj = ChatMessageHistory()
+            for item in external_history:
+                if item.role == "user":
+                    history_obj.add_user_message(item.content)
+                elif item.role == "assistant":
+                    history_obj.add_ai_message(item.content)
+        else:
+            history_obj = self.get_session_history(state["session_id"])
         topic_id = state.get("topic_id")
         if state.get("load_forum_context", True) and topic_id is not None:
             recent_msgs = await self.get_recent_msgs_context(topic_id)
+            await emit_event("context.forum_loaded", {"topic_id": topic_id})
         else:
             recent_msgs = "无近期回帖记录"
+            await emit_event("context.forum_skipped", {})
         return {
             "chat_history": history_obj.messages,
             "history_obj": history_obj,
@@ -578,6 +659,7 @@ class MentionChatModel:
             len(memory_context),
             memory_context[:256],
         )
+        await emit_event("memory.loaded", {"chars": len(memory_context)})
         return {"long_term_memory": memory_context}
 
     async def _load_current_images(self, state: MentionGraphState) -> MentionGraphState:
@@ -678,6 +760,10 @@ class MentionChatModel:
                 "Mention graph tool call: name=%s args=%s",
                 tool_name,
                 MentionChatModel._serialize_tool_args(tool_args),
+            )
+            await emit_event(
+                "tool.started",
+                {"name": tool_name, "arguments": MentionChatModel._serialize_tool_args(tool_args)[:2000]},
             )
 
         return {}
@@ -804,14 +890,31 @@ class MentionChatModel:
             tool_messages.append(message)
 
         tool_messages.reverse()
+        generated = list(state.get("generated_artifacts", []) or [])
         for message in tool_messages:
             logging.info(
                 "Mention graph tool output: name=%s content=%s",
                 getattr(message, "name", "<unknown>"),
                 MentionChatModel._preview_text(getattr(message, "content", message)),
             )
+            event_type = (
+                "tool.failed"
+                if getattr(message, "status", None) == "error"
+                else "tool.completed"
+            )
+            await emit_event(
+                event_type,
+                {"name": getattr(message, "name", "<unknown>"), "output": MentionChatModel._preview_text(getattr(message, "content", message), 2000)},
+            )
+            artifact = getattr(message, "artifact", None)
+            if isinstance(artifact, GeneratedImageArtifact):
+                generated.append(artifact)
+                await emit_event(
+                    "image.generated",
+                    {"artifact_id": artifact.artifact_id, "byte_count": artifact.byte_count},
+                )
 
-        return {}
+        return {"generated_artifacts": generated}
 
     async def _collect_tool_output_images(self, state: MentionGraphState) -> MentionGraphState:
         existing_images = list(state.get("image_inputs", []) or [])
@@ -936,7 +1039,12 @@ class MentionChatModel:
                 "messages": self._trim_tool_loop_messages(state.get("messages", [])),
             }
         )
+        await emit_event("model.started", {})
         response = await self.llm_with_tools.ainvoke(prompt_value)
+        usage = getattr(response, "usage_metadata", None) or {}
+        await emit_event("model.completed", {"usage": usage})
+        if usage:
+            await emit_event("usage.recorded", usage)
         if not getattr(response, "content", None) and not getattr(response, "tool_calls", None):
             logging.warning(
                 "Model returned empty AIMessage (no content, no tool_calls). "
@@ -950,7 +1058,7 @@ class MentionChatModel:
         raw_output = getattr(last_message, "content", last_message)
         # reasoning_content 兜底：qwen thinking 模式下输出可能在 reasoning 字段；
         # LangChain 不同版本会放在顶层属性或 additional_kwargs 中
-        if not raw_output:
+        if not raw_output and self.prompt_scope is PromptScope.FORUM:
             reasoning = (
                 getattr(last_message, "reasoning_content", None)
                 or getattr(last_message, "additional_kwargs", {}).get("reasoning_content")
@@ -1048,6 +1156,8 @@ class MentionChatModel:
         session_id: int | str | None = None,
         load_forum_context: bool = True,
         memory_user_id: int | str | None = None,
+        external_history: tuple[ChatMessage, ...] | None = None,
+        include_artifacts: bool = False,
     ) -> Optional[str]:
         """
         Let the model respond based on conversation and similar responses.
@@ -1088,6 +1198,7 @@ class MentionChatModel:
             "reply_to_post_number": reply_to_post_number,
             "conversation": conversation,
             "user": user,
+            "external_history": external_history,
         }
         memory_key = self.memory_model.memory_key(effective_memory_user_id)
         response = await self.graph.ainvoke(
@@ -1120,6 +1231,8 @@ class MentionChatModel:
             len(final_text or ""),
             self._preview_text(final_text or "", None),
         )
+        if include_artifacts:
+            return final_text, tuple(response.get("generated_artifacts", []) or [])
         return final_text
 
     async def aclose(self) -> None:

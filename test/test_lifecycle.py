@@ -1,6 +1,7 @@
 import unittest
 import os
 import asyncio
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -35,11 +36,18 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_api_startup_closes_forum_session(self):
         forum = SimpleNamespace(close=AsyncMock())
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}), patch(
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ,
+            {
+                "SHUIYUAN_STATE_DIR": temp,
+                "MENTION_CHAT_PROVIDER": "deepseek",
+                "DEEPSEEK_API_KEY": "test-key",
+            },
+        ), patch(
             "shuiyuan_auto_reply.bootstrap.container.ShuiyuanModel.create",
             new=AsyncMock(return_value=forum),
         ), patch(
-            "shuiyuan_auto_reply.bootstrap.container.MentionProviderFactory.create_api",
+            "shuiyuan_auto_reply.bootstrap.container.MentionProviderFactory.create",
             side_effect=RuntimeError("startup failed"),
         ):
             with self.assertRaisesRegex(RuntimeError, "startup failed"):

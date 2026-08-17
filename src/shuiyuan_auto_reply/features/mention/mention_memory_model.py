@@ -10,6 +10,7 @@ from langgraph.store.base import BaseStore, SearchItem
 from pydantic import BaseModel, Field
 
 from shuiyuan_auto_reply.constants import settings
+from shuiyuan_auto_reply.application.events import current_memory_scope
 from shuiyuan_auto_reply.bootstrap.settings import MemorySettings
 from shuiyuan_auto_reply.database.postgres_memory_mgr import (
     AsyncPostgresMemoryDatabaseManager,
@@ -18,7 +19,7 @@ from shuiyuan_auto_reply.database.postgres_memory_mgr import (
 
 
 class SearchMentionMemoryInput(BaseModel):
-    target_user_id: Optional[int] = Field(
+    target_user_id: Optional[int | str] = Field(
         default=None,
         description=(
             "Stable Shuiyuan forum user.id whose mention memories should be searched. "
@@ -44,7 +45,7 @@ class SearchMentionMemoryInput(BaseModel):
 
 
 class ManageMentionMemoryInput(BaseModel):
-    target_user_id: int = Field(
+    target_user_id: int | str = Field(
         description=(
             "Stable Shuiyuan forum user.id whose mention memory namespace should be "
             "modified. Do not use username as the key."
@@ -191,7 +192,7 @@ class MentionMemoryModel:
     async def search_mention_memory(
         self,
         *,
-        target_user_id: Optional[int] = None,
+        target_user_id: Optional[int | str] = None,
         query: Optional[str] = None,
         limit: int = 5,
         offset: int = 0,
@@ -212,6 +213,9 @@ class MentionMemoryModel:
         if not self.store:
             return "长期记忆未启用"
 
+        request_scope = current_memory_scope()
+        if request_scope and request_scope.startswith(("web:", "api:")):
+            target_user_id = request_scope
         query_text = query.strip() if query else None
         limit = self._normalize_limit(limit)
         offset = max(0, offset)
@@ -261,7 +265,7 @@ class MentionMemoryModel:
     async def manage_mention_memory(
         self,
         *,
-        target_user_id: int,
+        target_user_id: int | str,
         action: Literal["create", "update", "delete"] = "create",
         content: Optional[str] = None,
         memory_id: Optional[str] = None,
@@ -279,6 +283,9 @@ class MentionMemoryModel:
         :param memory_id: Exact memory uuid for update/delete.
         :return: Operation result text.
         """
+        request_scope = current_memory_scope()
+        if request_scope and request_scope.startswith(("web:", "api:")):
+            target_user_id = request_scope
         if not self.store:
             return "长期记忆未启用"
 

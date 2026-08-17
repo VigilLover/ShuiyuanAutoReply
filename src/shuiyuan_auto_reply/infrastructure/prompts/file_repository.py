@@ -7,7 +7,7 @@ verified byte-for-byte against its characterization snapshot.
 import json
 from importlib import resources
 
-from shuiyuan_auto_reply.application.ports.prompt import PromptBundle
+from shuiyuan_auto_reply.application.ports.prompt import PromptBundle, PromptScope
 
 
 class FilePromptRepository:
@@ -19,6 +19,9 @@ class FilePromptRepository:
         self._default = manifest["default_persona"]
         self._personas: dict[str, str] = manifest["personas"]
         self._system_template: str = manifest["system_template"]
+        self._web_system_template: str = manifest.get(
+            "web_system_template", self._system_template
+        )
         self._capabilities: dict[str, str] = manifest.get("capabilities", {})
 
     @staticmethod
@@ -26,10 +29,18 @@ class FilePromptRepository:
         text = resource.read_text(encoding="utf-8")
         return text[:-1] if text.endswith("\n") else text
 
-    def load(self, persona_id: str, capabilities: set[str]) -> PromptBundle:
+    def load(
+        self,
+        persona_id: str,
+        capabilities: set[str],
+        scope: PromptScope = PromptScope.FORUM,
+    ) -> PromptBundle:
         selected = persona_id if persona_id in self._personas else self._default
         persona = self._read_text(self._root.joinpath(self._personas[selected]))
-        template = self._read_text(self._root.joinpath(self._system_template))
+        template_path = (
+            self._web_system_template if scope is PromptScope.WEB else self._system_template
+        )
+        template = self._read_text(self._root.joinpath(template_path))
         capability_text = ""
         if "multimodal" in capabilities:
             capability_text = self._read_text(
