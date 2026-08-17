@@ -1,17 +1,8 @@
-let csrfToken = ''
-
-export function setCsrfToken(value?: string) { csrfToken = value || '' }
-export function csrfHeaders(): Record<string, string> {
-  return csrfToken ? { 'X-CSRF-Token': csrfToken } : {}
-}
-
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const method = (init.method || 'GET').toUpperCase()
   const response = await fetch(path, {
     credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
-      ...(method === 'GET' || method === 'HEAD' ? {} : csrfHeaders()),
       ...(init.headers || {}),
     },
     ...init,
@@ -25,7 +16,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export interface Conversation {
   id: string; channel: 'web' | 'forum' | 'api'; title: string; updated_at: string
-  external_id: string; title_custom: boolean
+  external_id: string; title_custom: boolean; context_epoch?: number
 }
 export interface Attachment { artifact_id: string; url: string; mime_type: string }
 export interface Message {

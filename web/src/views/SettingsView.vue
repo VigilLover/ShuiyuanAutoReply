@@ -1,46 +1,190 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
+import {
+  PhArrowsClockwise,
+  PhChatCircleText,
+  PhCheck,
+  PhCpu,
+  PhFloppyDisk,
+  PhGlobe,
+  PhPlugsConnected,
+  PhRocketLaunch,
+  PhTextT,
+  PhX,
+} from '@phosphor-icons/vue'
 import { api } from '../api'
 
-const profiles = ref<any[]>([]); const scope = ref<'web'|'forum'>('web'); const status = ref(''); const tools = ref<any[]>([])
+const profiles = ref<any[]>([])
+const scope = ref<'web' | 'forum'>('web')
+const status = ref('')
+const statusError = ref(false)
+const tools = ref<any[]>([])
 const mcp = ref<any>({ url: null, configured: false, connected: false, error: null, tools: [] })
 const mcpLoading = ref(false)
+const activeSection = ref<'model' | 'prompt' | 'tools'>('model')
+
 const current = () => profiles.value.find(item => item.scope === scope.value)
-async function load() { profiles.value = await api('/api/settings/profiles'); await loadScopeSettings() }
-async function loadScopeSettings() { await Promise.all([loadTools(), loadMcp()]) }
-async function loadTools() { tools.value = await api(`/api/settings/tools/${scope.value}`) }
+
+async function load() {
+  profiles.value = await api('/api/settings/profiles')
+  await loadScopeSettings()
+}
+
+async function loadScopeSettings() {
+  status.value = ''
+  await Promise.all([loadTools(), loadMcp()])
+}
+
+async function changeScope(value: 'web' | 'forum') {
+  scope.value = value
+  await loadScopeSettings()
+}
+
+async function loadTools() {
+  tools.value = await api(`/api/settings/tools/${scope.value}`)
+}
+
 async function loadMcp() {
   mcpLoading.value = true
-  try { mcp.value = await api(`/api/settings/mcp/${scope.value}`) }
-  catch (error) { mcp.value = { url: null, configured: false, connected: false, error: String(error), tools: [] } }
-  finally { mcpLoading.value = false }
+  try {
+    mcp.value = await api(`/api/settings/mcp/${scope.value}`)
+  } catch (error) {
+    mcp.value = { url: null, configured: false, connected: false, error: String(error), tools: [] }
+  } finally {
+    mcpLoading.value = false
+  }
 }
-async function save() {
-  const item=current()
+
+async function save(showStatus = true) {
+  const item = current()
   item.draft.enabled_tools = tools.value.filter(tool => tool.enabled).map(tool => tool.name)
-  if (mcp.value.connected) item.draft.disabled_mcp_tools = mcp.value.tools.filter((tool:any) => !tool.enabled).map((tool:any) => tool.name)
-  await api(`/api/settings/profiles/${scope.value}/draft`, {method:'PUT', body:JSON.stringify(item.draft)})
-  status.value='草稿已保存'
+  if (mcp.value.connected) {
+    item.draft.disabled_mcp_tools = mcp.value.tools.filter((tool: any) => !tool.enabled).map((tool: any) => tool.name)
+  }
+  await api(`/api/settings/profiles/${scope.value}/draft`, { method: 'PUT', body: JSON.stringify(item.draft) })
+  if (showStatus) setStatus('草稿已保存')
 }
-async function apply() { try { await save(); const result:any=await api(`/api/settings/profiles/${scope.value}/apply`, {method:'POST'}); status.value=`已应用 revision ${result.active_revision}`; await load() } catch (error) { status.value=String(error) } }
-async function testProvider() { try { await save(); const result:any=await api(`/api/settings/profiles/${scope.value}/provider-test`, {method:'POST'}); status.value=result.message } catch (error) { status.value=String(error) } }
-async function restoreDefault() { await api(`/api/settings/profiles/${scope.value}/restore-default`, {method:'POST'}); status.value='已恢复默认草稿（尚未应用）'; await load() }
+
+async function apply() {
+  try {
+    await save(false)
+    const result: any = await api(`/api/settings/profiles/${scope.value}/apply`, { method: 'POST' })
+    setStatus(`已应用 revision ${result.active_revision}`)
+    await load()
+  } catch (error) {
+    setStatus(String(error), true)
+  }
+}
+
+async function testProvider() {
+  try {
+    await save(false)
+    const result: any = await api(`/api/settings/profiles/${scope.value}/provider-test`, { method: 'POST' })
+    setStatus(result.message, !result.ok)
+  } catch (error) {
+    setStatus(String(error), true)
+  }
+}
+
+async function restoreDefault() {
+  await api(`/api/settings/profiles/${scope.value}/restore-default`, { method: 'POST' })
+  setStatus('已恢复默认草稿，应用后生效')
+  await load()
+}
+
+function setStatus(message: string, error = false) {
+  status.value = message
+  statusError.value = error
+}
+
 onMounted(load)
 </script>
 
-<template><main class="settings-page"><div class="settings-title"><div><h1>运行设置</h1><p>论坛自动回复和网页对话使用独立的 Provider、Prompt 与工具开关。</p></div><span v-if="status" class="status">{{ status }}</span></div>
-  <div class="scope-tabs"><button :class="{active:scope==='web'}" @click="scope='web';loadScopeSettings()">网页对话</button><button :class="{active:scope==='forum'}" @click="scope='forum';loadScopeSettings()">论坛自动回复</button></div>
-  <section v-if="current()" class="settings-grid">
-    <div class="panel"><h3>模型供应商</h3><p>Active revision: {{ current().active_revision }}</p><label>Provider<select v-model="current().draft.provider"><option>openrouter</option><option>deepseek</option><option>tongyi</option><option>mimo</option></select></label><label>模型<input v-model="current().draft.model" /></label><label>Fallback<input v-model="current().draft.fallback_model" placeholder="可选" /></label><label>API Key<input v-model="current().draft.api_key" type="password" :placeholder="current().secret?.configured ? `已配置 ····${current().secret.last_four}` : '输入新密钥'" /></label><button class="secondary" @click="testProvider">测试连接</button></div>
-    <div class="panel prompt-panel"><h3>System Prompt</h3><textarea v-model="current().draft.system_prompt" rows="18"></textarea></div>
-    <div class="panel tools-panel"><h3>内置工具</h3><p>论坛读取、图片与记忆工具；关闭后在下一次应用 Runtime 时生效。</p><label v-for="tool in tools" :key="tool.name" class="tool-row"><input type="checkbox" v-model="tool.enabled"/><span>{{ tool.name }}</span><small>{{ tool.loaded === false ? '加载失败' : tool.source }}</small></label></div>
-    <div class="panel tools-panel mcp-panel">
-      <div class="panel-heading"><h3>MCP</h3><button class="secondary" :disabled="mcpLoading" @click="loadMcp">{{ mcpLoading ? '检测中…' : '重新检测' }}</button></div>
-      <p class="mcp-url"><strong>服务器：</strong>{{ mcp.url || '未配置 MCP_SERVER_URL' }}</p>
-      <p><span class="connection-dot" :class="mcp.connected ? 'connected' : 'disconnected'"></span>{{ mcp.connected ? `已连接 · ${mcp.tools.length} 个工具` : (mcp.error || '未连接') }}</p>
-      <p>新发现的 MCP 工具默认启用；取消勾选后点击“应用并热切换”生效。</p>
-      <label v-for="tool in mcp.tools" :key="tool.name" class="tool-row" :title="tool.description"><input type="checkbox" v-model="tool.enabled"/><span>{{ tool.name }}</span><small>MCP</small></label>
+<template>
+  <main class="settings-shell">
+    <div class="settings-window">
+      <header class="settings-header">
+        <div><h1>设置</h1><p>管理不同应用的模型、提示词与工具</p></div>
+        <div class="settings-header-actions">
+          <span v-if="status" class="settings-status" :class="{ failed: statusError }">{{ status }}</span>
+          <RouterLink to="/" class="close-settings" aria-label="关闭设置"><PhX :size="21" /></RouterLink>
+        </div>
+      </header>
+
+      <div class="settings-body">
+        <aside class="settings-nav">
+          <p>应用</p>
+          <button :class="{ 'scope-selected': scope === 'web' }" @click="changeScope('web')"><PhChatCircleText :size="20" /><div>网页对话<small>独立会话 Runtime</small></div></button>
+          <button :class="{ 'scope-selected': scope === 'forum' }" @click="changeScope('forum')"><PhGlobe :size="20" /><div>论坛自动回复<small>论坛 Worker Runtime</small></div></button>
+          <p>配置</p>
+          <button :class="{ active: activeSection === 'model' }" @click="activeSection = 'model'"><PhCpu :size="20" /><div>模型<small>Provider 与密钥</small></div></button>
+          <button :class="{ active: activeSection === 'prompt' }" @click="activeSection = 'prompt'"><PhTextT :size="20" /><div>提示词<small>System Prompt</small></div></button>
+          <button :class="{ active: activeSection === 'tools' }" @click="activeSection = 'tools'"><PhPlugsConnected :size="20" /><div>工具与 MCP<small>能力开关</small></div></button>
+        </aside>
+
+        <section v-if="current()" class="settings-content">
+          <div class="settings-content-head">
+            <div><span class="eyebrow">{{ scope === 'web' ? 'WEB RUNTIME' : 'FORUM RUNTIME' }}</span><h2>{{ activeSection === 'model' ? '模型配置' : activeSection === 'prompt' ? 'System Prompt' : '工具与 MCP' }}</h2></div>
+            <span class="revision-badge">ACTIVE · r{{ current().active_revision }}</span>
+          </div>
+
+          <div v-if="activeSection === 'model'" class="settings-section">
+            <p class="section-intro">为当前应用选择模型供应商。API Key 保存后只显示配置状态和末四位。</p>
+            <div class="provider-grid">
+              <button v-for="provider in ['deepseek', 'openrouter', 'tongyi', 'mimo']" :key="provider" class="provider-card" :class="{ selected: current().draft.provider === provider }" @click="current().draft.provider = provider">
+                <strong>{{ provider }}</strong>
+                <span v-if="current().draft.provider === provider"><PhCheck :size="15" weight="bold" /> 当前选择</span>
+                <span v-else>选择</span>
+              </button>
+            </div>
+            <div class="form-grid">
+              <label><span>模型名称</span><input v-model="current().draft.model" placeholder="模型 ID" /></label>
+              <label><span>Fallback 模型</span><input v-model="current().draft.fallback_model" placeholder="可选" /></label>
+              <label class="full-field"><span>API Key</span><input v-model="current().draft.api_key" type="password" :placeholder="current().secret?.configured ? `已配置 ····${current().secret.last_four}` : '输入新密钥'" /></label>
+            </div>
+            <button class="outline-action" @click="testProvider"><PhPlugsConnected :size="16" />测试 Provider 连接</button>
+          </div>
+
+          <div v-else-if="activeSection === 'prompt'" class="settings-section prompt-section">
+            <p class="section-intro">网页和论坛使用相互独立的完整 System Prompt。修改后需要应用 Runtime。</p>
+            <textarea v-model="current().draft.system_prompt" spellcheck="false"></textarea>
+          </div>
+
+          <div v-else class="settings-section tool-settings">
+            <p class="section-intro">内置工具使用启用列表；MCP 使用独立禁用列表，新发现的 MCP 工具默认启用。</p>
+            <div class="tool-group">
+              <div class="tool-group-title"><div><h3>内置工具</h3><p>论坛只读查询、图片生成与长期记忆</p></div><span>{{ tools.filter(tool => tool.enabled).length }}/{{ tools.length }} enabled</span></div>
+              <div class="tool-card-grid">
+                <label v-for="tool in tools" :key="tool.name" class="switch-card">
+                  <div><strong>{{ tool.name }}</strong><small>{{ tool.loaded === false ? '加载失败' : tool.source }}</small></div>
+                  <input v-model="tool.enabled" type="checkbox" /><span class="switch"></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="tool-group mcp-group">
+              <div class="tool-group-title">
+                <div><h3>MCP Server</h3><p class="mcp-address">{{ mcp.url || '未配置 MCP_SERVER_URL' }}</p></div>
+                <div class="connection-state" :class="{ connected: mcp.connected }"><span></span>{{ mcp.connected ? '已连接' : '未连接' }}</div>
+              </div>
+              <div class="mcp-toolbar"><span>{{ mcp.connected ? `发现 ${mcp.tools.length} 个工具` : (mcp.error || '等待连接') }}</span><button class="outline-action compact" :disabled="mcpLoading" @click="loadMcp"><PhArrowsClockwise :size="15" />{{ mcpLoading ? '检测中…' : '重新检测' }}</button></div>
+              <div v-if="mcp.tools.length" class="tool-card-grid">
+                <label v-for="tool in mcp.tools" :key="tool.name" class="switch-card" :title="tool.description">
+                  <div><strong>{{ tool.name }}</strong><small>MCP TOOL</small></div>
+                  <input v-model="tool.enabled" type="checkbox" /><span class="switch"></span>
+                </label>
+              </div>
+              <div v-else class="mcp-empty">没有可显示的 MCP 工具。</div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="settings-footer">
+        <button class="text-action" @click="restoreDefault"><PhArrowsClockwise :size="16" />恢复默认</button>
+        <div><button class="outline-action" @click="save()"><PhFloppyDisk :size="16" />保存草稿</button><button class="primary-action" @click="apply"><PhRocketLaunch :size="16" />应用并热切换</button></div>
+      </footer>
     </div>
-  </section>
-  <div class="settings-actions"><button class="secondary" @click="restoreDefault">恢复默认草稿</button><button class="secondary" @click="save">保存草稿</button><button @click="apply">应用并热切换</button></div>
-</main></template>
+  </main>
+</template>

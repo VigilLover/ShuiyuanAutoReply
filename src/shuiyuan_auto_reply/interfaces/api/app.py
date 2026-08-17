@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from dotenv import load_dotenv
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +28,6 @@ from shuiyuan_auto_reply.domain import (
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
-from .auth import LocalAdminAuth
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +84,6 @@ class ClearResponse(BaseModel):
     message: str
 
 
-class AdminLoginRequest(BaseModel):
-    token: str
-
-
 class ConversationCreateRequest(BaseModel):
     title: str | None = None
 
@@ -127,11 +122,6 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         container = await factory()
         current_app.state.container = container
         current_app.state.sessions = SessionRegistry()
-        current_app.state.admin_auth = LocalAdminAuth()
-        logger.info(
-            "Local management UI token: %s",
-            current_app.state.admin_auth.token,
-        )
         try:
             yield
         finally:
@@ -206,55 +196,12 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             "active_sessions_count": len(request.app.state.sessions),
         }
 
-    def require_admin(
-        request: Request,
-        shuiyuan_admin: str | None = Cookie(default=None),
-    ) -> None:
-        auth: LocalAdminAuth = request.app.state.admin_auth
-        if not auth.valid(shuiyuan_admin):
-            raise HTTPException(status_code=401, detail="需要本地管理登录")
-        if request.method not in {"GET", "HEAD"}:
-            if not auth.valid_csrf(
-                shuiyuan_admin, request.headers.get("x-csrf-token")
-            ):
-                raise HTTPException(status_code=403, detail="CSRF 校验失败")
-            origin = request.headers.get("origin")
-            if origin and origin not in {
-                str(request.base_url).rstrip("/"),
-                f"http://{request.url.hostname}:{request.url.port}",
-            }:
-                raise HTTPException(status_code=403, detail="Origin 校验失败")
-
-    @api.post("/api/admin/login")
-    async def admin_login(payload: AdminLoginRequest, request: Request, response: Response):
-        auth: LocalAdminAuth = request.app.state.admin_auth
-        credentials = auth.login(payload.token)
-        if credentials is None:
-            raise HTTPException(status_code=403, detail="管理令牌错误")
-        session, csrf = credentials
-        response.set_cookie(
-            auth.cookie_name,
-            session,
-            httponly=True,
-            samesite="strict",
-            secure=False,
-            path="/",
-        )
-        return {"status": "ok", "csrf_token": csrf}
-
-    @api.post("/api/admin/logout", dependencies=[Depends(require_admin)])
-    async def admin_logout(request: Request, response: Response, shuiyuan_admin: str | None = Cookie(default=None)):
-        request.app.state.admin_auth.logout(shuiyuan_admin)
-        response.delete_cookie(LocalAdminAuth.cookie_name, path="/")
-        return {"status": "ok"}
-
-    @api.get("/api/bootstrap", dependencies=[Depends(require_admin)])
-    async def bootstrap(request: Request, shuiyuan_admin: str | None = Cookie(default=None)):
+    @api.get("/api/bootstrap")
+    async def bootstrap():
         return {
             "app": "ShuiyuanAutoReply",
             "channels": ["web", "forum"],
             "web_enabled": True,
-            "csrf_token": request.app.state.admin_auth.csrf_token(shuiyuan_admin),
         }
 
     def _store(request: Request):
@@ -263,14 +210,14 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="本地状态库未启用")
         return store
 
-    @api.get("/api/conversations", dependencies=[Depends(require_admin)])
+    @api.get("/api/conversations")
     async def list_conversations(request: Request, channel: str | None = None, search: str | None = None, limit: int = 100, offset: int = 0):
         records = await _store(request).list_conversations(channel=channel, search=search, limit=limit, offset=offset)
         return [record.__dict__ if hasattr(record, "__dict__") else {
             name: getattr(record, name) for name in record.__dataclass_fields__
         } for record in records]
 
-    @api.post("/api/conversations", dependencies=[Depends(require_admin)])
+    @api.post("/api/conversations")
     async def create_conversation(payload: ConversationCreateRequest, request: Request):
         external_id = str(uuid.uuid4())
         ref = ConversationRef(Channel.WEB, external_id, "wolf_lumine", "wolf_lumine")
@@ -286,7 +233,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
     def _ref_from_record(record) -> ConversationRef:
         return ConversationRef(Channel(record.channel), record.external_id, record.bot_id, record.persona_id)
 
-    @api.get("/api/conversations/{conversation_id}", dependencies=[Depends(require_admin)])
+    @api.get("/api/conversations/{conversation_id}")
     async def get_conversation(conversation_id: str, request: Request):
         store = _store(request)
         record = await _conversation_record(request, conversation_id)
@@ -326,7 +273,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             } for event in events],
         }
 
-    @api.patch("/api/conversations/{conversation_id}", dependencies=[Depends(require_admin)])
+    @api.patch("/api/conversations/{conversation_id}")
     async def rename_conversation(conversation_id: str, payload: ConversationRenameRequest, request: Request):
         record = await _conversation_record(request, conversation_id)
         if record.channel != Channel.WEB.value:
@@ -336,7 +283,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         await _store(request).update_title(conversation_id, payload.title, custom=True)
         return {"status": "ok"}
 
-    @api.post("/api/conversations/{conversation_id}/messages/stream", dependencies=[Depends(require_admin)])
+    @api.post("/api/conversations/{conversation_id}/messages/stream")
     async def stream_message(conversation_id: str, payload: ConversationMessageRequest, request: Request):
         record = await _conversation_record(request, conversation_id)
         if record.channel != Channel.WEB.value:
@@ -370,6 +317,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                         yield encode(event.event_type, {
                             "run_id": event.run_id,
                             "event_id": event.id,
+                            "created_at": event.created_at,
                             **event.payload,
                         })
                     await asyncio.sleep(0.1)
@@ -382,6 +330,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                     yield encode(event.event_type, {
                         "run_id": event.run_id,
                         "event_id": event.id,
+                        "created_at": event.created_at,
                         **event.payload,
                     })
                 yield encode("message.completed", {
@@ -401,13 +350,13 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
 
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
-    @api.post("/api/conversations/{conversation_id}/clear", dependencies=[Depends(require_admin)])
+    @api.post("/api/conversations/{conversation_id}/clear")
     async def clear_managed_conversation(conversation_id: str, request: Request):
         record = await _conversation_record(request, conversation_id)
         await request.app.state.container.bot_service.clear_conversation(_ref_from_record(record))
         return {"status": "ok"}
 
-    @api.delete("/api/conversations/{conversation_id}", dependencies=[Depends(require_admin)])
+    @api.delete("/api/conversations/{conversation_id}")
     async def delete_managed_conversation(conversation_id: str, request: Request):
         await _conversation_record(request, conversation_id)
         paths = await _store(request).delete_conversation(conversation_id)
@@ -418,7 +367,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 logger.exception("删除 Artifact 文件失败: %s", path)
         return {"status": "ok"}
 
-    @api.get("/api/artifacts/{artifact_id}", dependencies=[Depends(require_admin)])
+    @api.get("/api/artifacts/{artifact_id}")
     async def get_artifact(artifact_id: str, request: Request):
         artifact = await _store(request).get_artifact(artifact_id)
         if artifact is None or not artifact.available:
@@ -449,7 +398,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             "disabled_mcp_tools": [],
         }
 
-    @api.get("/api/settings/profiles", dependencies=[Depends(require_admin)])
+    @api.get("/api/settings/profiles")
     async def get_profiles(request: Request):
         store = _store(request)
         profiles = [await store.get_profile(scope, _profile_defaults(scope)) for scope in ("forum", "web")]
@@ -470,7 +419,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             profile["secret"] = metadata
         return profiles
 
-    @api.put("/api/settings/profiles/{scope}/draft", dependencies=[Depends(require_admin)])
+    @api.put("/api/settings/profiles/{scope}/draft")
     async def save_profile(scope: str, payload: ProfileDraftRequest, request: Request):
         if scope not in {"forum", "web"}:
             raise HTTPException(status_code=404, detail="未知应用")
@@ -483,7 +432,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             await request.app.state.container.secret_vault.set(f"{scope}:{payload.provider}", payload.api_key)
         return {"status": "saved"}
 
-    @api.post("/api/settings/profiles/{scope}/validate", dependencies=[Depends(require_admin)])
+    @api.post("/api/settings/profiles/{scope}/validate")
     async def validate_profile(scope: str, request: Request):
         profile = await _store(request).get_profile(scope, _profile_defaults(scope))
         draft = profile["draft"]
@@ -494,7 +443,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             errors.append("System Prompt 不能为空")
         return {"valid": not errors, "errors": errors}
 
-    @api.post("/api/settings/profiles/{scope}/apply", dependencies=[Depends(require_admin)])
+    @api.post("/api/settings/profiles/{scope}/apply")
     async def apply_profile(scope: str, request: Request):
         validation = await validate_profile(scope, request)
         if not validation["valid"]:
@@ -536,7 +485,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 await apply_runtime(scope, profile["active"])
         return {"status": "applied", "active_revision": revision}
 
-    @api.post("/api/settings/profiles/{scope}/provider-test", dependencies=[Depends(require_admin)])
+    @api.post("/api/settings/profiles/{scope}/provider-test")
     async def provider_test(scope: str, request: Request):
         profile = await _store(request).get_profile(scope, _profile_defaults(scope))
         provider = profile["draft"].get("provider", "deepseek")
@@ -569,7 +518,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             elif candidate is not None:
                 await candidate.aclose()
 
-    @api.post("/api/settings/profiles/{scope}/restore-default", dependencies=[Depends(require_admin)])
+    @api.post("/api/settings/profiles/{scope}/restore-default")
     async def restore_profile_default(scope: str, request: Request):
         if scope not in {"forum", "web"}:
             raise HTTPException(status_code=404, detail="未知应用")
@@ -578,7 +527,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         await _store(request).save_profile_draft(scope, defaults)
         return {"status": "restored"}
 
-    @api.get("/api/settings/tools/{scope}", dependencies=[Depends(require_admin)])
+    @api.get("/api/settings/tools/{scope}")
     async def get_tools(scope: str, request: Request):
         if scope not in {"forum", "web"}:
             raise HTTPException(status_code=404, detail="未知应用")
@@ -598,7 +547,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         enabled = set(configured) if configured is not None else set(names)
         return [{"name": name, "enabled": name in enabled, "source": "runtime"} for name in names]
 
-    @api.get("/api/settings/mcp/{scope}", dependencies=[Depends(require_admin)])
+    @api.get("/api/settings/mcp/{scope}")
     async def get_mcp_status(scope: str, request: Request):
         if scope not in {"forum", "web"}:
             raise HTTPException(status_code=404, detail="未知应用")

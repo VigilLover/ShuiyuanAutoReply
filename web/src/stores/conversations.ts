@@ -1,11 +1,11 @@
 import { defineStore } from 'pinia'
-import { api, csrfHeaders, type Conversation, type ConversationDetail } from '../api'
+import { api, type Conversation, type ConversationDetail, type Message, type RunEvent } from '../api'
 
 export const useConversations = defineStore('conversations', {
   state: () => ({
     channel: 'web' as 'web' | 'forum', conversations: [] as Conversation[],
     selected: null as ConversationDetail | null, loading: false, running: false,
-    error: '', liveEvents: [] as any[], search: '', hasMore: false, lastFailedMessage: '',
+    error: '', liveEvents: [] as RunEvent[], search: '', hasMore: false, lastFailedMessage: '',
   }),
   actions: {
     async load(more = false) {
@@ -40,10 +40,25 @@ export const useConversations = defineStore('conversations', {
     },
     async send(message: string) {
       if (!this.selected || this.selected.conversation.channel !== 'web') return
+      const conversationId = this.selected.conversation.id
+      const previousFailed = this.selected.messages.findIndex(item =>
+        item.id.startsWith('local:') && item.status === 'failed' && item.content === message,
+      )
+      if (previousFailed >= 0) this.selected.messages.splice(previousFailed, 1)
+      const pendingMessage: Message = {
+        id: `local:${Date.now()}`,
+        role: 'user',
+        content: message,
+        status: 'sending',
+        attachments: [],
+        created_at: new Date().toISOString(),
+        epoch: this.selected.conversation.context_epoch || 0,
+      }
+      this.selected.messages.push(pendingMessage)
       this.running = true; this.error = ''; this.liveEvents = []
       try {
-        const response = await fetch(`/api/conversations/${this.selected.conversation.id}/messages/stream`, {
-          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
+        const response = await fetch(`/api/conversations/${conversationId}/messages/stream`, {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message }),
         })
         if (!response.ok || !response.body) throw new Error(await response.text())
@@ -57,14 +72,26 @@ export const useConversations = defineStore('conversations', {
             const raw = block.match(/^data: (.+)$/m)?.[1]
             if (raw) {
               const payload = JSON.parse(raw)
-              this.liveEvents.push({ type: event, payload })
+              const { event_id, run_id, created_at, ...eventPayload } = payload
+              this.liveEvents.push({
+                id: Number(event_id || this.liveEvents.length + 1),
+                run_id: String(run_id || ''),
+                type: event,
+                payload: eventPayload,
+                created_at: String(created_at || new Date().toISOString()),
+              })
               if (event === 'stream.error') throw new Error(payload.error || '请求失败')
             }
           }
         }
         this.lastFailedMessage = ''
-        await this.select(this.selected.conversation.id); await this.load()
-      } catch (error) { this.error = String(error); this.lastFailedMessage = message } finally { this.running = false }
+        if (this.selected?.conversation.id === conversationId) await this.select(conversationId)
+        await this.load()
+      } catch (error) {
+        pendingMessage.status = 'failed'
+        this.error = String(error)
+        this.lastFailedMessage = message
+      } finally { this.running = false }
     },
   },
 })

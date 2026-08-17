@@ -25,18 +25,39 @@ _DATA_URL_PATTERN = re.compile(r"data:[^;\s]+;base64,[A-Za-z0-9+/=]+")
 _BEARER_PATTERN = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+")
 
 
-def _safe_event_value(value: Any, key: str = "") -> Any:
+def _safe_event_value(
+    value: Any,
+    key: str = "",
+    *,
+    string_limit: int = 2000,
+    list_limit: int = 50,
+) -> Any:
     normalized = key.lower().replace("-", "_")
     if normalized in {"authorization", "cookie", "set_cookie", "api_key", "apikey", "secret"} or normalized.endswith("_api_key"):
         return "[REDACTED]"
     if isinstance(value, dict):
-        return {str(k): _safe_event_value(v, str(k)) for k, v in value.items()}
+        return {
+            str(k): _safe_event_value(
+                v,
+                str(k),
+                string_limit=string_limit,
+                list_limit=list_limit,
+            )
+            for k, v in value.items()
+        }
     if isinstance(value, (list, tuple)):
-        return [_safe_event_value(item) for item in value[:50]]
+        return [
+            _safe_event_value(
+                item,
+                string_limit=string_limit,
+                list_limit=list_limit,
+            )
+            for item in value[:list_limit]
+        ]
     if isinstance(value, str):
         text = _DATA_URL_PATTERN.sub("[DATA_URL_REDACTED]", value)
         text = _BEARER_PATTERN.sub("Bearer [REDACTED]", text)
-        return text[:2000]
+        return text[:string_limit]
     return value
 
 
@@ -340,11 +361,27 @@ class SQLiteStateStore:
             await db.close()
 
     async def append_event(self, run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> None:
+        is_model_prompt = event_type == "model.prompt_prepared"
+        is_tool_instruction = event_type == "tool.started"
         encoded = json.dumps(
-            _safe_event_value(payload or {}), ensure_ascii=False, default=str
+            _safe_event_value(
+                payload or {},
+                string_limit=(
+                    65536 if is_model_prompt else 32768 if is_tool_instruction else 2000
+                ),
+                list_limit=200 if is_model_prompt or is_tool_instruction else 50,
+            ),
+            ensure_ascii=False,
+            default=str,
         )
-        if len(encoded) > 4096:
-            encoded = json.dumps({"summary": encoded[:4096], "truncated": True}, ensure_ascii=False)
+        event_limit = (
+            262144 if is_model_prompt else 65536 if is_tool_instruction else 4096
+        )
+        if len(encoded) > event_limit:
+            encoded = json.dumps(
+                {"summary": encoded[:event_limit], "truncated": True},
+                ensure_ascii=False,
+            )
         db = await self._connect()
         try:
             await db.execute("INSERT INTO run_events(run_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)", (run_id, event_type, encoded, utc_now()))

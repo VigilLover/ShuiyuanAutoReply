@@ -22,8 +22,9 @@ shuiyuan-bot wolf_lumine --web --web-host 127.0.0.1 --web-port 11451
 ```
 
 `shuiyuan-bot` 默认不启动管理站。管理站默认只监听 `127.0.0.1:11451`；
-启动日志会显示本地管理令牌，浏览器登录后使用 HttpOnly Cookie。正式页面由
-FastAPI 同源托管，前端源代码位于 `web/`。
+页面无需管理令牌即可直接访问。正式页面由 FastAPI 同源托管，前端源代码位于
+`web/`。如将监听地址改为 `0.0.0.0` 或通过反向代理暴露到其他设备，应在代理层
+自行增加认证与访问控制。
 
 网页会话默认直接聊天，`【帮助】` 和 `【rua】` 分别进入网页专用 Handler。
 网页 Runtime 默认与论坛 Bot 一样使用 DeepSeek 主模型、fallback 和
@@ -46,7 +47,6 @@ FastAPI 同源托管，前端源代码位于 `web/`。
 ```text
 state.sqlite3   # 会话、消息、结构化执行轨迹和 Runtime 草稿/版本
 master.key      # UI API Key 加密主密钥（0600）
-admin.token     # 本地管理令牌（0600）
 artifacts/      # 论坛与网页生成图片的本地副本
 ```
 

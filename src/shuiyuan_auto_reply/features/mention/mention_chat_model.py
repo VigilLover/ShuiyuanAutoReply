@@ -218,6 +218,70 @@ class MentionChatModel:
     def _preview_text(value: object, limit: Optional[int] = 512) -> str:
         return str(value).replace("\n", "\\n")[:limit]
 
+    @classmethod
+    def _prompt_event_value(cls, value: object, *, depth: int = 0) -> object:
+        """Make model input inspectable without persisting embedded image bytes.
+
+        This deliberately serializes only values that are actually part of the
+        model input.  Provider reasoning fields are not inspected or emitted.
+        """
+        if depth > 8:
+            return "[内容层级过深，已省略]"
+        if isinstance(value, str):
+            if value.lstrip().lower().startswith("data:"):
+                return "[内嵌图片数据已省略]"
+            return value
+        if isinstance(value, dict):
+            serialized: dict[str, object] = {}
+            for key, item in value.items():
+                normalized = str(key).lower().replace("-", "_")
+                if normalized in {
+                    "authorization",
+                    "cookie",
+                    "set_cookie",
+                    "api_key",
+                    "apikey",
+                    "secret",
+                } or normalized.endswith("_api_key"):
+                    serialized[str(key)] = "[REDACTED]"
+                else:
+                    serialized[str(key)] = cls._prompt_event_value(
+                        item, depth=depth + 1
+                    )
+            return serialized
+        if isinstance(value, (list, tuple)):
+            return [
+                cls._prompt_event_value(item, depth=depth + 1) for item in value
+            ]
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return str(value)
+
+    @classmethod
+    def _prompt_messages_for_event(cls, prompt_value: object) -> list[dict[str, object]]:
+        """Serialize the role/content payload sent to the chat model for the UI."""
+        to_messages = getattr(prompt_value, "to_messages", None)
+        messages = to_messages() if callable(to_messages) else []
+        serialized: list[dict[str, object]] = []
+        for message in messages:
+            item: dict[str, object] = {
+                "role": getattr(message, "type", type(message).__name__),
+                "content": cls._prompt_event_value(
+                    getattr(message, "content", "")
+                ),
+            }
+            name = getattr(message, "name", None)
+            if name:
+                item["name"] = str(name)
+            tool_call_id = getattr(message, "tool_call_id", None)
+            if tool_call_id:
+                item["tool_call_id"] = str(tool_call_id)
+            tool_calls = getattr(message, "tool_calls", None)
+            if tool_calls:
+                item["tool_calls"] = cls._prompt_event_value(tool_calls)
+            serialized.append(item)
+        return serialized
+
     @staticmethod
     def _trim_session_history(history: ChatMessageHistory) -> None:
         max_history_turns = 8
@@ -604,12 +668,19 @@ class MentionChatModel:
                 state["conversation"],
                 8,
             )
-        except Exception:
+        except Exception as exc:
             logging.exception("Failed to retrieve style context; continuing without it")
+            await emit_event(
+                "context.style_failed",
+                {"error": type(exc).__name__, "message": str(exc)[:500]},
+            )
             return {"context": ""}
 
         context_text = "\n".join(item.text for item in style_items)
-        await emit_event("context.style_loaded", {"count": len(style_items)})
+        await emit_event(
+            "context.style_loaded",
+            {"count": len(style_items), "persona": persona, "limit": 8},
+        )
         logging.info(
             "Mention graph retrieved %d style document(s), persona=%s context_chars=%d",
             len(style_items),
@@ -763,7 +834,10 @@ class MentionChatModel:
             )
             await emit_event(
                 "tool.started",
-                {"name": tool_name, "arguments": MentionChatModel._serialize_tool_args(tool_args)[:2000]},
+                {
+                    "name": tool_name,
+                    "arguments": MentionChatModel._prompt_event_value(tool_args),
+                },
             )
 
         return {}
@@ -1038,6 +1112,15 @@ class MentionChatModel:
                 "recent_msgs": state.get("recent_msgs", "无近期回帖记录"),
                 "messages": self._trim_tool_loop_messages(state.get("messages", [])),
             }
+        )
+        prompt_messages = self._prompt_messages_for_event(prompt_value)
+        await emit_event(
+            "model.prompt_prepared",
+            {
+                "scope": self.prompt_scope.value,
+                "message_count": len(prompt_messages),
+                "messages": prompt_messages,
+            },
         )
         await emit_event("model.started", {})
         response = await self.llm_with_tools.ainvoke(prompt_value)

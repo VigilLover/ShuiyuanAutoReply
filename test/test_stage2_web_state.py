@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegistry
 from shuiyuan_auto_reply.bootstrap.container import ApplicationContainer
@@ -122,6 +124,52 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("top-secret", encoded)
         self.assertNotIn("QUJDRA", encoded)
         self.assertNotIn("abc.def", encoded)
+
+    async def test_tool_instruction_keeps_structured_arguments_for_trace_expansion(self):
+        request = web_request("tool-inspection")
+        conversation = await self.store.ensure_conversation(request.conversation)
+        run_id = await self.store.create_run(request.request_id, conversation.id)
+        command = "python -c " + "x" * 6000
+        await self.store.append_event(
+            run_id,
+            "tool.started",
+            {
+                "name": "shell",
+                "arguments": {
+                    "command": command,
+                    "api_key": "must-not-leak",
+                },
+            },
+        )
+        event = (await self.store.list_events_for_request(request.request_id))[0]
+        self.assertEqual(event.payload["arguments"]["command"], command)
+        self.assertEqual(event.payload["arguments"]["api_key"], "[REDACTED]")
+
+    async def test_model_prompt_event_keeps_full_messages_and_redacts_embedded_data(self):
+        request = web_request("prompt-inspection")
+        conversation = await self.store.ensure_conversation(request.conversation)
+        run_id = await self.store.create_run(request.request_id, conversation.id)
+        long_prompt = "当前网页任务：" + "语料" * 3000
+        await self.store.append_event(
+            run_id,
+            "model.prompt_prepared",
+            {
+                "scope": "web",
+                "message_count": 2,
+                "messages": [
+                    {"role": "system", "content": long_prompt},
+                    {
+                        "role": "human",
+                        "content": "data:image/png;base64,QUJDRA==",
+                    },
+                ],
+            },
+        )
+        event = (await self.store.list_events_for_request(request.request_id))[0]
+        self.assertEqual(event.payload["messages"][0]["content"], long_prompt)
+        self.assertEqual(
+            event.payload["messages"][1]["content"], "[DATA_URL_REDACTED]"
+        )
 
     async def test_secret_vault_encrypts_values_and_only_exposes_metadata(self):
         vault = LocalSecretVault(self.store, Path(self.temp.name) / "master.key")
@@ -299,8 +347,71 @@ class McpConfigurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.llm.bind_tools.call_args.args[0], [])
 
 
+class PromptInspectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_style_retrieval_failure_is_visible_and_degrades_to_empty_context(self):
+        model = MentionChatModel.__new__(MentionChatModel)
+        model.style_retriever = SimpleNamespace(
+            search=AsyncMock(side_effect=ConnectionError("neo4j unavailable"))
+        )
+        with patch(
+            "shuiyuan_auto_reply.features.mention.mention_chat_model.emit_event",
+            new_callable=AsyncMock,
+        ) as emit:
+            result = await model._retrieve_style_context(
+                {"persona": "wolf_lumine", "conversation": "当前网页任务"}
+            )
+
+        self.assertEqual(result, {"context": ""})
+        emit.assert_awaited_once_with(
+            "context.style_failed",
+            {"error": "ConnectionError", "message": "neo4j unavailable"},
+        )
+
+    async def test_final_model_input_is_emitted_before_model_start(self):
+        class FakeLLM:
+            async def ainvoke(self, prompt):
+                self.prompt = prompt
+                return AIMessage(content="完成")
+
+        model = MentionChatModel.__new__(MentionChatModel)
+        model.llm_with_tools = FakeLLM()
+        model.prompt_scope = SimpleNamespace(value="web")
+        model.prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", "历史发言片段：{context}"),
+                MessagesPlaceholder("chat_history"),
+                MessagesPlaceholder("messages"),
+            ]
+        )
+        state = {
+            "topic_id": None,
+            "reply_to_post_number": None,
+            "user": SimpleNamespace(id="web:1", username="web-user", name=None),
+            "context": "可供模仿的历史发言",
+            "long_term_memory": "无相关长期记忆",
+            "chat_history": [],
+            "recent_msgs": "无近期回帖记录",
+            "messages": [HumanMessage(content="当前网页任务")],
+        }
+
+        with patch(
+            "shuiyuan_auto_reply.features.mention.mention_chat_model.emit_event",
+            new_callable=AsyncMock,
+        ) as emit:
+            await model._call_model(state)
+
+        event_types = [call.args[0] for call in emit.await_args_list]
+        self.assertEqual(
+            event_types[:3],
+            ["model.prompt_prepared", "model.started", "model.completed"],
+        )
+        payload = emit.await_args_list[0].args[1]
+        self.assertIn("可供模仿的历史发言", payload["messages"][0]["content"])
+        self.assertEqual(payload["messages"][-1]["content"], "当前网页任务")
+
+
 class ManagedApiTests(unittest.TestCase):
-    def test_login_web_chat_clear_and_forum_read_only(self):
+    def test_open_web_chat_clear_and_forum_read_only(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(
             os.environ, {"SHUIYUAN_STATE_DIR": temp}, clear=False
         ):
@@ -330,13 +441,10 @@ class ManagedApiTests(unittest.TestCase):
 
             app = create_app(factory)
             with TestClient(app) as client:
-                token = client.app.state.admin_auth.token
-                self.assertEqual(
-                    client.post("/api/admin/login", json={"token": "wrong"}).status_code,
-                    403,
-                )
-                login = client.post("/api/admin/login", json={"token": token})
-                self.assertEqual(login.status_code, 200)
+                bootstrap = client.get("/api/bootstrap")
+                self.assertEqual(bootstrap.status_code, 200)
+                self.assertTrue(bootstrap.json()["web_enabled"])
+                self.assertNotIn("/api/admin/login", client.app.openapi()["paths"])
                 profiles = client.get("/api/settings/profiles").json()
                 web_profile = next(p for p in profiles if p["scope"] == "web")
                 self.assertEqual(web_profile["active"]["provider"], "deepseek")
@@ -353,11 +461,9 @@ class ManagedApiTests(unittest.TestCase):
                 self.assertEqual(mcp["url"], "http://localhost:58000/sse")
                 self.assertEqual(mcp["tools"][0]["name"], "get_system_time")
                 self.assertTrue(mcp["tools"][0]["enabled"])
-                self.assertEqual(
-                    client.post("/api/conversations", json={}).status_code, 403
-                )
-                client.headers["X-CSRF-Token"] = login.json()["csrf_token"]
-                created = client.post("/api/conversations", json={}).json()
+                create_response = client.post("/api/conversations", json={})
+                self.assertEqual(create_response.status_code, 200)
+                created = create_response.json()
                 response = client.post(
                     f"/api/conversations/{created['id']}/messages/stream",
                     json={"message": "hello"},
