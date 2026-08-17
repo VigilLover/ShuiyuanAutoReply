@@ -8,13 +8,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 import dotenv
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from examples.models.mention_model.mention_pet_model import MentionPetModel
+from shuiyuan_auto_reply.features.mention.mention_pet_model import MentionPetModel
 
 
 logging.basicConfig(
@@ -28,8 +29,6 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
     def setUpClass(cls):
         dotenv.load_dotenv()
         cls.api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not cls.api_key:
-            raise RuntimeError("未检测到 DEEPSEEK_API_KEY，无法执行真实大模型测试。")
 
     def setUp(self):
         logging.info("[SETUP] 创建临时测试目录和测试资产文件")
@@ -81,10 +80,13 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         logging.info("[TEARDOWN] 清理临时目录")
         self.tmpdir.cleanup()
 
-    def _build_model(self) -> MentionPetModel:
+    def _build_model(self, *, live: bool = False) -> MentionPetModel:
         # 允许真实 LLM，同时禁用 retriever 初始化以避免外部 Neo4j 依赖干扰测试
         logging.info("[BUILD] 构建 MentionPetModel 实例")
-        with patch.object(MentionPetModel, "_init_retriever", lambda _self: None):
+        if live and not self.api_key:
+            self.skipTest("DEEPSEEK_API_KEY not set")
+        key = self.api_key if live else "offline-test-key"
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": key}):
             model = MentionPetModel(
                 filepath=str(self.responses_path),
                 state_path=str(self.state_path),
@@ -105,7 +107,7 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         model = self._build_model()
 
         logging.info("[STEP] 调用 get_rua_response(user_text='')")
-        with patch("examples.models.mention_model.mention_pet_model.random.randint", return_value=0):
+        with patch("shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint", return_value=0):
             reply = await model.get_rua_response(username="normal_user", name="normal_name", user_text="")
         logging.info("[STEP] 模型回复: %s", reply)
 
@@ -122,12 +124,13 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_state["chaos"], 3)
         logging.info("[CASE] 通过: 空 user_text 本地文案与状态更新正确")
 
+    @pytest.mark.live
     async def test_get_rua_response_with_user_text_uses_real_llm_text(self):
         logging.info("[CASE] 开始: 有 user_text 时真实调用大模型生成文案")
-        model = self._build_model()
+        model = self._build_model(live=True)
 
         logging.info("[STEP] 调用 get_rua_response(user_text='今天有点累，但还是想被摸摸头')")
-        with patch("examples.models.mention_model.mention_pet_model.random.randint", return_value=0):
+        with patch("shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint", return_value=0):
             reply = await model.get_rua_response(
                 username="normal_user",
                 name="normal_name",
@@ -140,9 +143,10 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("【开心】 本地默认文案", reply)
         logging.info("[CASE] 通过: 真实 LLM 文案已写入最终回复")
 
+    @pytest.mark.live
     async def test_generate_personalized_text_direct_real_call(self):
         logging.info("[CASE] 开始: 直接调用 _generate_personalized_text 进行真实模型验证")
-        model = self._build_model()
+        model = self._build_model(live=True)
 
         logging.info("[STEP] 调用 _generate_personalized_text")
         text = await model._generate_personalized_text(
@@ -163,7 +167,7 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         model = self._build_model()
 
         logging.info("[STEP] 调用 get_rua_response(username='special_user')")
-        with patch("examples.models.mention_model.mention_pet_model.random.randint", return_value=0):
+        with patch("shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint", return_value=0):
             reply = await model.get_rua_response(username="special_user", name="special_user", user_text="")
         logging.info("[STEP] 模型回复: %s", reply)
 
@@ -187,7 +191,7 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         )
 
         logging.info("[STEP] 调用 get_rua_response 触发结局")
-        with patch("examples.models.mention_model.mention_pet_model.random.randint", return_value=0):
+        with patch("shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint", return_value=0):
             reply = await model.get_rua_response(username="normal_user", name="normal_name", user_text="")
         logging.info("[STEP] 模型回复: %s", reply)
 

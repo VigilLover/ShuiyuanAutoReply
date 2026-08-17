@@ -1,0 +1,1 @@
+"""Forum worker inbound adapter."""

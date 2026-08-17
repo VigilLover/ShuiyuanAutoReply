@@ -26,7 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from examples.models.mention_model.image_generation import (
+from shuiyuan_auto_reply.features.mention.image_generation import (
     _download_and_encode,
     _encode_bytes,
     _image_api_endpoint,
@@ -353,7 +353,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
         with patch(
-            "examples.models.mention_model.image_generation.asyncio.sleep",
+            "shuiyuan_auto_reply.features.mention.image_generation.asyncio.sleep",
             new=AsyncMock(),
         ) as mocked_sleep:
             result = await tool("测试连续断连重试提交功能", output_dir=self.output_dir.name)
@@ -381,7 +381,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
         with patch(
-            "examples.models.mention_model.image_generation.asyncio.sleep",
+            "shuiyuan_auto_reply.features.mention.image_generation.asyncio.sleep",
             new=AsyncMock(),
         ) as mocked_sleep:
             result = await tool("测试配置重连次数和延迟参数", output_dir=self.output_dir.name)
@@ -405,7 +405,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
         with patch(
-            "examples.models.mention_model.image_generation.asyncio.sleep",
+            "shuiyuan_auto_reply.features.mention.image_generation.asyncio.sleep",
             new=AsyncMock(),
         ):
             result = await tool("测试HTTP状态码重试处理逻辑", output_dir=self.output_dir.name)

@@ -440,3 +440,13 @@ async def create_global_async_postgres_record_manager(
                 db_url
             )
         return _global_async_postgres_record_manager
+
+
+async def close_global_async_postgres_record_manager() -> None:
+    global _global_async_postgres_record_manager
+    manager, _global_async_postgres_record_manager = (
+        _global_async_postgres_record_manager,
+        None,
+    )
+    if manager is not None:
+        await manager.close()

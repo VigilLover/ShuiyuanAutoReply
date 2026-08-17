@@ -1,0 +1,12 @@
+{
+  "version": "1",
+  "default_persona": "wolf_lumine",
+  "system_template": "policies/system_template.txt",
+  "capabilities": {
+    "multimodal": "capabilities/multimodal.txt"
+  },
+  "personas": {
+    "wolf_lumine": "personas/wolf_lumine.txt",
+    "存档读取": "personas/archive_reader.txt"
+  }
+}

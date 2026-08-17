@@ -107,6 +107,11 @@ class AsyncNeo4jDatabaseManager:
             """,
         )
 
+    async def close(self) -> None:
+        if self._configured:
+            await asyncio.to_thread(self._driver.close)
+            self._configured = False
+
     async def _store_sentence(self, text: str, embedding: List[float], userid: str):
         """
         Asynchronously store a sentence with its embedding into the database.
@@ -262,3 +267,10 @@ async def create_global_async_neo4j_manager(
                 database_url=database_url
             )
         return _global_async_neo4j_manager
+
+
+async def close_global_async_neo4j_manager() -> None:
+    global _global_async_neo4j_manager
+    manager, _global_async_neo4j_manager = _global_async_neo4j_manager, None
+    if manager is not None:
+        await manager.close()

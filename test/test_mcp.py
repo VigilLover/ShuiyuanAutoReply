@@ -4,11 +4,14 @@ import logging
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 import dotenv
+import pytest
 dotenv.load_dotenv()
+
+pytestmark = pytest.mark.live
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-async def test_mcp_connection():
+async def _mcp_connection():
     mcp_server_url = os.getenv("MCP_SERVER_URL")
     
     if not mcp_server_url:
@@ -42,5 +45,9 @@ async def test_mcp_connection():
     except Exception as e:
         logging.error(f"Failed to connect to MCP server or fetch tools: {e}")
 
+
+def test_mcp_connection():
+    asyncio.run(_mcp_connection())
+
 if __name__ == "__main__":
-    asyncio.run(test_mcp_connection())
+    asyncio.run(_mcp_connection())

@@ -24,6 +24,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import dotenv
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -32,7 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from openai import AsyncOpenAI
 from langchain_openai import ChatOpenAI
 from langchain_community.chat_models.tongyi import ChatTongyi
-from examples.models.mention_model.mention_chat_model import FallbackLLM
+from shuiyuan_auto_reply.features.mention.mention_chat_model import FallbackLLM
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,6 +61,7 @@ def _ty_model(key: str, default: str) -> str:
 
 # ── Direct API Tests ─────────────────────────────────────────────────────
 
+@pytest.mark.live
 class TestDeepSeekDirectAPI(unittest.IsolatedAsyncioTestCase):
     """Test direct connectivity to DeepSeek API."""
 
@@ -94,6 +96,7 @@ class TestDeepSeekDirectAPI(unittest.IsolatedAsyncioTestCase):
         await self._do_chat(model, "fallback")
 
 
+@pytest.mark.live
 class TestTongyiDirectAPI(unittest.IsolatedAsyncioTestCase):
     """Test direct connectivity to Tongyi (DashScope) API."""
 
@@ -147,6 +150,7 @@ class FailingLLM:
         return self
 
 
+@pytest.mark.live
 class TestFallbackLLM(unittest.IsolatedAsyncioTestCase):
     """Test the FallbackLLM mechanism in isolation."""
 
@@ -223,7 +227,7 @@ class TestMentionDeepSeekModelFallback(unittest.IsolatedAsyncioTestCase):
 
     def _mock_agent(self):
         p = patch(
-            "examples.models.mention_model.mention_chat_model.MentionChatModel.initialize_agent",
+            "shuiyuan_auto_reply.features.mention.mention_chat_model.MentionChatModel.initialize_agent",
             new_callable=MagicMock,
         )
         p.start()
@@ -235,7 +239,7 @@ class TestMentionDeepSeekModelFallback(unittest.IsolatedAsyncioTestCase):
         if not api_key:
             self.skipTest("DEEPSEEK_API_KEY not set")
 
-        from examples.models.mention_model.mention_deepseek_model import MentionDeepSeekModel
+        from shuiyuan_auto_reply.features.mention.mention_deepseek_model import MentionDeepSeekModel
         from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
         self._mock_neo4j()
@@ -289,7 +293,7 @@ class TestMentionTongyiModelFallback(unittest.IsolatedAsyncioTestCase):
 
     def _mock_agent(self):
         p = patch(
-            "examples.models.mention_model.mention_chat_model.MentionChatModel.initialize_agent",
+            "shuiyuan_auto_reply.features.mention.mention_chat_model.MentionChatModel.initialize_agent",
             new_callable=MagicMock,
         )
         p.start()
@@ -301,7 +305,7 @@ class TestMentionTongyiModelFallback(unittest.IsolatedAsyncioTestCase):
         if not api_key:
             self.skipTest("DASHSCOPE_API_KEY not set")
 
-        from examples.models.mention_model.mention_tongyi_model import MentionTongyiModel
+        from shuiyuan_auto_reply.features.mention.mention_tongyi_model import MentionTongyiModel
         from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
         self._mock_neo4j()

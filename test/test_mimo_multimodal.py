@@ -19,8 +19,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from shuiyuan_auto_reply.shuiyuan.objects import PostDetails, User
 
-from examples.models.mention_model.mention_chat_model import MentionChatModel
-from examples.models.mention_model.mention_multimodal import (
+from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
+from shuiyuan_auto_reply.features.mention.mention_multimodal import (
     MentionImageInput,
     build_mimo_content,
     collect_post_image_inputs,
@@ -28,7 +28,7 @@ from examples.models.mention_model.mention_multimodal import (
     normalize_shuiyuan_image_url,
     prepare_image_input,
 )
-from examples.models.mention_model.shuiyuan_tools_objects import PostShort
+from shuiyuan_auto_reply.features.mention.shuiyuan_tools_objects import PostShort
 
 
 def _post_details(*, raw: str | None = "hello", cooked: str = "<p>hello</p>") -> PostDetails:
@@ -254,16 +254,16 @@ class TestPostShortImages(unittest.TestCase):
 
 class TestMentionMimoModel(unittest.TestCase):
     def test_requires_mimo_api_key(self):
-        from examples.models.mention_model.mention_mimo_model import MentionMimoModel
+        from shuiyuan_auto_reply.features.mention.mention_mimo_model import MentionMimoModel
 
         with patch.dict(os.environ, {}, clear=True), \
-             patch("examples.models.mention_model.mention_chat_model.get_global_text_embeddings", return_value=MagicMock()), \
-             patch("examples.models.mention_model.mention_chat_model.MentionMemoryModel"):
+             patch("shuiyuan_auto_reply.features.mention.mention_chat_model.get_global_text_embeddings", return_value=MagicMock()), \
+             patch("shuiyuan_auto_reply.features.mention.mention_chat_model.MentionMemoryModel"):
             with self.assertRaisesRegex(ValueError, "MIMO_API_KEY"):
                 MentionMimoModel(MagicMock())
 
     def test_defaults_to_mimo_v25_multimodal_and_thinking_enabled(self):
-        from examples.models.mention_model.mention_mimo_model import (
+        from shuiyuan_auto_reply.features.mention.mention_mimo_model import (
             MIMO_BASE_URL,
             MIMO_DEFAULT_MODEL,
             MentionMimoModel,
@@ -271,8 +271,8 @@ class TestMentionMimoModel(unittest.TestCase):
         )
 
         with patch.dict(os.environ, {"MIMO_API_KEY": "test-key"}, clear=True), \
-             patch("examples.models.mention_model.mention_chat_model.get_global_text_embeddings", return_value=MagicMock()), \
-             patch("examples.models.mention_model.mention_chat_model.MentionMemoryModel"):
+             patch("shuiyuan_auto_reply.features.mention.mention_chat_model.get_global_text_embeddings", return_value=MagicMock()), \
+             patch("shuiyuan_auto_reply.features.mention.mention_chat_model.MentionMemoryModel"):
             model = MentionMimoModel(MagicMock())
 
         self.assertEqual(MIMO_DEFAULT_MODEL, "mimo-v2.5")
@@ -395,19 +395,25 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
 
 class TestMentionProviderSelection(unittest.TestCase):
     def test_mimo_provider_selects_mimo_model(self):
-        from examples.models.mention_model.mention_model import MentionModel
+        from shuiyuan_auto_reply.bootstrap.providers import MentionProviderFactory
+        from shuiyuan_auto_reply.bootstrap.settings import AppSettings
 
-        with patch.dict(os.environ, {"MENTION_CHAT_PROVIDER": "mimo"}), \
-             patch("examples.models.mention_model.mention_model.MentionMimoModel") as mimo_cls, \
-             patch("examples.models.mention_model.mention_model.MentionPetModel"):
-            mention = MentionModel(MagicMock(), "bot", "wolf_lumine")
+        mimo_cls = MagicMock()
+        with patch.dict(
+            os.environ,
+            {"MENTION_CHAT_PROVIDER": "mimo", "MIMO_API_KEY": "test-key"},
+        ), \
+             patch.dict(MentionProviderFactory._providers, {"mimo": mimo_cls}):
+            model = MentionProviderFactory.create(
+                MagicMock(), "wolf_lumine", AppSettings().providers
+            )
 
-        self.assertIs(mention.pumpkin, mimo_cls.return_value)
+        self.assertIs(model, mimo_cls.return_value)
         mimo_cls.assert_called_once()
 
     def test_unknown_provider_raises_value_error(self):
-        from examples.models.mention_model.mention_model import MentionModel
+        from shuiyuan_auto_reply.bootstrap.settings import AppSettings
 
         with patch.dict(os.environ, {"MENTION_CHAT_PROVIDER": "mystery"}):
             with self.assertRaisesRegex(ValueError, "MENTION_CHAT_PROVIDER"):
-                MentionModel(MagicMock(), "bot", "wolf_lumine")
+                AppSettings().providers.validate_forum()
