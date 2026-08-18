@@ -64,6 +64,7 @@ db.sqlite3-journal
 # Flask stuff:
 instance/
 .webassets-cache
+web/node_modules/
 
 # Scrapy stuff:
 .scrapy
@@ -242,6 +243,10 @@ assets/pet_state.json
 generated_images/
 docs/
 assets/
+design-qa/
+design-qa.md
+!src/shuiyuan_auto_reply/interfaces/api/static/assets/
+!src/shuiyuan_auto_reply/interfaces/api/static/assets/**
 
 .codex/
 .claude/

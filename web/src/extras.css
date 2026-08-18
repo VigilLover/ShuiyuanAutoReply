@@ -1,0 +1,64 @@
+.session-search {
+  width: 100%;
+  margin-top: 12px;
+  padding: 9px 11px;
+  border: 1px solid #cbd8d4;
+  border-radius: 10px;
+  background: #f8fbfa;
+  color: #33423e;
+  outline: none;
+}
+
+.session-search:focus {
+  border-color: #71a99f;
+  box-shadow: 0 0 0 3px #67a99c1f;
+}
+
+.load-more {
+  border: 0;
+  background: transparent;
+  color: #39766d;
+  padding: 10px;
+}
+
+.bubble .trace {
+  margin: 12px 0 0;
+  max-width: 100%;
+}
+
+.system-event button {
+  margin-left: 8px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-heading h3 {
+  margin: 0;
+}
+
+.mcp-url {
+  word-break: break-all;
+}
+
+.connection-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: #b55c63;
+}
+
+.connection-dot.connected {
+  background: #3a9a75;
+  box-shadow: 0 0 0 4px #3a9a7518;
+}

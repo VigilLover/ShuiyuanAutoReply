@@ -119,11 +119,28 @@ class BaseUserActionModel:
                 task = asyncio.create_task(self._new_action_routine(mention))
                 # keep a reference so tasks aren't garbage-collected
                 self._bg_tasks.add(task)
-                # remove task from the set when done
-                task.add_done_callback(lambda t, s=self._bg_tasks: s.discard(t))
+                task.add_done_callback(self._on_background_task_done)
 
             # Update the stream list with the new stream
             self.stream_list = new_stream
             
             # Wait for a while before the next check
             await asyncio.sleep(interval)
+
+    def _on_background_task_done(self, task: asyncio.Task) -> None:
+        self._bg_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            logging.exception("User-action background task failed")
+
+    async def aclose(self) -> None:
+        """Cancel and observe every in-flight action before shutdown."""
+        tasks = tuple(self._bg_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._bg_tasks.clear()
