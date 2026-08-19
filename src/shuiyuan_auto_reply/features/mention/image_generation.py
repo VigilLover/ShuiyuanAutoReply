@@ -137,6 +137,18 @@ class _ImageAPIError(Exception):
         self.retryable = retryable
 
 
+def _image_api_http_error(response: aiohttp.ClientResponse, body: str) -> _ImageAPIError:
+    """Create a support-actionable error for an Images API HTTP response."""
+    request_id = response.headers.get("x-oneapi-request-id")
+    message = f"API 返回 HTTP {response.status}, {body[:200]}"
+    if request_id:
+        message += f" (4Router request_id={request_id})"
+    return _ImageAPIError(
+        message,
+        retryable=response.status in _RETRYABLE_HTTP_STATUSES or response.status >= 500,
+    )
+
+
 def _image_timeout_seconds() -> float:
     raw_value = os.getenv("IMAGE_GEN_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS))
     try:
@@ -305,13 +317,7 @@ async def _request_image_bytes(
     session = await _get_shared_session()
     async with session.post(api_url, headers=headers, data=payload_bytes, timeout=timeout) as response:
         if response.status != 200:
-            body = (await response.text())[:200]
-            message = f"API 返回 HTTP {response.status}, {body}"
-            retryable = (
-                response.status in _RETRYABLE_HTTP_STATUSES
-                or response.status >= 500
-            )
-            raise _ImageAPIError(message, retryable=retryable)
+            raise _image_api_http_error(response, await response.text())
 
         image_bytes = await _read_images_response(response)
         logger.info(
@@ -337,13 +343,7 @@ async def _request_image_bytes_multipart(
     session = await _get_shared_session()
     async with session.post(api_url, headers=headers, data=form_data, timeout=timeout) as response:
         if response.status != 200:
-            body = (await response.text())[:200]
-            message = f"API 返回 HTTP {response.status}, {body}"
-            retryable = (
-                response.status in _RETRYABLE_HTTP_STATUSES
-                or response.status >= 500
-            )
-            raise _ImageAPIError(message, retryable=retryable)
+            raise _image_api_http_error(response, await response.text())
 
         image_bytes = await _read_images_response(response)
         logger.info(
@@ -774,7 +774,6 @@ def create_image_generation_tool(model, *, state_store=None):
                 "model": image_model,
                 "prompt": prompt,
                 "size": image_size_value,
-                "n": 1,
             }
             request_body = json.dumps(
                 payload,
@@ -826,7 +825,6 @@ def create_image_generation_tool(model, *, state_store=None):
                         request_body.add_field("model", image_model)
                         request_body.add_field("prompt", prompt)
                         request_body.add_field("size", image_size_value)
-                        request_body.add_field("n", "1")
                         for reference_bytes, mime_type, filename in edit_images:
                             request_body.add_field(
                                 "image[]",

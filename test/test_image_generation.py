@@ -180,7 +180,6 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
                 "model": "test-image-model",
                 "prompt": "测试原生图片生成接口调用",
                 "size": "1024x1360",
-                "n": 1,
             },
         )
         self.assertNotIn("messages", self.requests[0])
@@ -236,7 +235,6 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
                 "model": "test-image-model",
                 "prompt": "参考图编辑测试生图功能验证",
                 "size": "1024x1360",
-                "n": "1",
                 "image_count": 1,
                 "image_field_names": ["image[]"],
                 "image_content_types": ["image/png"],
@@ -272,6 +270,21 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         self.assertIn("bad image prompt", result)
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(self.model.uploaded_images, [])
+
+    async def test_4router_request_id_is_returned_with_http_error(self):
+        async def handler(request):
+            return web.json_response(
+                {"error": {"message": "control plane unavailable"}},
+                status=502,
+                headers={"x-oneapi-request-id": "request-abc123"},
+            )
+
+        await self._start_images_server(handler)
+        tool = create_image_generation_tool(self.model)
+        result = await tool("测试图片代理请求编号错误回传", output_dir=self.output_dir.name)
+
+        self.assertIn("HTTP 502", result)
+        self.assertIn("4Router request_id=request-abc123", result)
 
     async def test_numeric_prompt_values_are_rejected_before_server_request(self):
         async def handler(request):
