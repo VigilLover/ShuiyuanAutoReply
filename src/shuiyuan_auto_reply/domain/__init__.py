@@ -2,7 +2,7 @@
 
 from .conversation import ActorRef, Channel, ConversationRef, ForumContextRef
 from .message import AttachmentRef, ChatMessage, DispatchMode, ReplyRequest
-from .response import ForumMediaRef, GeneratedImageArtifact, ReplyResult
+from .response import ForumMediaRef, GeneratedImageArtifact, ReplyResult, VisualMediaArtifact
 
 __all__ = [
     "ActorRef",
@@ -16,4 +16,5 @@ __all__ = [
     "GeneratedImageArtifact",
     "ReplyRequest",
     "ReplyResult",
+    "VisualMediaArtifact",
 ]

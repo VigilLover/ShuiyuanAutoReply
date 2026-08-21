@@ -199,7 +199,7 @@ class TestFallbackLLM(unittest.IsolatedAsyncioTestCase):
 
 # ── MentionDeepSeekModel Fallback Test ───────────────────────────────────
 
-class TestMentionDeepSeekModelFallback(unittest.IsolatedAsyncioTestCase):
+class TestMentionDeepSeekVisionModel(unittest.IsolatedAsyncioTestCase):
     """Test MentionDeepSeekModel internal fallback wiring."""
 
     @classmethod
@@ -233,8 +233,7 @@ class TestMentionDeepSeekModelFallback(unittest.IsolatedAsyncioTestCase):
         p.start()
         self._patches.append(p)
 
-    async def test_deepseek_model_has_fallback_llm(self):
-        """MentionDeepSeekModel.llm should be a FallbackLLM with two ChatOpenAI instances."""
+    async def test_deepseek_model_uses_single_vision_llm(self):
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
             self.skipTest("DEEPSEEK_API_KEY not set")
@@ -248,19 +247,10 @@ class TestMentionDeepSeekModelFallback(unittest.IsolatedAsyncioTestCase):
         with patch.object(ShuiyuanModel, "__init__", lambda self: None):
             model = MentionDeepSeekModel(MagicMock())
 
-        self.assertIsInstance(model.llm, FallbackLLM)
-        self.assertIsInstance(model.llm.primary, ChatOpenAI)
-        self.assertIsInstance(model.llm.fallback, ChatOpenAI)
-
-        expected_primary = _ds_model("DEEPSEEK_MENTION_MODEL", _DS_DEFAULT)
-        expected_fallback = _ds_model("DEEPSEEK_MENTION_FALLBACK_MODEL", _DS_FALLBACK)
-        self.assertEqual(model.llm.primary.model_name, expected_primary)
-        self.assertEqual(model.llm.fallback.model_name, expected_fallback)
-        logging.info(
-            "[DeepSeekModel] primary=%s, fallback=%s",
-            model.llm.primary.model_name,
-            model.llm.fallback.model_name,
-        )
+        self.assertIsInstance(model.llm, ChatOpenAI)
+        self.assertNotIsInstance(model.llm, FallbackLLM)
+        self.assertEqual(model.llm.model_name, "deepseek-v4-flash-vision-exp")
+        self.assertTrue(model.supports_multimodal)
 
 
 # ── MentionTongyiModel Fallback Test ────────────────────────────────────

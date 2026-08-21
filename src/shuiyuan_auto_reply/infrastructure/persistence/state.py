@@ -13,7 +13,14 @@ from typing import Any
 
 import aiosqlite
 
-from shuiyuan_auto_reply.domain import Channel, ChatMessage, ConversationRef, ReplyRequest, ReplyResult
+from shuiyuan_auto_reply.domain import (
+    AttachmentRef,
+    Channel,
+    ChatMessage,
+    ConversationRef,
+    ReplyRequest,
+    ReplyResult,
+)
 from shuiyuan_auto_reply.application.events import current_run_id
 
 
@@ -124,6 +131,11 @@ class ArtifactRecord:
     width: int | None
     height: int | None
     forum_short_path: str | None
+    source_kind: str
+    source_url: str | None
+    filename: str | None
+    sha256: str | None
+    last_accessed_at: str
     created_at: str
 
     @property
@@ -165,7 +177,15 @@ CREATE TABLE IF NOT EXISTS artifacts (
   id TEXT PRIMARY KEY, conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
   run_id TEXT REFERENCES runs(id) ON DELETE SET NULL, local_path TEXT NOT NULL,
   mime_type TEXT NOT NULL, byte_count INTEGER NOT NULL, width INTEGER, height INTEGER,
-  forum_short_path TEXT, created_at TEXT NOT NULL
+  forum_short_path TEXT, source_kind TEXT NOT NULL DEFAULT 'generated',
+  source_url TEXT, filename TEXT, sha256 TEXT, last_accessed_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_files (
+  artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL, credential_fingerprint TEXT NOT NULL,
+  file_id TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY(artifact_id, provider, credential_fingerprint)
 );
 CREATE TABLE IF NOT EXISTS runtime_profiles (
   scope TEXT PRIMARY KEY, draft_json TEXT NOT NULL, active_json TEXT NOT NULL,
@@ -207,6 +227,25 @@ class SQLiteStateStore:
             row = await (await db.execute("SELECT version FROM schema_version LIMIT 1")).fetchone()
             if row is None:
                 await db.execute("INSERT INTO schema_version(version) VALUES (1)")
+            columns = {
+                item["name"]
+                for item in await (await db.execute("PRAGMA table_info(artifacts)")).fetchall()
+            }
+            migrations = {
+                "source_kind": "ALTER TABLE artifacts ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'generated'",
+                "source_url": "ALTER TABLE artifacts ADD COLUMN source_url TEXT",
+                "filename": "ALTER TABLE artifacts ADD COLUMN filename TEXT",
+                "sha256": "ALTER TABLE artifacts ADD COLUMN sha256 TEXT",
+                "last_accessed_at": "ALTER TABLE artifacts ADD COLUMN last_accessed_at TEXT NOT NULL DEFAULT ''",
+            }
+            for column, statement in migrations.items():
+                if column not in columns:
+                    await db.execute(statement)
+            await db.execute(
+                "UPDATE artifacts SET last_accessed_at=created_at WHERE last_accessed_at=''"
+            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_sha256 ON artifacts(sha256)")
+            await db.execute("UPDATE schema_version SET version=2")
             await db.commit()
         finally:
             await db.close()
@@ -444,14 +483,35 @@ class SQLiteStateStore:
         if row is not None:
             await self.append_event(row["id"], event_type, payload)
 
-    async def register_artifact(self, *, artifact_id: str, local_path: str, mime_type: str, byte_count: int, width: int | None = None, height: int | None = None, conversation_id: str | None = None, run_id: str | None = None) -> None:
+    async def register_artifact(
+        self,
+        *,
+        artifact_id: str,
+        local_path: str,
+        mime_type: str,
+        byte_count: int,
+        width: int | None = None,
+        height: int | None = None,
+        conversation_id: str | None = None,
+        run_id: str | None = None,
+        source_kind: str = "generated",
+        source_url: str | None = None,
+        filename: str | None = None,
+        sha256: str | None = None,
+    ) -> None:
+        now = utc_now()
         db = await self._connect()
         try:
             await db.execute(
                 """INSERT OR REPLACE INTO artifacts
-                (id, conversation_id, run_id, local_path, mime_type, byte_count, width, height, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (artifact_id, conversation_id, run_id, local_path, mime_type, byte_count, width, height, utc_now()),
+                (id, conversation_id, run_id, local_path, mime_type, byte_count, width, height,
+                 source_kind, source_url, filename, sha256, last_accessed_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    artifact_id, conversation_id, run_id, local_path, mime_type,
+                    byte_count, width, height, source_kind, source_url, filename,
+                    sha256, now, now,
+                ),
             )
             await db.commit()
         finally:
@@ -477,7 +537,87 @@ class SQLiteStateStore:
         db = await self._connect()
         try:
             row = await (await db.execute("SELECT * FROM artifacts WHERE id=?", (artifact_id,))).fetchone()
+            if row:
+                await db.execute(
+                    "UPDATE artifacts SET last_accessed_at=? WHERE id=?",
+                    (utc_now(), artifact_id),
+                )
+                await db.commit()
             return ArtifactRecord(**dict(row)) if row else None
+        finally:
+            await db.close()
+
+    async def find_artifact_by_sha256(
+        self, conversation_id: str | None, sha256: str, source_kind: str
+    ) -> ArtifactRecord | None:
+        if conversation_id is None:
+            return None
+        db = await self._connect()
+        try:
+            row = await (await db.execute(
+                """SELECT * FROM artifacts
+                WHERE conversation_id=? AND sha256=? AND source_kind=?
+                ORDER BY created_at DESC LIMIT 1""",
+                (conversation_id, sha256, source_kind),
+            )).fetchone()
+            record = ArtifactRecord(**dict(row)) if row else None
+            return record if record and record.available else None
+        finally:
+            await db.close()
+
+    async def get_provider_file(
+        self, artifact_id: str, provider: str, credential_fingerprint: str
+    ) -> dict[str, str] | None:
+        db = await self._connect()
+        try:
+            row = await (await db.execute(
+                """SELECT file_id, expires_at FROM provider_files
+                WHERE artifact_id=? AND provider=? AND credential_fingerprint=?""",
+                (artifact_id, provider, credential_fingerprint),
+            )).fetchone()
+            return dict(row) if row else None
+        finally:
+            await db.close()
+
+    async def upsert_provider_file(
+        self,
+        *,
+        artifact_id: str,
+        provider: str,
+        credential_fingerprint: str,
+        file_id: str,
+        expires_at: str,
+    ) -> None:
+        db = await self._connect()
+        try:
+            await db.execute(
+                """INSERT INTO provider_files
+                (artifact_id, provider, credential_fingerprint, file_id, expires_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(artifact_id, provider, credential_fingerprint) DO UPDATE SET
+                  file_id=excluded.file_id, expires_at=excluded.expires_at,
+                  created_at=excluded.created_at""",
+                (
+                    artifact_id, provider, credential_fingerprint, file_id,
+                    expires_at, utc_now(),
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    async def list_provider_files_for_conversation(
+        self, conversation_id: str
+    ) -> list[dict[str, str]]:
+        db = await self._connect()
+        try:
+            rows = await (await db.execute(
+                """SELECT p.provider, p.file_id, p.expires_at
+                FROM provider_files p JOIN artifacts a ON a.id=p.artifact_id
+                WHERE a.conversation_id=?""",
+                (conversation_id,),
+            )).fetchall()
+            return [dict(row) for row in rows]
         finally:
             await db.close()
 
@@ -614,18 +754,44 @@ class SQLiteSessionRepository:
     async def load(self, key: ConversationRef) -> list[ChatMessage]:
         conversation = await self.store.ensure_conversation(key)
         records = await self.store.list_messages(conversation.id, current_epoch_only=True)
-        history = [
-            ChatMessage(record.role, record.content)
-            for record in records
-            if record.role in {"user", "assistant"}
-        ]
+        history = []
+        for record in records:
+            if record.role not in {"user", "assistant"}:
+                continue
+            attachments = []
+            for artifact_id in record.attachments:
+                artifact = await self.store.get_artifact(artifact_id)
+                if artifact is None or not artifact.available:
+                    continue
+                attachments.append(
+                    AttachmentRef(
+                        f"artifact://{artifact.id}",
+                        artifact.mime_type,
+                        artifact.id,
+                        artifact.source_kind,
+                        artifact.source_url,
+                        artifact.filename,
+                        artifact.width,
+                        artifact.height,
+                    )
+                )
+            history.append(ChatMessage(record.role, record.content, tuple(attachments)))
         return history[-16:]
 
     async def append(self, key: ConversationRef, request: ReplyRequest, result: ReplyResult) -> None:
         conversation = await self.store.ensure_conversation(key)
         run_id = current_run_id()
+        input_artifact_ids = tuple(
+            attachment.url.removeprefix("artifact://")
+            for attachment in (*request.attachments, *result.input_attachments)
+            if attachment.url.startswith("artifact://")
+        )
         await self.store.append_message(
-            conversation.id, "user", request.content, run_id=run_id
+            conversation.id,
+            "user",
+            request.content,
+            run_id=run_id,
+            attachments=tuple(dict.fromkeys(input_artifact_ids)),
         )
         artifact_ids = tuple(a.url.removeprefix("artifact://") for a in result.attachments if a.url.startswith("artifact://"))
         await self.store.append_message(
@@ -635,7 +801,7 @@ class SQLiteSessionRepository:
             run_id=run_id,
             attachments=artifact_ids,
         )
-        for artifact_id in artifact_ids:
+        for artifact_id in tuple(dict.fromkeys((*input_artifact_ids, *artifact_ids))):
             await self.store.attach_artifact(
                 artifact_id, conversation_id=conversation.id, run_id=run_id
             )

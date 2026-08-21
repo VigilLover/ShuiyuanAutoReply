@@ -32,6 +32,8 @@ from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from .providers import MentionProviderFactory
 from .settings import AppSettings, ProviderSettings
 
+DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
+
 
 class _UnavailableChatBackend:
     """Keeps the management UI usable until a web Provider is configured."""
@@ -199,16 +201,20 @@ class ApplicationContainer:
         ).system_prompt
         return {
             "provider": "deepseek",
-            "model": settings.providers.deepseek_model,
-            "fallback_model": settings.providers.deepseek_fallback_model,
+            "model": DEEPSEEK_VISION_MODEL,
+            "fallback_model": None,
             "system_prompt": prompt,
             "enabled_tools": None,
             "disabled_mcp_tools": [],
         }
 
     async def _settings_for_profile(self, scope: str, profile: dict) -> ProviderSettings:
-        provider = str(profile.get("provider", "deepseek"))
-        settings = replace(self.settings.providers, mention_provider=provider)
+        provider = "deepseek"
+        settings = replace(
+            self.settings.providers,
+            mention_provider=provider,
+            deepseek_model=DEEPSEEK_VISION_MODEL,
+        )
         secret = (
             await self.secret_vault.get(f"{scope}:{provider}")
             if self.secret_vault
@@ -222,22 +228,7 @@ class ApplicationContainer:
         }
         if secret:
             settings = replace(settings, **{key_fields[provider]: secret})
-        model_fields = {
-            "openrouter": "openrouter_mention_model",
-            "deepseek": "deepseek_model",
-            "tongyi": "dashscope_model",
-            "mimo": "mimo_model",
-        }
-        changes = {}
-        if profile.get("model"):
-            changes[model_fields[provider]] = profile["model"]
-        fallback_fields = {
-            "deepseek": "deepseek_fallback_model",
-            "tongyi": "dashscope_fallback_model",
-        }
-        if profile.get("fallback_model") and provider in fallback_fields:
-            changes[fallback_fields[provider]] = profile["fallback_model"]
-        return replace(settings, **changes) if changes else settings
+        return settings
 
     @classmethod
     async def for_api(cls, settings: AppSettings | None = None) -> "ApplicationContainer":

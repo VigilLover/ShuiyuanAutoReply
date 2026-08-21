@@ -18,26 +18,17 @@ from shuiyuan_auto_reply.infrastructure.persistence import LocalSecretVault
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 
+DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
+
 
 def _forum_profile_defaults(settings: AppSettings, persona: str) -> dict:
     prompt = FilePromptRepository().load(
         persona, set(), PromptScope.FORUM
     ).system_prompt
-    provider = settings.providers.mention_provider
-    models = {
-        "deepseek": settings.providers.deepseek_model,
-        "tongyi": settings.providers.dashscope_model,
-        "openrouter": settings.providers.openrouter_mention_model,
-        "mimo": settings.providers.mimo_model,
-    }
-    fallbacks = {
-        "deepseek": settings.providers.deepseek_fallback_model,
-        "tongyi": settings.providers.dashscope_fallback_model,
-    }
     return {
-        "provider": provider,
-        "model": models[provider],
-        "fallback_model": fallbacks.get(provider),
+        "provider": "deepseek",
+        "model": DEEPSEEK_VISION_MODEL,
+        "fallback_model": None,
         "system_prompt": prompt,
         "enabled_tools": None,
         "disabled_mcp_tools": [],
@@ -47,8 +38,12 @@ def _forum_profile_defaults(settings: AppSettings, persona: str) -> dict:
 async def _forum_provider_settings(
     settings: AppSettings, vault: LocalSecretVault, profile: dict
 ):
-    provider = str(profile.get("provider", settings.providers.mention_provider))
-    effective = replace(settings.providers, mention_provider=provider)
+    provider = "deepseek"
+    effective = replace(
+        settings.providers,
+        mention_provider=provider,
+        deepseek_model=DEEPSEEK_VISION_MODEL,
+    )
     secret = await vault.get(f"forum:{provider}")
     key_fields = {
         "openrouter": "openrouter_api_key",
@@ -58,22 +53,7 @@ async def _forum_provider_settings(
     }
     if secret:
         effective = replace(effective, **{key_fields[provider]: secret})
-    model_fields = {
-        "openrouter": "openrouter_mention_model",
-        "deepseek": "deepseek_model",
-        "tongyi": "dashscope_model",
-        "mimo": "mimo_model",
-    }
-    changes = {}
-    if profile.get("model"):
-        changes[model_fields[provider]] = profile["model"]
-    fallback_fields = {
-        "deepseek": "deepseek_fallback_model",
-        "tongyi": "dashscope_fallback_model",
-    }
-    if profile.get("fallback_model") and provider in fallback_fields:
-        changes[fallback_fields[provider]] = profile["fallback_model"]
-    return replace(effective, **changes) if changes else effective
+    return effective
 
 
 async def run_worker(persona: str = "wolf_lumine") -> None:

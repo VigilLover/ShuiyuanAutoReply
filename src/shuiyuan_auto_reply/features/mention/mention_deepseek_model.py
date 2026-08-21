@@ -1,6 +1,9 @@
 from typing import Any
 
-from langchain_core.messages import AIMessage
+import logging
+from dataclasses import replace
+
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatResult
 from langchain_openai import ChatOpenAI
 
@@ -8,11 +11,16 @@ from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 
-from .mention_chat_model import FallbackLLM, MentionChatModel
+from .deepseek_vision import (
+    MAX_IMAGES_PER_TURN,
+    DeepSeekVisionMediaManager,
+    build_deepseek_content,
+)
+from .mention_multimodal import extract_image_urls
+from .mention_chat_model import MentionChatModel, MentionGraphState
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-pro"
-DEEPSEEK_FALLBACK_MODEL = "deepseek-v4-flash"
+DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash-vision-exp"
 DEEPSEEK_DEFAULT_MAX_RETRIES = 3
 DEEPSEEK_DEFAULT_THINKING = "enabled"
 DEEPSEEK_DEFAULT_REASONING_EFFORT = "max"
@@ -44,6 +52,12 @@ class DeepSeekChatOpenAI(ChatOpenAI):
         for source_message, payload_message in zip(
             messages, payload_messages, strict=False
         ):
+            if isinstance(source_message, HumanMessage) and isinstance(
+                source_message.content, list
+            ):
+                # DeepSeek's Vision endpoint accepts provider-specific ``file``
+                # blocks that generic OpenAI adapters may otherwise normalize away.
+                payload_message["content"] = source_message.content
             if not isinstance(source_message, AIMessage):
                 continue
             reasoning_content = source_message.additional_kwargs.get("reasoning_content")
@@ -101,11 +115,15 @@ def _mk_deepseek_llm(
 
 
 class MentionDeepSeekModel(MentionChatModel):
-    """
-    A model for managing DeepSeek-backed conversation data.
-    Falls back to deepseek-v4-flash if deepseek-v4-pro is unavailable.
-    Both models use thinking mode with reasoning_effort=max.
-    """
+    """Single-model DeepSeek V4 Flash Vision agent."""
+
+    def _get_multimodal_prompt_rules(self) -> str:
+        return (
+            "【原生视觉理解规则】\n"
+            "1. 用户图片和工具结果图片会自动作为视觉输入附加，不要调用独立识图工具。\n"
+            "2. 只有实际出现的图片可用于判断；工具结果没有图片时不要猜测画面。\n"
+            "3. 图片标签只用于区分来源，回答时结合图片本身和相邻文字。\n\n"
+        )
 
     def __init__(
         self,
@@ -125,13 +143,216 @@ class MentionDeepSeekModel(MentionChatModel):
         if not api_key:
             raise ValueError("Please set the DEEPSEEK_API_KEY environment variable.")
 
-        model_name = current.deepseek_model
-        fallback_name = current.deepseek_fallback_model
-
-        self.llm = FallbackLLM(
-            _mk_deepseek_llm(api_key, model_name, current),
-            _mk_deepseek_llm(api_key, fallback_name, current),
+        self.llm = _mk_deepseek_llm(
+            api_key,
+            DEEPSEEK_DEFAULT_MODEL,
+            current,
         )
+        self.supports_multimodal = True
+        self.multimodal_search_image_limit = MAX_IMAGES_PER_TURN
+        self.uses_inspect_image_tool = False
+        self.vision_media = DeepSeekVisionMediaManager(
+            state_store=state_store,
+            forum_model=model,
+            api_key=api_key,
+        )
+
+    async def _load_current_images(
+        self, state: MentionGraphState
+    ) -> MentionGraphState:
+        images = list(state.get("image_inputs", []) or [])
+        seen = {image.source_url for image in images}
+        for attachment in state.get("request_attachments", ()) or ():
+            if len(images) >= MAX_IMAGES_PER_TURN:
+                break
+            try:
+                image = await self.vision_media.prepare_attachment(attachment)
+            except Exception as exc:
+                logging.warning("Failed to prepare user image: %s", exc)
+                continue
+            if image.source_url not in seen:
+                seen.add(image.source_url)
+                images.append(image)
+
+        for url in extract_image_urls(state.get("conversation", "")):
+            if len(images) >= MAX_IMAGES_PER_TURN or url in seen:
+                break
+            try:
+                image = await self.vision_media.prepare_forum_url(
+                    url,
+                    conversation_id=state.get("conversation_id"),
+                    source_kind="forum_post",
+                    description="当前论坛帖子图片",
+                )
+            except Exception as exc:
+                logging.warning("Failed to prepare current forum image %s: %s", url, exc)
+                continue
+            if image:
+                seen.add(url)
+                images.append(image)
+        return {
+            "supports_multimodal": True,
+            "image_inputs": images,
+            "input_visual_artifacts": [image.artifact for image in images],
+        }
+
+    async def _load_topic_context(
+        self, state: MentionGraphState
+    ) -> MentionGraphState:
+        result = await super()._load_topic_context(state)
+        external_history = state.get("external_history") or ()
+        historical_images = []
+        for item in reversed(external_history):
+            for attachment in reversed(getattr(item, "attachments", ()) or ()):
+                if len(historical_images) >= MAX_IMAGES_PER_TURN:
+                    break
+                try:
+                    historical_images.append(
+                        await self.vision_media.prepare_attachment(attachment)
+                    )
+                except Exception as exc:
+                    logging.warning("Failed to restore historical image: %s", exc)
+            if len(historical_images) >= MAX_IMAGES_PER_TURN:
+                break
+        if historical_images:
+            historical_images.reverse()
+            result["chat_history"].append(
+                HumanMessage(
+                    content=build_deepseek_content(
+                        "以上是最近会话中的历史图片，仅在用户追问时结合使用。",
+                        historical_images,
+                    )
+                )
+            )
+        return result
+
+    async def _load_replied_post_images(
+        self, state: MentionGraphState
+    ) -> MentionGraphState:
+        images = list(state.get("image_inputs", []) or [])
+        if not state.get("reply_to_post_number") or len(images) >= MAX_IMAGES_PER_TURN:
+            return {"image_inputs": images}
+        try:
+            post = await self.model.get_post_details_by_post_number(
+                state["topic_id"], state["reply_to_post_number"]
+            )
+        except Exception as exc:
+            logging.warning("Failed to load replied-post images: %s", exc)
+            return {"image_inputs": images}
+        urls = list(getattr(post, "image_urls", []) or [])
+        urls.extend(extract_image_urls(getattr(post, "raw", "")))
+        urls.extend(extract_image_urls(getattr(post, "cooked", "")))
+        seen = {image.source_url for image in images}
+        for url in urls:
+            if len(images) >= MAX_IMAGES_PER_TURN:
+                break
+            if url in seen:
+                continue
+            try:
+                image = await self.vision_media.prepare_forum_url(
+                    url,
+                    conversation_id=state.get("conversation_id"),
+                    source_kind="forum_post",
+                    description="被回复论坛帖子图片",
+                )
+            except Exception as exc:
+                logging.warning("Failed to prepare replied image %s: %s", url, exc)
+                continue
+            if image:
+                seen.add(url)
+                images.append(image)
+        return {
+            "image_inputs": images,
+            "input_visual_artifacts": [image.artifact for image in images],
+        }
+
+    @staticmethod
+    async def _prepare_messages(state: MentionGraphState) -> MentionGraphState:
+        text = (
+            "【用户当前发言】\n<user_post>\n"
+            f"{state['conversation']}\n"
+            "</user_post>"
+        )
+        images = state.get("image_inputs", []) or []
+        content = build_deepseek_content(text, images) if images else text
+        return {"messages": [HumanMessage(content=content)]}
+
+    async def _collect_tool_output_images(
+        self, state: MentionGraphState
+    ) -> MentionGraphState:
+        existing = list(state.get("image_inputs", []) or [])
+        remaining = MAX_IMAGES_PER_TURN - len(existing)
+        if remaining <= 0:
+            return {"image_inputs": existing[:MAX_IMAGES_PER_TURN]}
+        tool_messages = []
+        for message in reversed(state.get("messages", [])):
+            if getattr(message, "type", None) != "tool":
+                break
+            tool_messages.append(message)
+        tool_messages.reverse()
+        new_images = await self.vision_media.prepare_tool_output(
+            tool_messages,
+            conversation_id=state.get("conversation_id"),
+            existing_urls={image.source_url for image in existing},
+            limit=remaining,
+        )
+        if not new_images:
+            return {"image_inputs": existing}
+        visual_artifacts = list(state.get("response_visual_artifacts", []) or [])
+        visual_artifacts.extend(image.artifact for image in new_images)
+        return {
+            "image_inputs": existing + new_images,
+            "response_visual_artifacts": visual_artifacts,
+            "messages": [
+                HumanMessage(
+                    content=build_deepseek_content(
+                        "以上图片来自本轮工具返回，请结合对应来源文字继续回答。",
+                        new_images,
+                    )
+                )
+            ],
+        }
+
+    async def _call_model(self, state: MentionGraphState) -> MentionGraphState:
+        try:
+            return await super()._call_model(state)
+        except Exception:
+            url_images = [
+                image
+                for image in state.get("image_inputs", []) or []
+                if image.content_block.get("type") == "image_url"
+            ]
+            if not url_images:
+                raise
+            logging.warning(
+                "DeepSeek could not read %d image URL(s); retrying once with Files API",
+                len(url_images),
+            )
+            replacements: dict[str, dict[str, Any]] = {}
+            replaced_images = []
+            for image in state.get("image_inputs", []) or []:
+                block = image.content_block
+                if block.get("type") == "image_url":
+                    file_id = await self.vision_media.ensure_file_id(image.artifact)
+                    replacement = {"type": "file", "file_id": file_id}
+                    url = str((block.get("image_url") or {}).get("url", ""))
+                    replacements[url] = replacement
+                    image = replace(image, content_block=replacement)
+                replaced_images.append(image)
+            state["image_inputs"] = replaced_images
+            for message in state.get("messages", []) or []:
+                content = getattr(message, "content", None)
+                if not isinstance(content, list):
+                    continue
+                rewritten = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "image_url":
+                        url = str((block.get("image_url") or {}).get("url", ""))
+                        rewritten.append(replacements.get(url, block))
+                    else:
+                        rewritten.append(block)
+                message.content = rewritten
+            return await super()._call_model(state)
 
     def parse_model_output(self, raw_output: Any) -> str:
         """

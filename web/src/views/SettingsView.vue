@@ -130,17 +130,15 @@ onMounted(load)
           </div>
 
           <div v-if="activeSection === 'model'" class="settings-section">
-            <p class="section-intro">为当前应用选择模型供应商。API Key 保存后只显示配置状态和末四位。</p>
+            <p class="section-intro">网页与论坛 Agent 已统一接入 DeepSeek 原生视觉模型。API Key 保存后只显示配置状态和末四位。</p>
             <div class="provider-grid">
-              <button v-for="provider in ['deepseek', 'openrouter', 'tongyi', 'mimo']" :key="provider" class="provider-card" :class="{ selected: current().draft.provider === provider }" @click="current().draft.provider = provider">
-                <strong>{{ provider }}</strong>
-                <span v-if="current().draft.provider === provider"><PhCheck :size="15" weight="bold" /> 当前选择</span>
-                <span v-else>选择</span>
-              </button>
+              <div class="provider-card selected">
+                <strong>DeepSeek</strong>
+                <span><PhCheck :size="15" weight="bold" /> Vision 固定模型</span>
+              </div>
             </div>
             <div class="form-grid">
-              <label><span>模型名称</span><input v-model="current().draft.model" placeholder="模型 ID" /></label>
-              <label><span>Fallback 模型</span><input v-model="current().draft.fallback_model" placeholder="可选" /></label>
+              <label class="full-field"><span>模型名称</span><input value="deepseek-v4-flash-vision-exp" readonly /></label>
               <label class="full-field"><span>API Key</span><input v-model="current().draft.api_key" type="password" :placeholder="current().secret?.configured ? `已配置 ····${current().secret.last_four}` : '输入新密钥'" /></label>
             </div>
             <button class="outline-action" @click="testProvider"><PhPlugsConnected :size="16" />测试 Provider 连接</button>
