@@ -23,7 +23,7 @@ class LegacyMentionChatBackend:
             username=request.actor.username,
             name=request.actor.display_name,
         )
-        text, artifacts = await self.model.get_pumpkin_response(
+        response = await self.model.get_pumpkin_response(
             forum.topic_id if forum else None,
             forum.reply_to_post_number if forum else None,
             request.content,
@@ -32,14 +32,30 @@ class LegacyMentionChatBackend:
             load_forum_context=forum is not None,
             memory_user_id=request.actor.memory_id if forum is None else user_id,
             external_history=history,
+            attachments=request.attachments,
+            conversation_ref=request.conversation,
             include_artifacts=True,
         )
+        if len(response) == 2:
+            text, artifacts = response
+            input_artifacts = ()
+        else:
+            text, artifacts, input_artifacts = response
+        def attachment(artifact):
+            return AttachmentRef(
+                artifact.uri,
+                artifact.mime_type,
+                artifact.artifact_id,
+                getattr(artifact, "source_kind", "generated"),
+                getattr(artifact, "source_url", None),
+                getattr(artifact, "filename", None),
+                getattr(artifact, "width", None),
+                getattr(artifact, "height", None),
+            )
         return ReplyResult(
             text=text or "",
-            attachments=tuple(
-                AttachmentRef(artifact.uri, artifact.mime_type, artifact.artifact_id)
-                for artifact in artifacts
-            ),
+            attachments=tuple(attachment(artifact) for artifact in artifacts),
+            input_attachments=tuple(attachment(artifact) for artifact in input_artifacts),
         )
 
     async def clear(self, conversation: ConversationRef) -> None:

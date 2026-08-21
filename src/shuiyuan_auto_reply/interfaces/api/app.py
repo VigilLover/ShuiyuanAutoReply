@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from shuiyuan_auto_reply.bootstrap import AppSettings, ApplicationContainer
 from shuiyuan_auto_reply.domain import (
     ActorRef,
+    AttachmentRef,
     Channel,
     ConversationRef,
     DispatchMode,
@@ -28,8 +29,16 @@ from shuiyuan_auto_reply.domain import (
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
+from shuiyuan_auto_reply.features.mention.deepseek_vision import (
+    MAX_IMAGE_BYTES,
+    MAX_IMAGES_PER_TURN,
+    DeepSeekFilesClient,
+    VisionMediaError,
+    save_uploaded_image,
+)
 
 logger = logging.getLogger(__name__)
+DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +262,11 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                         "artifact_id": artifact.id,
                         "url": f"/api/artifacts/{artifact.id}",
                         "mime_type": artifact.mime_type,
+                        "filename": artifact.filename,
+                        "width": artifact.width,
+                        "height": artifact.height,
+                        "source_kind": artifact.source_kind,
+                        "source_url": artifact.source_url,
                     })
             serialized_messages.append({
                 "id": message.id,
@@ -284,12 +298,58 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @api.post("/api/conversations/{conversation_id}/messages/stream")
-    async def stream_message(conversation_id: str, payload: ConversationMessageRequest, request: Request):
+    async def stream_message(conversation_id: str, request: Request):
         record = await _conversation_record(request, conversation_id)
         if record.channel != Channel.WEB.value:
             raise HTTPException(status_code=403, detail="论坛会话为只读")
-        if not payload.message.strip():
-            raise HTTPException(status_code=400, detail="消息不能为空")
+
+        content_type = request.headers.get("content-type", "").lower()
+        uploads = []
+        if content_type.startswith("multipart/form-data"):
+            form = await request.form()
+            message = str(form.get("message") or "")
+            uploads = [item for item in form.getlist("images") if hasattr(item, "read")]
+        else:
+            try:
+                payload = ConversationMessageRequest.model_validate(await request.json())
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail="消息请求格式无效") from exc
+            message = payload.message
+
+        if len(uploads) > MAX_IMAGES_PER_TURN:
+            raise HTTPException(status_code=400, detail="每条消息最多上传 20 张图片")
+        pending_uploads: list[tuple[bytes, str | None]] = []
+        for upload in uploads:
+            data = await upload.read(MAX_IMAGE_BYTES + 1)
+            if len(data) > MAX_IMAGE_BYTES:
+                raise HTTPException(status_code=400, detail="单张图片不能超过 20MB")
+            pending_uploads.append((data, getattr(upload, "filename", None)))
+        if not message.strip() and not pending_uploads:
+            raise HTTPException(status_code=400, detail="消息或图片不能为空")
+
+        input_attachments: list[AttachmentRef] = []
+        try:
+            for data, filename in pending_uploads:
+                artifact = await save_uploaded_image(
+                    _store(request),
+                    conversation_id=conversation_id,
+                    data=data,
+                    filename=filename,
+                )
+                input_attachments.append(
+                    AttachmentRef(
+                        artifact.uri,
+                        artifact.mime_type,
+                        artifact.artifact_id,
+                        artifact.source_kind,
+                        artifact.source_url,
+                        artifact.filename,
+                        artifact.width,
+                        artifact.height,
+                    )
+                )
+        except VisionMediaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         async def events():
             def encode(event: str, data: dict[str, Any]) -> str:
@@ -300,8 +360,9 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 request_id=request_id,
                 conversation=_ref_from_record(record),
                 actor=ActorRef(Channel.WEB, record.external_id, "web-user", None),
-                content=payload.message,
+                content=message,
                 dispatch_mode=DispatchMode.AUTO,
+                attachments=tuple(input_attachments),
             )
             reply_task = asyncio.create_task(
                 request.app.state.container.bot_service.reply(reply_request)
@@ -336,7 +397,16 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 yield encode("message.completed", {
                     "text": result.text.replace("artifact://", "/api/artifacts/"),
                     "attachments": [
-                        {"artifact_id": a.name, "url": f"/api/artifacts/{a.name}", "mime_type": a.media_type}
+                        {
+                            "artifact_id": a.name,
+                            "url": f"/api/artifacts/{a.name}",
+                            "mime_type": a.media_type,
+                            "filename": a.filename,
+                            "width": a.width,
+                            "height": a.height,
+                            "source_kind": a.source_kind or "generated",
+                            "source_url": a.source_url,
+                        }
                         for a in result.attachments if a.name
                     ],
                 })
@@ -358,8 +428,28 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
 
     @api.delete("/api/conversations/{conversation_id}")
     async def delete_managed_conversation(conversation_id: str, request: Request):
-        await _conversation_record(request, conversation_id)
-        paths = await _store(request).delete_conversation(conversation_id)
+        record = await _conversation_record(request, conversation_id)
+        store = _store(request)
+        remote_files = await store.list_provider_files_for_conversation(conversation_id)
+        deepseek_key = None
+        vault = getattr(request.app.state.container, "secret_vault", None)
+        if vault is not None:
+            scope = "forum" if record.channel == Channel.FORUM.value else "web"
+            deepseek_key = await vault.get(f"{scope}:deepseek")
+        deepseek_key = deepseek_key or os.getenv("DEEPSEEK_API_KEY")
+        if deepseek_key:
+            client = DeepSeekFilesClient(deepseek_key)
+            for remote in remote_files:
+                if remote["provider"] != "deepseek":
+                    continue
+                try:
+                    await client.delete(remote["file_id"])
+                except Exception:
+                    logger.warning(
+                        "删除 DeepSeek 远端文件失败，将等待其自动过期: %s",
+                        remote["file_id"],
+                    )
+        paths = await store.delete_conversation(conversation_id)
         for path in paths:
             try:
                 Path(path).unlink(missing_ok=True)
@@ -378,21 +468,10 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         settings = AppSettings().providers
         prompt_scope = PromptScope.WEB if scope == "web" else PromptScope.FORUM
         prompt = FilePromptRepository().load("wolf_lumine", set(), prompt_scope).system_prompt
-        provider = "deepseek" if scope == "web" else settings.mention_provider
-        models = {
-            "openrouter": settings.openrouter_mention_model,
-            "deepseek": settings.deepseek_model,
-            "tongyi": settings.dashscope_model,
-            "mimo": settings.mimo_model,
-        }
-        fallbacks = {
-            "deepseek": settings.deepseek_fallback_model,
-            "tongyi": settings.dashscope_fallback_model,
-        }
         return {
-            "provider": provider,
-            "model": models[provider],
-            "fallback_model": fallbacks.get(provider),
+            "provider": "deepseek",
+            "model": DEEPSEEK_VISION_MODEL,
+            "fallback_model": None,
             "system_prompt": prompt,
             "enabled_tools": None,
             "disabled_mcp_tools": [],
@@ -405,7 +484,11 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         vault = request.app.state.container.secret_vault
         env_names = {"openrouter": "OPENROUTER_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "tongyi": "DASHSCOPE_API_KEY", "mimo": "MIMO_API_KEY"}
         for profile in profiles:
-            provider = profile["draft"].get("provider", "deepseek")
+            for value in (profile["draft"], profile["active"]):
+                value["provider"] = "deepseek"
+                value["model"] = DEEPSEEK_VISION_MODEL
+                value["fallback_model"] = None
+            provider = "deepseek"
             metadata = await vault.metadata(f"{profile['scope']}:{provider}") if vault else {"configured": False}
             if metadata.get("configured"):
                 metadata["source"] = "ui"
@@ -423,9 +506,13 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
     async def save_profile(scope: str, payload: ProfileDraftRequest, request: Request):
         if scope not in {"forum", "web"}:
             raise HTTPException(status_code=404, detail="未知应用")
-        if payload.provider not in {"deepseek", "tongyi", "openrouter", "mimo"}:
-            raise HTTPException(status_code=400, detail="未知 Provider")
+        if payload.provider != "deepseek":
+            raise HTTPException(status_code=400, detail="视觉流程固定使用 DeepSeek")
+        if payload.model not in {None, DEEPSEEK_VISION_MODEL}:
+            raise HTTPException(status_code=400, detail="模型固定为 deepseek-v4-flash-vision-exp")
         value = payload.model_dump(exclude={"api_key"})
+        value["model"] = DEEPSEEK_VISION_MODEL
+        value["fallback_model"] = None
         await _store(request).get_profile(scope, _profile_defaults(scope))
         await _store(request).save_profile_draft(scope, value)
         if payload.api_key:

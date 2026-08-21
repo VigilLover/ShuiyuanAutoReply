@@ -43,11 +43,12 @@ class ProviderSettings:
     openrouter_api_key: str | None = field(default_factory=lambda: _value("OPENROUTER_API_KEY"))
     mimo_api_key: str | None = field(default_factory=lambda: _value("MIMO_API_KEY"))
     deepseek_model: str = field(
-        default_factory=lambda: _text("DEEPSEEK_MENTION_MODEL", "deepseek-v4-pro")
+        default_factory=lambda: _text(
+            "DEEPSEEK_MENTION_MODEL", "deepseek-v4-flash-vision-exp"
+        )
     )
-    deepseek_fallback_model: str = field(
-        default_factory=lambda: _text("DEEPSEEK_MENTION_FALLBACK_MODEL", "deepseek-v4-flash")
-    )
+    # Retained only for loading older saved profiles; DeepSeek Vision never uses it.
+    deepseek_fallback_model: str = "deepseek-v4-flash"
     deepseek_thinking: str = field(
         default_factory=lambda: _text("DEEPSEEK_MENTION_THINKING", "enabled").strip().lower()
     )

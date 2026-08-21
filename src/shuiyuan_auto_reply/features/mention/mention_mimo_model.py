@@ -125,6 +125,7 @@ class MentionMimoModel(MentionChatModel):
         model_name = current.mimo_model
         self.llm = _mk_mimo_llm(api_key, model_name, current)
         self.supports_multimodal = True
+        self.uses_inspect_image_tool = True
         self.multimodal_search_image_limit = current.mimo_multimodal_search_images
 
     def parse_model_output(self, raw_output: Any) -> str:

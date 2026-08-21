@@ -266,11 +266,26 @@ class MentionModel(BaseUserActionModel):
         logging.info(f"==> [MentionModel] Triggered AI spawn with prompt: '{raw}' for user: {user.username}")
         # Let the Tongyi model respond based on conversation and similar responses
         artifacts = ()
+        input_artifacts = ()
         runtime = await self._acquire_chat_runtime()
         try:
-            reply, artifacts = await runtime.get_pumpkin_response(
-                topic_id, reply_to_post_number, raw, user, include_artifacts=True
+            response = await runtime.get_pumpkin_response(
+                topic_id,
+                reply_to_post_number,
+                raw,
+                user,
+                conversation_ref=ConversationRef(
+                    Channel.FORUM,
+                    f"topic:{topic_id}",
+                    self.username,
+                    self.persona,
+                ),
+                include_artifacts=True,
             )
+            if len(response) == 2:
+                reply, artifacts = response
+            else:
+                reply, artifacts, input_artifacts = response
         except ValueError as e:
             if "DataInspectionFailed" in str(e):
                 reply = "抱歉，您的输入包含不当内容，无法处理。"
@@ -284,7 +299,11 @@ class MentionModel(BaseUserActionModel):
         finally:
             await self._release_chat_runtime(runtime)
 
-        for artifact in artifacts:
+        generated_artifacts = [
+            artifact for artifact in artifacts
+            if getattr(artifact, "source_kind", "generated") == "generated"
+        ]
+        for artifact in generated_artifacts:
             media = await self.media_uploader.upload(artifact)
             reply = reply.replace(artifact.uri, media.short_path)
             await emit_event(
@@ -294,10 +313,22 @@ class MentionModel(BaseUserActionModel):
 
         logging.info(f"==> [MentionModel] AI replied with length {len(reply)}.")
         formatted = self.output_formatter.format_chat(reply, self.nickname)
-        if artifacts:
+        if artifacts or input_artifacts:
+            def attachment(artifact):
+                return AttachmentRef(
+                    artifact.uri,
+                    artifact.mime_type,
+                    artifact.artifact_id,
+                    getattr(artifact, "source_kind", "generated"),
+                    getattr(artifact, "source_url", None),
+                    getattr(artifact, "filename", None),
+                    getattr(artifact, "width", None),
+                    getattr(artifact, "height", None),
+                )
             return ReplyResult(
                 formatted,
-                tuple(AttachmentRef(a.uri, a.mime_type, a.artifact_id) for a in artifacts),
+                tuple(attachment(artifact) for artifact in artifacts),
+                tuple(attachment(artifact) for artifact in input_artifacts),
             )
         return formatted
 

@@ -22,8 +22,8 @@ class BotService:
         self._observer_factory = observer_factory
 
     async def reply(self, request: ReplyRequest) -> ReplyResult:
-        if not request.request_id or not request.content.strip():
-            raise ValueError("request_id and non-empty content are required")
+        if not request.request_id or (not request.content.strip() and not request.attachments):
+            raise ValueError("request_id and content or attachments are required")
 
         observer = self._observer_factory() if self._observer_factory else None
         run_id = await observer.start(request) if observer else None

@@ -20,6 +20,23 @@ class GeneratedImageArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class VisualMediaArtifact:
+    artifact_id: str
+    mime_type: str
+    local_path: str
+    byte_count: int
+    source_kind: str
+    source_url: str | None = None
+    filename: str | None = None
+    width: int | None = None
+    height: int | None = None
+
+    @property
+    def uri(self) -> str:
+        return f"artifact://{self.artifact_id}"
+
+
+@dataclass(frozen=True, slots=True)
 class ForumMediaRef:
     short_path: str
 
@@ -28,3 +45,4 @@ class ForumMediaRef:
 class ReplyResult:
     text: str
     attachments: tuple[AttachmentRef, ...] = ()
+    input_attachments: tuple[AttachmentRef, ...] = ()

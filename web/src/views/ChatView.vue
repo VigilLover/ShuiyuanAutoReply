@@ -6,19 +6,23 @@ import {
   PhBroom,
   PhCaretDown,
   PhGearSix,
+  PhImages,
   PhMagnifyingGlass,
   PhPencilSimple,
+  PhPlus,
   PhPlusCircle,
   PhRobot,
   PhShieldCheck,
   PhSidebarSimple,
   PhTrash,
   PhUserCircle,
+  PhX,
 } from '@phosphor-icons/vue'
 import MarkdownContent from '../components/MarkdownContent.vue'
 import PromptEvent from '../components/PromptEvent.vue'
 import RunProgress from '../components/RunProgress.vue'
 import { useConversations } from '../stores/conversations'
+import type { Attachment } from '../api'
 
 const store = useConversations()
 const input = ref('')
@@ -31,6 +35,12 @@ const messagesElement = ref<HTMLElement | null>(null)
 const composerTextarea = ref<HTMLTextAreaElement | null>(null)
 const composerDock = ref<HTMLElement | null>(null)
 const composerSpace = ref(190)
+const fileInput = ref<HTMLInputElement | null>(null)
+const selectedImages = ref<Array<{ file: File; url: string }>>([])
+const uploadError = ref('')
+const dragActive = ref(false)
+const dragDepth = ref(0)
+const lightboxUrl = ref('')
 let searchTimer: number | undefined
 let composerResizeObserver: ResizeObserver | undefined
 
@@ -51,6 +61,7 @@ onBeforeUnmount(() => {
   window.clearTimeout(searchTimer)
   composerResizeObserver?.disconnect()
   window.removeEventListener('resize', resizeComposer)
+  selectedImages.value.forEach(image => URL.revokeObjectURL(image.url))
 })
 
 watch(() => store.selected?.conversation.title, value => {
@@ -96,9 +107,93 @@ async function selectConversation(conversationId: string) {
 
 async function send() {
   const value = input.value.trim()
-  if (!value || store.running) return
+  if ((!value && !selectedImages.value.length) || store.running) return
+  const images = selectedImages.value
+  const files = images.map(image => image.file)
   input.value = ''
-  await store.send(value)
+  selectedImages.value = []
+  uploadError.value = ''
+  try {
+    await store.send(value, files)
+  } finally {
+    images.forEach(image => URL.revokeObjectURL(image.url))
+  }
+}
+
+const acceptedImageTypes = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
+const maxImageBytes = 20 * 1024 * 1024
+
+function addFiles(files: File[]) {
+  uploadError.value = ''
+  const remaining = Math.max(0, 20 - selectedImages.value.length)
+  if (files.length > remaining) uploadError.value = '每条消息最多添加 20 张图片'
+  for (const file of files.slice(0, remaining)) {
+    if (!acceptedImageTypes.has(file.type)) {
+      uploadError.value = `${file.name} 不是支持的图片格式`
+      continue
+    }
+    if (file.size > maxImageBytes) {
+      uploadError.value = `${file.name} 超过 20MB`
+      continue
+    }
+    const duplicate = selectedImages.value.some(item =>
+      item.file.name === file.name && item.file.size === file.size && item.file.lastModified === file.lastModified,
+    )
+    if (!duplicate) selectedImages.value.push({ file, url: URL.createObjectURL(file) })
+  }
+  nextTick(() => { observeComposer(); resizeComposer() })
+}
+
+function chooseFiles(event: Event) {
+  const target = event.target as HTMLInputElement
+  addFiles(Array.from(target.files || [])); target.value = ''
+}
+
+function removeImage(index: number) {
+  const [removed] = selectedImages.value.splice(index, 1)
+  if (removed) URL.revokeObjectURL(removed.url)
+}
+
+function hasDraggedFiles(event: DragEvent) {
+  return Array.from(event.dataTransfer?.types || []).includes('Files')
+}
+
+function dragEnter(event: DragEvent) {
+  if (store.selected?.conversation.channel !== 'web' || !hasDraggedFiles(event)) return
+  dragDepth.value += 1; dragActive.value = true
+}
+
+function dragLeave() {
+  dragDepth.value = Math.max(0, dragDepth.value - 1)
+  if (!dragDepth.value) dragActive.value = false
+}
+
+function dropFiles(event: DragEvent) {
+  dragDepth.value = 0; dragActive.value = false
+  if (store.selected?.conversation.channel !== 'web') return
+  addFiles(Array.from(event.dataTransfer?.files || []))
+}
+
+function pasteImages(event: ClipboardEvent) {
+  const files = Array.from(event.clipboardData?.files || []).filter(file => file.type.startsWith('image/'))
+  if (files.length) { event.preventDefault(); addFiles(files) }
+}
+
+function sourceLabel(source: string) {
+  return ({
+    user_upload: '用户上传', forum_post: '论坛帖子', forum_search: '论坛搜索',
+    web_search: '网页搜索', generated: '生成图片',
+  } as Record<string, string>)[source] || '图片'
+}
+
+function galleryAttachments(message: {
+  content: string
+  attachments: Attachment[]
+}) {
+  return message.attachments.filter(image => {
+    const sourceUrl = image.source_url
+    return !sourceUrl?.startsWith('http') || !message.content.includes(sourceUrl)
+  })
 }
 
 async function rename() {
@@ -163,7 +258,10 @@ function scrollToBottom() {
 </script>
 
 <template>
-  <main class="harness-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }" :style="shellStyle">
+  <main
+    class="harness-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }" :style="shellStyle"
+    @dragenter.prevent="dragEnter" @dragover.prevent @dragleave.prevent="dragLeave" @drop.prevent="dropFiles"
+  >
     <aside class="harness-sidebar">
       <div class="harness-brand">
         <strong>Shuiyuan Auto Reply</strong>
@@ -253,9 +351,21 @@ function scrollToBottom() {
                 </div>
               </div>
               <div class="message-content" :class="{ 'user-surface': message.role === 'user' }">
-                <MarkdownContent :content="message.content" />
-                <div v-if="message.attachments.length" class="attachment-grid">
-                  <img v-for="image in message.attachments" :key="image.artifact_id" :src="image.url" class="generated-image" loading="lazy" />
+                <MarkdownContent
+                  :content="message.content"
+                  :attachments="message.attachments"
+                  @preview="lightboxUrl = $event"
+                />
+                <div v-if="galleryAttachments(message).length" class="attachment-grid">
+                  <figure v-for="image in galleryAttachments(message)" :key="image.artifact_id" class="message-image-card">
+                    <button class="attachment-preview" type="button" @click="lightboxUrl = image.url">
+                      <img :src="image.url" class="message-image" :alt="image.filename || sourceLabel(image.source_kind)" loading="lazy" />
+                    </button>
+                    <figcaption>
+                      <span>{{ sourceLabel(image.source_kind) }}</span>
+                      <a v-if="image.source_url?.startsWith('http')" :href="image.source_url" target="_blank" rel="noopener noreferrer">查看来源</a>
+                    </figcaption>
+                  </figure>
                 </div>
                 <RunProgress
                   v-if="message.role === 'assistant' && eventsForMessage(message.run_id).length"
@@ -268,7 +378,7 @@ function scrollToBottom() {
           <RunProgress v-if="store.running" :events="store.liveEvents" running />
           <div v-if="store.error" class="request-error">
             <div><strong>请求失败</strong><p>{{ store.error }}</p></div>
-            <button v-if="store.lastFailedMessage" @click="store.send(store.lastFailedMessage)">重试</button>
+            <button v-if="store.lastFailedMessage || store.lastFailedFiles.length" @click="store.send(store.lastFailedMessage, store.lastFailedFiles)">重试</button>
           </div>
         </div>
       </div>
@@ -290,11 +400,20 @@ function scrollToBottom() {
 
       <div ref="composerDock" class="composer-dock">
         <form v-if="store.selected.conversation.channel === 'web'" class="harness-composer" @submit.prevent="send">
-          <textarea ref="composerTextarea" v-model="input" rows="1" placeholder="给智能体发送消息" @input="resizeComposer" @keydown.enter.exact.prevent="send"></textarea>
+          <div v-if="selectedImages.length" class="composer-attachments">
+            <div v-for="(image, index) in selectedImages" :key="image.url" class="composer-thumbnail" :title="image.file.name">
+              <img :src="image.url" :alt="image.file.name" />
+              <button type="button" aria-label="移除图片" @click="removeImage(index)"><PhX :size="12" weight="bold" /></button>
+            </div>
+          </div>
+          <p v-if="uploadError" class="upload-error">{{ uploadError }}</p>
+          <textarea ref="composerTextarea" v-model="input" rows="1" placeholder="给智能体发送消息" @paste="pasteImages" @input="resizeComposer" @keydown.enter.exact.prevent="send"></textarea>
           <div class="composer-bottom">
-            <span class="permission-chip"><PhShieldCheck :size="16" /> Read Only</span>
-            <span class="model-chip">DeepSeek · {{ store.running ? '运行中' : '就绪' }}</span>
-            <button :disabled="store.running || !input.trim()" aria-label="发送消息"><PhArrowUp :size="19" weight="bold" /></button>
+            <input ref="fileInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/gif,image/webp" multiple @change="chooseFiles" />
+            <button class="composer-add" type="button" aria-label="添加图片" :disabled="store.running || selectedImages.length >= 20" @click="fileInput?.click()"><PhPlus :size="18" weight="bold" /></button>
+            <span class="permission-chip"><PhShieldCheck :size="16" /> 小狼bot运行中ψ(｀∇´)ψ</span>
+            <span class="model-chip">DeepSeek V4 Flash Vision · {{ store.running ? '运行中' : '就绪' }}</span>
+            <button class="composer-send" :disabled="store.running || (!input.trim() && !selectedImages.length)" aria-label="发送消息"><PhArrowUp :size="19" weight="bold" /></button>
           </div>
         </form>
         <div v-else class="readonly-dock">论坛自动回复记录为只读，无法从网页创建回复。</div>
@@ -309,5 +428,18 @@ function scrollToBottom() {
         <button @click="createConversation"><PhPlusCircle :size="18" /> 新建对话</button>
       </div>
     </section>
+
+    <div v-if="dragActive" class="image-drop-overlay" aria-hidden="true">
+      <div class="image-drop-content">
+        <span class="image-drop-icon"><PhImages :size="54" weight="duotone" /></span>
+        <strong>图片拖动到此处即可添加</strong>
+        <small>最多 20 张，每张 20MB</small>
+      </div>
+    </div>
+
+    <div v-if="lightboxUrl" class="image-lightbox" role="dialog" aria-modal="true" @click.self="lightboxUrl = ''">
+      <button type="button" aria-label="关闭预览" @click="lightboxUrl = ''"><PhX :size="22" /></button>
+      <img :src="lightboxUrl" alt="图片大图预览" />
+    </div>
   </main>
 </template>

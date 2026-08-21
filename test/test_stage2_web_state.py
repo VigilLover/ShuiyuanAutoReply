@@ -181,7 +181,7 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(b"sk-example-1234", self.path.read_bytes())
         self.assertEqual((Path(self.temp.name) / "master.key").stat().st_mode & 0o777, 0o600)
 
-    async def test_web_profile_defaults_to_forum_deepseek_model_key_and_fallback(self):
+    async def test_web_profile_defaults_to_fixed_deepseek_vision_model(self):
         settings = AppSettings(
             providers=ProviderSettings(
                 deepseek_api_key="same-key",
@@ -191,8 +191,8 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         )
         defaults = ApplicationContainer._profile_defaults(settings)
         self.assertEqual(defaults["provider"], "deepseek")
-        self.assertEqual(defaults["model"], "deepseek-primary")
-        self.assertEqual(defaults["fallback_model"], "deepseek-fallback")
+        self.assertEqual(defaults["model"], "deepseek-v4-flash-vision-exp")
+        self.assertIsNone(defaults["fallback_model"])
         container = ApplicationContainer(
             settings,
             SimpleNamespace(),

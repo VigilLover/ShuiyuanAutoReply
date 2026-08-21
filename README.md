@@ -27,11 +27,11 @@ shuiyuan-bot wolf_lumine --web --web-host 127.0.0.1 --web-port 11451
 自行增加认证与访问控制。
 
 网页会话默认直接聊天，`【帮助】` 和 `【rua】` 分别进入网页专用 Handler。
-网页 Runtime 默认与论坛 Bot 一样使用 DeepSeek 主模型、fallback 和
-`DEEPSEEK_API_KEY`；在管理站显式应用的网页配置仍独立保存，不会被覆盖。
-网页只暴露论坛读取/搜索、MCP、长期记忆与纯图片生成工具，不包含上传图片或
-创建论坛回复的能力。论坛与网页的 Prompt、Session 和长期记忆 namespace
-相互隔离。
+网页 Runtime 与论坛 Bot 固定使用 `deepseek-v4-flash-vision-exp` 和
+`DEEPSEEK_API_KEY`，不配置 fallback。网页支持一次上传最多 20 张、每张 20MB
+的 JPEG、PNG、GIF 或 WebP 图片；论坛私有图片会自动下载并通过 DeepSeek
+Files API 送模，网页和论坛搜索结果中的显式图片也会自动进入视觉上下文。
+论坛与网页的 Prompt、Session 和长期记忆 namespace 相互隔离。
 
 设置页会主动探测 `MCP_SERVER_URL`，分别为网页和论坛 Runtime 显示连接状态
 及工具清单。MCP 工具使用独立的禁用列表，新发现的工具默认启用；可取消勾选
@@ -47,7 +47,7 @@ shuiyuan-bot wolf_lumine --web --web-host 127.0.0.1 --web-port 11451
 ```text
 state.sqlite3   # 会话、消息、结构化执行轨迹和 Runtime 草稿/版本
 master.key      # UI API Key 加密主密钥（0600）
-artifacts/      # 论坛与网页生成图片的本地副本
+artifacts/      # 用户上传、搜索、论坛与生成图片的会话级本地副本
 ```
 
 ```bash

@@ -30,7 +30,13 @@ from shuiyuan_auto_reply.embeddings import get_global_text_embeddings
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.application.events import emit_event
-from shuiyuan_auto_reply.domain import ChatMessage, GeneratedImageArtifact
+from shuiyuan_auto_reply.domain import (
+    AttachmentRef,
+    Channel,
+    ChatMessage,
+    ConversationRef,
+    GeneratedImageArtifact,
+)
 from shuiyuan_auto_reply.infrastructure.retrieval import Neo4jStyleRetriever
 from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 from shuiyuan_auto_reply.openrouter.openrouter_model import (
@@ -73,6 +79,10 @@ class MentionGraphState(TypedDict, total=False):
     supports_multimodal: bool
     external_history: tuple[ChatMessage, ...] | None
     generated_artifacts: list[GeneratedImageArtifact]
+    request_attachments: tuple[object, ...]
+    conversation_id: str | None
+    input_visual_artifacts: list[object]
+    response_visual_artifacts: list[object]
 
 
 class FallbackLLM(BaseChatModel):
@@ -201,6 +211,7 @@ class MentionChatModel:
         self.memory_model = MentionMemoryModel(self.embeddings)
         self.model = model
         self.supports_multimodal = False
+        self.uses_inspect_image_tool = False
         self.multimodal_search_image_limit = 0
         self.style_retriever = Neo4jStyleRetriever()
         self.pipeline = ChatOrchestrator(self)
@@ -214,9 +225,9 @@ class MentionChatModel:
         self._trim_session_history(history)
         return history
 
-    @staticmethod
-    def _preview_text(value: object, limit: Optional[int] = 512) -> str:
-        return str(value).replace("\n", "\\n")[:limit]
+    @classmethod
+    def _preview_text(cls, value: object, limit: Optional[int] = 512) -> str:
+        return str(cls._prompt_event_value(value)).replace("\n", "\\n")[:limit]
 
     @classmethod
     def _prompt_event_value(cls, value: object, *, depth: int = 0) -> object:
@@ -242,6 +253,8 @@ class MentionChatModel:
                     "api_key",
                     "apikey",
                     "secret",
+                    "file_id",
+                    "data",
                 } or normalized.endswith("_api_key"):
                     serialized[str(key)] = "[REDACTED]"
                 else:
@@ -433,7 +446,11 @@ class MentionChatModel:
                     )
                 )
 
-        if getattr(self, "supports_multimodal", False):
+        if getattr(
+            self,
+            "uses_inspect_image_tool",
+            getattr(self, "supports_multimodal", False),
+        ):
             async def inspect_image(image_url: str, description: str = "") -> tuple[str, ImageInspectResult]:
                 """
                 Read a Shuiyuan image or user avatar URL for MiMo multimodal understanding.
@@ -1240,6 +1257,8 @@ class MentionChatModel:
         load_forum_context: bool = True,
         memory_user_id: int | str | None = None,
         external_history: tuple[ChatMessage, ...] | None = None,
+        attachments: tuple[AttachmentRef, ...] = (),
+        conversation_ref: ConversationRef | None = None,
         include_artifacts: bool = False,
     ) -> Optional[str]:
         """
@@ -1272,6 +1291,26 @@ class MentionChatModel:
         if effective_session_id is None:
             raise ValueError("session_id is required when topic_id is None")
         effective_memory_user_id = user.id if memory_user_id is None else memory_user_id
+        effective_ref = conversation_ref
+        if effective_ref is None and self.state_store is not None:
+            if topic_id is not None:
+                effective_ref = ConversationRef(
+                    Channel.FORUM,
+                    f"topic:{topic_id}",
+                    self.username,
+                    self.username,
+                )
+            else:
+                effective_ref = ConversationRef(
+                    Channel.WEB,
+                    str(effective_session_id),
+                    self.username,
+                    self.username,
+                )
+        conversation_id = None
+        if effective_ref is not None and self.state_store is not None:
+            record = await self.state_store.ensure_conversation(effective_ref)
+            conversation_id = record.id
         graph_input: MentionGraphState = {
             "persona": self.username,
             "topic_id": topic_id,
@@ -1282,6 +1321,10 @@ class MentionChatModel:
             "conversation": conversation,
             "user": user,
             "external_history": external_history,
+            "request_attachments": attachments,
+            "conversation_id": conversation_id,
+            "input_visual_artifacts": [],
+            "response_visual_artifacts": [],
         }
         memory_key = self.memory_model.memory_key(effective_memory_user_id)
         response = await self.graph.ainvoke(
@@ -1315,7 +1358,11 @@ class MentionChatModel:
             self._preview_text(final_text or "", None),
         )
         if include_artifacts:
-            return final_text, tuple(response.get("generated_artifacts", []) or [])
+            output_artifacts = tuple(response.get("generated_artifacts", []) or ()) + tuple(
+                response.get("response_visual_artifacts", []) or ()
+            )
+            input_artifacts = tuple(response.get("input_visual_artifacts", []) or ())
+            return final_text, output_artifacts, input_artifacts
         return final_text
 
     async def aclose(self) -> None:

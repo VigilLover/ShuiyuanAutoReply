@@ -16,12 +16,18 @@ class AttachmentRef:
     url: str
     media_type: str | None = None
     name: str | None = None
+    source_kind: str | None = None
+    source_url: str | None = None
+    filename: str | None = None
+    width: int | None = None
+    height: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ChatMessage:
     role: str
     content: str
+    attachments: tuple[AttachmentRef, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
