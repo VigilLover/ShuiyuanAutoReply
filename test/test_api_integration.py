@@ -103,3 +103,30 @@ class ApiIntegrationTests(unittest.TestCase):
                 "/api/clear", json={"session_id": "a", "token": "wrong"}
             )
             self.assertEqual(clear_forbidden.status_code, 403)
+
+    def test_brand_assets_are_served_as_svg(self):
+        container = FakeContainer()
+
+        async def factory():
+            return container
+
+        with TestClient(create_app(factory)) as client:
+            for path in (
+                "/assets/brand-favicon.svg",
+                "/assets/brand-mark.svg",
+                "/assets/brand-lockup.svg",
+            ):
+                response = client.get(path)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers["content-type"], "image/svg+xml")
+                self.assertTrue(response.content.startswith(b"<svg"))
+
+            favicon = client.get("/favicon.ico")
+            self.assertEqual(favicon.status_code, 200)
+            self.assertEqual(favicon.headers["content-type"], "image/x-icon")
+            self.assertTrue(favicon.content.startswith(b"\x00\x00\x01\x00"))
+
+            touch_icon = client.get("/apple-touch-icon.png")
+            self.assertEqual(touch_icon.status_code, 200)
+            self.assertEqual(touch_icon.headers["content-type"], "image/png")
+            self.assertTrue(touch_icon.content.startswith(b"\x89PNG\r\n\x1a\n"))

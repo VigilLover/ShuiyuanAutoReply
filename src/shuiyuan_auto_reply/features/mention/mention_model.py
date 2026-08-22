@@ -27,7 +27,11 @@ from shuiyuan_auto_reply.domain import (
     ReplyResult,
 )
 from shuiyuan_auto_reply.infrastructure.persistence import InMemorySessionRepository, SQLiteExecutionObserver, SQLiteSessionRepository
-from shuiyuan_auto_reply.infrastructure.forum import ForumMediaUploader, ForumOutputFormatter
+from shuiyuan_auto_reply.infrastructure.forum import (
+    ForumMediaUploader,
+    ForumOutputFormatter,
+    ForumReplyMediaPublisher,
+)
 from shuiyuan_auto_reply.application.events import emit_event
 from shuiyuan_auto_reply.shuiyuan.objects import User, UserActionDetails
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
@@ -93,6 +97,9 @@ class MentionModel(BaseUserActionModel):
         self.state_store = state_store
         self.runtime_refresher = runtime_refresher
         self.media_uploader = ForumMediaUploader(model, state_store)
+        self.media_publisher = ForumReplyMediaPublisher(
+            self.media_uploader, state_store
+        )
         self.bot_service = BotService(
             SQLiteSessionRepository(state_store) if state_store else InMemorySessionRepository(),
             HandlerRegistry(
@@ -299,16 +306,28 @@ class MentionModel(BaseUserActionModel):
         finally:
             await self._release_chat_runtime(runtime)
 
-        generated_artifacts = [
-            artifact for artifact in artifacts
-            if getattr(artifact, "source_kind", "generated") == "generated"
-        ]
-        for artifact in generated_artifacts:
-            media = await self.media_uploader.upload(artifact)
-            reply = reply.replace(artifact.uri, media.short_path)
+        publication = await self.media_publisher.publish(reply, artifacts)
+        reply = publication.text
+        for media in publication.published:
+            event_type = (
+                "forum.image_reused" if media.reused else "forum.image_uploaded"
+            )
             await emit_event(
-                "forum.image_uploaded",
-                {"artifact_id": artifact.artifact_id, "short_path": media.short_path},
+                event_type,
+                {
+                    "artifact_id": media.artifact.artifact_id,
+                    "short_path": media.short_path,
+                    "source_kind": media.source_kind,
+                },
+            )
+        for failure in publication.failures:
+            await emit_event(
+                "forum.image_upload_failed",
+                {
+                    "artifact_id": failure.artifact.artifact_id,
+                    "source_kind": failure.source_kind,
+                    "error": failure.error[:500],
+                },
             )
 
         logging.info(f"==> [MentionModel] AI replied with length {len(reply)}.")

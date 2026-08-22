@@ -22,7 +22,6 @@ import MarkdownContent from '../components/MarkdownContent.vue'
 import PromptEvent from '../components/PromptEvent.vue'
 import RunProgress from '../components/RunProgress.vue'
 import { useConversations } from '../stores/conversations'
-import type { Attachment } from '../api'
 
 const store = useConversations()
 const input = ref('')
@@ -47,6 +46,8 @@ let composerResizeObserver: ResizeObserver | undefined
 const channelLabel = computed(() => store.channel === 'web' ? '网页对话' : '论坛记录')
 const selectedEvents = computed(() => store.selected?.events || [])
 const shellStyle = computed(() => ({ '--composer-space': `${composerSpace.value}px` }))
+const personaId = computed(() => store.selected?.conversation.persona_id || store.conversations[0]?.persona_id || 'persona')
+const personaLabel = computed(() => personaId.value.toUpperCase())
 
 onMounted(async () => {
   await store.load()
@@ -179,23 +180,6 @@ function pasteImages(event: ClipboardEvent) {
   if (files.length) { event.preventDefault(); addFiles(files) }
 }
 
-function sourceLabel(source: string) {
-  return ({
-    user_upload: '用户上传', forum_post: '论坛帖子', forum_search: '论坛搜索',
-    web_search: '网页搜索', generated: '生成图片',
-  } as Record<string, string>)[source] || '图片'
-}
-
-function galleryAttachments(message: {
-  content: string
-  attachments: Attachment[]
-}) {
-  return message.attachments.filter(image => {
-    const sourceUrl = image.source_url
-    return !sourceUrl?.startsWith('http') || !message.content.includes(sourceUrl)
-  })
-}
-
 async function rename() {
   if (!title.value.trim()) return
   await store.rename(title.value.trim())
@@ -264,7 +248,10 @@ function scrollToBottom() {
   >
     <aside class="harness-sidebar">
       <div class="harness-brand">
-        <strong>Shuiyuan Auto Reply</strong>
+        <div class="brand-identity" aria-label="Shuiyuan AutoReply">
+          <img class="brand-lockup" src="/assets/brand-lockup.svg" alt="Shuiyuan AutoReply" />
+          <span class="persona-badge" :title="`当前 persona：${personaId}`">{{ personaLabel }}</span>
+        </div>
         <button class="icon-button sidebar-toggle" :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" @click="sidebarCollapsed = !sidebarCollapsed">
           <PhSidebarSimple :size="20" />
         </button>
@@ -356,17 +343,6 @@ function scrollToBottom() {
                   :attachments="message.attachments"
                   @preview="lightboxUrl = $event"
                 />
-                <div v-if="galleryAttachments(message).length" class="attachment-grid">
-                  <figure v-for="image in galleryAttachments(message)" :key="image.artifact_id" class="message-image-card">
-                    <button class="attachment-preview" type="button" @click="lightboxUrl = image.url">
-                      <img :src="image.url" class="message-image" :alt="image.filename || sourceLabel(image.source_kind)" loading="lazy" />
-                    </button>
-                    <figcaption>
-                      <span>{{ sourceLabel(image.source_kind) }}</span>
-                      <a v-if="image.source_url?.startsWith('http')" :href="image.source_url" target="_blank" rel="noopener noreferrer">查看来源</a>
-                    </figcaption>
-                  </figure>
-                </div>
                 <RunProgress
                   v-if="message.role === 'assistant' && eventsForMessage(message.run_id).length"
                   :events="eventsForMessage(message.run_id)"

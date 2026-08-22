@@ -377,25 +377,33 @@ class ShuiyuanModel:
         data = await response.json()
         return from_dict(UserActions, data)
 
-    async def upload_image(self, image_bytes: bytes) -> ImageUploadResponse:
+    async def upload_image(
+        self,
+        image_bytes: bytes,
+        *,
+        mime_type: str = "image/jpeg",
+        filename: str = "image.jpg",
+    ) -> ImageUploadResponse:
         """
         Upload an image to the Shuiyuan server.
 
         :param image_bytes: The bytes of the image to upload.
+        :param mime_type: The actual MIME type sent to Discourse.
+        :param filename: The filename reported to Discourse.
         :return: The URL of the uploaded image.
         """
         form_data = aiohttp.FormData()
         form_data.add_field("upload_type", "composer")
         form_data.add_field("relative_path", "null")
-        form_data.add_field("type", "image/jpeg")
+        form_data.add_field("type", mime_type)
         # Calculate the SHA1 checksum of the image
         sha1sum = hashlib.sha1(image_bytes).hexdigest()
         form_data.add_field("sha1sum", sha1sum)
         form_data.add_field(
             "file",
             image_bytes,
-            filename="image.jpg",
-            content_type="image/jpeg",
+            filename=filename,
+            content_type=mime_type,
         )
 
         response = await self._rate_limited_request(
@@ -405,6 +413,9 @@ class ShuiyuanModel:
             raise Exception(f"Failed to upload image: {await response.text()}")
 
         data = await response.json()
+        for key in ("short_url", "short_path"):
+            if key in data:
+                data[key] = normalize_upload_short_path(data[key])
         return from_dict(ImageUploadResponse, data)
 
     async def try_upload_image(
