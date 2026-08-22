@@ -1083,27 +1083,98 @@ class MentionChatModel:
     _MAX_TOOL_LOOP_MESSAGES = 20
 
     @staticmethod
+    def _tool_loop_segments(
+        messages: List[AnyMessage],
+    ) -> List[List[AnyMessage]]:
+        """Group tool-loop messages into atomic assistant/tool-response blocks.
+
+        An AIMessage with ``tool_calls`` and all of its immediately following
+        ToolMessages must stay together; splitting that block would produce an
+        invalid OpenAI/DeepSeek chat-completions message sequence.
+        """
+        segments: List[List[AnyMessage]] = []
+        index = 0
+        while index < len(messages):
+            message = messages[index]
+            if isinstance(message, AIMessage) and getattr(message, "tool_calls", None):
+                segment = [message]
+                index += 1
+                while (
+                    index < len(messages)
+                    and isinstance(messages[index], ToolMessage)
+                ):
+                    segment.append(messages[index])
+                    index += 1
+                segments.append(segment)
+            else:
+                segments.append([message])
+                index += 1
+        return segments
+
+    @staticmethod
     def _trim_tool_loop_messages(messages: List[AnyMessage]) -> List[AnyMessage]:
         """裁剪工具调用循环中累积的消息，防止上下文膨胀导致模型退化。
 
         当消息数超过 _MAX_TOOL_LOOP_MESSAGES 时，保留前几条和最近的消息，
         中间的旧工具结果用摘要替换，避免在后续 LLM 调用中传递完整历史。
+
+        裁剪只能发生在完整的 assistant/tool-response 块之间，否则会把某个
+        ``tool_calls`` 和它的 ToolMessage 拆开，导致 DeepSeek/OpenAI 返回 400。
         """
         if len(messages) <= MentionChatModel._MAX_TOOL_LOOP_MESSAGES:
             return list(messages)
 
-        keep_head = 3
-        keep_tail = MentionChatModel._MAX_TOOL_LOOP_MESSAGES - keep_head - 1
-        trimmed = list(messages[:keep_head])
+        segments = MentionChatModel._tool_loop_segments(messages)
+        # 如果整个循环只有一个不可分割的大块，无法安全裁剪；保持原样比制造非法消息好。
+        if len(segments) <= 1:
+            return list(messages)
+
+        # 保留开头少量完整块（目标约 3 条消息，但不拆开单个工具块）。
+        head_segments: List[List[AnyMessage]] = []
+        head_msgs = 0
+        for segment in segments:
+            if head_msgs and head_msgs + len(segment) > 3:
+                break
+            head_segments.append(segment)
+            head_msgs += len(segment)
+            if head_msgs >= 3:
+                break
+
+        # 从尾部尽量保留最近的完整块，同时为中间的摘要留 1 条消息空间。
+        tail_segments: List[List[AnyMessage]] = []
+        tail_msgs = 0
+        for segment in reversed(segments[len(head_segments):]):
+            if (
+                head_msgs + tail_msgs + len(segment) + 1
+                > MentionChatModel._MAX_TOOL_LOOP_MESSAGES
+            ):
+                break
+            tail_segments.append(segment)
+            tail_msgs += len(segment)
+        tail_segments.reverse()
+
+        # 极端情况下若头尾覆盖了全部段（理论上不会发生），退化为只保留头部。
+        if len(head_segments) + len(tail_segments) >= len(segments):
+            tail_segments = []
+            tail_msgs = 0
+
+        # 如果单个不可分割块本身就超过上限，加摘要后仍会超限；此时不要强行裁剪。
+        if head_msgs + tail_msgs + 1 > MentionChatModel._MAX_TOOL_LOOP_MESSAGES:
+            return list(messages)
+
+        trimmed = [message for segment in head_segments for message in segment]
         trimmed.append(
             HumanMessage(
                 content=(
-                    f"[系统提示: 已省略中间 {len(messages) - keep_head - keep_tail} 条历史消息。"
+                    f"[系统提示: 已省略中间 "
+                    f"{len(messages) - head_msgs - tail_msgs} 条历史消息。"
                     "请根据最近的上下文继续完成任务。]"
                 )
             )
         )
-        trimmed.extend(messages[-keep_tail:])
+        trimmed.extend(
+            message for segment in tail_segments for message in segment
+        )
         logging.info(
             "Trimmed tool-loop messages: %d → %d messages",
             len(messages),
