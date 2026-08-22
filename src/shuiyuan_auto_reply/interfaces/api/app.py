@@ -684,6 +684,20 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         if assets_dir.is_dir():
             api.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
 
+        @api.get("/favicon.ico", include_in_schema=False)
+        async def frontend_favicon():
+            return FileResponse(
+                static_dir / "assets" / "favicon.ico",
+                media_type="image/x-icon",
+            )
+
+        @api.get("/apple-touch-icon.png", include_in_schema=False)
+        async def frontend_apple_touch_icon():
+            return FileResponse(
+                static_dir / "assets" / "apple-touch-icon.png",
+                media_type="image/png",
+            )
+
         @api.get("/", include_in_schema=False)
         async def frontend_index():
             return FileResponse(static_dir / "index.html")

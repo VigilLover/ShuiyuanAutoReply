@@ -27,6 +27,8 @@
   --red: #e66e77;
   --code: #1c1c1e;
   --shadow: #0008;
+  --brand-filter: invert(1);
+  --sidebar-width: clamp(352px, 26vw, 376px);
 }
 
 * { box-sizing: border-box; }
@@ -38,11 +40,13 @@ button, a { -webkit-tap-highlight-color: transparent; }
 button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400; }
 
 /* App shell */
-.harness-shell { width: 100vw; height: 100vh; display: grid; grid-template-columns: clamp(248px, 19.2vw, 276px) minmax(0, 1fr); background: var(--bg); transition: grid-template-columns .2s ease; }
+.harness-shell { width: 100vw; height: 100vh; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); background: var(--bg); transition: grid-template-columns .2s ease; }
 .harness-shell.sidebar-collapsed { grid-template-columns: 72px minmax(0, 1fr); }
 .harness-sidebar { min-height: 0; display: flex; flex-direction: column; padding: 20px 14px 14px; border-right: 1px solid var(--line); background: var(--sidebar); }
-.harness-brand { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 8px 18px; }
-.harness-brand strong { overflow: hidden; color: var(--text); font-size: 15px; font-weight: 650; letter-spacing: -.02em; white-space: nowrap; text-overflow: ellipsis; }
+.harness-brand { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px 16px; }
+.brand-identity { min-width: 0; display: flex; flex: 1; align-items: center; gap: 9px; }
+.brand-lockup { width: 168px; height: auto; flex: none; filter: var(--brand-filter); }
+.persona-badge { max-width: 110px; overflow: hidden; flex: none; padding: 6px 8px 5px; border-radius: 5px; background: var(--text); color: var(--bg); font: 700 10px/1.05 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .045em; white-space: nowrap; text-overflow: ellipsis; }
 .icon-button { width: 34px; height: 34px; display: grid; flex: none; place-items: center; border: 0; border-radius: 9px; background: transparent; color: var(--muted); transition: background .15s, color .15s; }
 .icon-button:hover { background: var(--hover); color: var(--text); }
 .new-session { width: 100%; height: 42px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--line-strong); border-radius: 11px; background: var(--selected); color: var(--text); font-size: 14px; font-weight: 600; @apply transition-all duration-200 active:scale-[.99]; }
@@ -153,7 +157,7 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* Composer */
-.composer-dock { position: fixed; right: 0; bottom: 0; left: clamp(248px, 19.2vw, 276px); z-index: 5; padding: 22px max(24px, calc((100vw - clamp(248px, 19.2vw, 276px) - 780px) / 2)); pointer-events: none; background: linear-gradient(transparent, var(--bg) 36%); transition: left .2s ease; }
+.composer-dock { position: fixed; right: 0; bottom: 0; left: var(--sidebar-width); z-index: 5; padding: 22px max(24px, calc((100vw - var(--sidebar-width) - 780px) / 2)); pointer-events: none; background: linear-gradient(transparent, var(--bg) 36%); transition: left .2s ease; }
 .sidebar-collapsed .composer-dock { left: 72px; padding-inline: max(24px, calc((100vw - 72px - 780px) / 2)); }
 .harness-composer { padding: 15px 17px 12px; border: 1px solid var(--line-strong); border-radius: 18px; background: var(--input); box-shadow: 0 15px 40px var(--shadow); pointer-events: auto; @apply transition-shadow duration-200 focus-within:ring-1 focus-within:ring-blue-400/60; }
 .harness-composer textarea { width: 100%; height: 24px; min-height: 24px; max-height: 180px; overflow-y: hidden; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); line-height: 1.55; }
@@ -308,6 +312,7 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
 .sidebar-collapsed .harness-sidebar { padding-inline: 10px; }
 .sidebar-collapsed .harness-brand { justify-content: center; padding-inline: 0; }
 .sidebar-collapsed .harness-brand strong,
+.sidebar-collapsed .brand-identity,
 .sidebar-collapsed .channel-switch,
 .sidebar-collapsed .sidebar-search,
 .sidebar-collapsed .session-item span,
@@ -326,6 +331,7 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
   .harness-sidebar { padding-inline: 10px; }
   .harness-brand { justify-content: center; padding-inline: 0; }
   .harness-brand strong, .channel-switch, .sidebar-search, .session-item span, .session-item small, .settings-link span { display: none; }
+  .brand-identity { display: none; }
   .new-session { width: 42px; margin-inline: auto; }
   .new-session span { display: none; }
   .settings-link { justify-content: center; padding-inline: 0; }
@@ -404,6 +410,7 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
     --red: #d14f5a;
     --code: #f4f5f7;
     --shadow: #26334a1c;
+    --brand-filter: none;
   }
   .message-entry.assistant .message-avatar { color: #4774d2; }
   .harness-composer button { background: #91b1f2; color: #fff; }

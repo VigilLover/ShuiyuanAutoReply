@@ -16,7 +16,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export interface Conversation {
   id: string; channel: 'web' | 'forum' | 'api'; title: string; updated_at: string
-  external_id: string; title_custom: boolean; context_epoch?: number
+  external_id: string; bot_id: string; persona_id: string; title_custom: boolean; context_epoch?: number
 }
 export type AttachmentSource = 'user_upload' | 'forum_post' | 'forum_search' | 'web_search' | 'generated'
 export interface Attachment {

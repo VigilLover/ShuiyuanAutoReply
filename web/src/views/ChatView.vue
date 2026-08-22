@@ -46,6 +46,8 @@ let composerResizeObserver: ResizeObserver | undefined
 const channelLabel = computed(() => store.channel === 'web' ? '网页对话' : '论坛记录')
 const selectedEvents = computed(() => store.selected?.events || [])
 const shellStyle = computed(() => ({ '--composer-space': `${composerSpace.value}px` }))
+const personaId = computed(() => store.selected?.conversation.persona_id || store.conversations[0]?.persona_id || 'persona')
+const personaLabel = computed(() => personaId.value.toUpperCase())
 
 onMounted(async () => {
   await store.load()
@@ -246,7 +248,10 @@ function scrollToBottom() {
   >
     <aside class="harness-sidebar">
       <div class="harness-brand">
-        <strong>Shuiyuan Auto Reply</strong>
+        <div class="brand-identity" aria-label="Shuiyuan AutoReply">
+          <img class="brand-lockup" src="/assets/brand-lockup.svg" alt="Shuiyuan AutoReply" />
+          <span class="persona-badge" :title="`当前 persona：${personaId}`">{{ personaLabel }}</span>
+        </div>
         <button class="icon-button sidebar-toggle" :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" @click="sidebarCollapsed = !sidebarCollapsed">
           <PhSidebarSimple :size="20" />
         </button>
