@@ -22,7 +22,6 @@ import MarkdownContent from '../components/MarkdownContent.vue'
 import PromptEvent from '../components/PromptEvent.vue'
 import RunProgress from '../components/RunProgress.vue'
 import { useConversations } from '../stores/conversations'
-import type { Attachment } from '../api'
 
 const store = useConversations()
 const input = ref('')
@@ -177,23 +176,6 @@ function dropFiles(event: DragEvent) {
 function pasteImages(event: ClipboardEvent) {
   const files = Array.from(event.clipboardData?.files || []).filter(file => file.type.startsWith('image/'))
   if (files.length) { event.preventDefault(); addFiles(files) }
-}
-
-function sourceLabel(source: string) {
-  return ({
-    user_upload: '用户上传', forum_post: '论坛帖子', forum_search: '论坛搜索',
-    web_search: '网页搜索', generated: '生成图片',
-  } as Record<string, string>)[source] || '图片'
-}
-
-function galleryAttachments(message: {
-  content: string
-  attachments: Attachment[]
-}) {
-  return message.attachments.filter(image => {
-    const sourceUrl = image.source_url
-    return !sourceUrl?.startsWith('http') || !message.content.includes(sourceUrl)
-  })
 }
 
 async function rename() {
@@ -356,17 +338,6 @@ function scrollToBottom() {
                   :attachments="message.attachments"
                   @preview="lightboxUrl = $event"
                 />
-                <div v-if="galleryAttachments(message).length" class="attachment-grid">
-                  <figure v-for="image in galleryAttachments(message)" :key="image.artifact_id" class="message-image-card">
-                    <button class="attachment-preview" type="button" @click="lightboxUrl = image.url">
-                      <img :src="image.url" class="message-image" :alt="image.filename || sourceLabel(image.source_kind)" loading="lazy" />
-                    </button>
-                    <figcaption>
-                      <span>{{ sourceLabel(image.source_kind) }}</span>
-                      <a v-if="image.source_url?.startsWith('http')" :href="image.source_url" target="_blank" rel="noopener noreferrer">查看来源</a>
-                    </figcaption>
-                  </figure>
-                </div>
                 <RunProgress
                   v-if="message.role === 'assistant' && eventsForMessage(message.run_id).length"
                   :events="eventsForMessage(message.run_id)"

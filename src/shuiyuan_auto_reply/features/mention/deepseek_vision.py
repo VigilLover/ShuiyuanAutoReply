@@ -50,6 +50,7 @@ _PUBLIC_IMAGE_RE = re.compile(
     r"https?://[^\s<>)\"']+\.(?:jpe?g|png|gif|webp)(?:\?[^\s<>)\"']*)?",
     re.IGNORECASE,
 )
+_JSON_ESCAPED_SLASH_RE = re.compile(r"\\+(?:/|u002f)", re.IGNORECASE)
 _TOOL_PAGE_URL_RE = re.compile(
     r"Contents of\s+(?P<url>https?://[^\s]+?):(?:\r?\n|$)", re.IGNORECASE
 )
@@ -117,11 +118,37 @@ def extract_public_image_urls(value: Any) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for text in texts:
-        candidates = [
-            *(match.group("url") for match in _MARKDOWN_IMAGE_RE.finditer(text)),
-            *(match.group("url") for match in _HTML_IMAGE_RE.finditer(text)),
-            *(match.group(0) for match in _PUBLIC_IMAGE_RE.finditer(text)),
+        # JSON APIs commonly escape URL slashes as ``\/`` or ``\u002F``.
+        # html.unescape() does not decode those forms, so normalize the text
+        # before applying the explicit image URL patterns.
+        normalized_text = _JSON_ESCAPED_SLASH_RE.sub("/", text)
+        explicit_candidates = [
+            *(
+                match.group("url")
+                for match in _MARKDOWN_IMAGE_RE.finditer(normalized_text)
+            ),
+            *(
+                match.group("url")
+                for match in _HTML_IMAGE_RE.finditer(normalized_text)
+            ),
         ]
+        raw_candidates = [
+            match.group(0) for match in _PUBLIC_IMAGE_RE.finditer(normalized_text)
+        ]
+
+        # Booru-style APIs usually emit preview/sample/original URLs for every
+        # post in that order. Prefer originals so the per-turn vision limit is
+        # not consumed by multiple lower-resolution copies of the same image.
+        def image_quality(candidate: str) -> int:
+            path = urlparse(unescape(candidate)).path.lower()
+            if "/thumbnails/" in path or "thumbnail_" in path:
+                return 2
+            if "/samples/" in path or "sample_" in path:
+                return 1
+            return 0
+
+        raw_candidates.sort(key=image_quality)
+        candidates = explicit_candidates + raw_candidates
         for candidate in candidates:
             url = unescape(candidate.strip().strip("<>").rstrip(".,;:"))
             parsed = urlparse(url)
@@ -138,6 +165,23 @@ def extract_public_image_urls(value: Any) -> list[str]:
             seen.add(url)
             result.append(url)
     return result
+
+
+def extract_tool_page_url(value: Any) -> str | None:
+    """Find the source page URL inside nested MCP text content blocks."""
+    if isinstance(value, str):
+        match = _TOOL_PAGE_URL_RE.search(value)
+        return match.group("url") if match else None
+    if isinstance(value, dict):
+        for item in value.values():
+            if result := extract_tool_page_url(item):
+                return result
+        return None
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            if result := extract_tool_page_url(item):
+                return result
+    return None
 
 
 def extract_inline_images(value: Any) -> list[tuple[bytes, str, str]]:
@@ -421,10 +465,11 @@ class DeepSeekVisionMediaManager:
                 response_headers.get("content-type", "").split(";", 1)[0]
             ),
         )
+        file_id = await self.ensure_file_id(artifact)
         return DeepSeekVisionInput(
             source_url=url,
             source_kind=source_kind,
-            content_block={"type": "image_url", "image_url": {"url": url}},
+            content_block={"type": "file", "file_id": file_id},
             artifact=artifact,
             description=description,
         )
@@ -461,11 +506,7 @@ class DeepSeekVisionMediaManager:
                     results.append(image)
 
             combined = [content, artifact_value]
-            referer = None
-            if isinstance(content, str):
-                match = _TOOL_PAGE_URL_RE.search(content)
-                if match:
-                    referer = match.group("url")
+            referer = extract_tool_page_url(combined)
             private_urls: list[str] = []
             for item in combined:
                 if isinstance(item, str):
@@ -547,6 +588,11 @@ def build_deepseek_content(
     content: list[dict[str, Any]] = []
     for index, image in enumerate(images, 1):
         label = image.description or image.source_url
+        if image.source_kind in {"web_search", "forum_search"}:
+            label = (
+                f"{label}；展示标识 {image.artifact.uri}。"
+                "最终回复需要展示此图时，只能把该展示标识作为图片地址"
+            )
         content.append({"type": "text", "text": f"【图片 {index}：{label}】"})
         content.append(image.content_block)
     if text:

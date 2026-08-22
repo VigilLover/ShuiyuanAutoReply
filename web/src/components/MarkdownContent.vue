@@ -11,8 +11,6 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{ preview: [url: string] }>()
 
-const imagePathPattern = /\.(?:jpe?g|png|gif|webp)(?:\/[^?#\s]*)?(?:[?#].*)?$/i
-
 function sourceLabel(source: string) {
   return ({
     user_upload: '用户上传', forum_post: '论坛帖子', forum_search: '论坛搜索',
@@ -29,26 +27,37 @@ function safeImageUrl(value: string) {
   }
 }
 
-function isExplicitImageUrl(value: string) {
-  if (!safeImageUrl(value)) return false
-  try {
-    return imagePathPattern.test(new URL(value, window.location.origin).pathname)
-  } catch {
-    return false
-  }
-}
-
 function matchingAttachment(sourceUrl: string) {
   return props.attachments.find(item =>
     item.source_url === sourceUrl || item.url === sourceUrl || `artifact://${item.artifact_id}` === sourceUrl,
   )
 }
 
-function buildSearchGallery(document: Document) {
+function localizeInlineImages(document: Document, consumed: Set<string>) {
+  for (const image of Array.from(document.querySelectorAll<HTMLImageElement>('img[src]'))) {
+    const sourceUrl = image.getAttribute('src') || ''
+    const attachment = matchingAttachment(sourceUrl)
+    if (attachment) {
+      image.src = attachment.url
+      image.dataset.previewUrl = attachment.url
+      image.dataset.artifactId = attachment.artifact_id
+      consumed.add(attachment.artifact_id)
+      continue
+    }
+    if (!sourceUrl.startsWith('http://') && !sourceUrl.startsWith('https://')) continue
+    const link = document.createElement('a')
+    link.href = sourceUrl
+    link.target = '_blank'
+    link.rel = 'noopener noreferrer'
+    link.textContent = image.alt || '查看原图'
+    image.replaceWith(link)
+  }
+}
+
+function buildSearchGallery(document: Document, consumed: Set<string>) {
   const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]'))
   const candidates: Array<{
     link: HTMLAnchorElement
-    sourceUrl: string
     displayUrl: string
     label: string
     attachment?: Attachment
@@ -58,8 +67,14 @@ function buildSearchGallery(document: Document) {
   for (const link of links) {
     const sourceUrl = link.getAttribute('href') || ''
     const attachment = matchingAttachment(sourceUrl)
-    if (!attachment && !isExplicitImageUrl(sourceUrl)) continue
-    const identity = attachment?.artifact_id || sourceUrl
+    if (!attachment) continue
+    if (consumed.has(attachment.artifact_id)) {
+      const listItem = link.closest('li')
+      link.remove()
+      if (listItem && !listItem.textContent?.trim() && !listItem.querySelector('img')) listItem.remove()
+      continue
+    }
+    const identity = attachment.artifact_id
     if (seen.has(identity)) {
       link.remove()
       continue
@@ -67,11 +82,11 @@ function buildSearchGallery(document: Document) {
     seen.add(identity)
     candidates.push({
       link,
-      sourceUrl: attachment?.source_url || sourceUrl,
-      displayUrl: attachment?.url || sourceUrl,
-      label: link.textContent?.trim() || attachment?.filename || `图片 ${candidates.length + 1}`,
+      displayUrl: attachment.url,
+      label: link.textContent?.trim() || attachment.filename || `图片 ${candidates.length + 1}`,
       attachment,
     })
+    consumed.add(attachment.artifact_id)
   }
   if (!candidates.length) return
 
@@ -99,14 +114,6 @@ function buildSearchGallery(document: Document) {
     const label = document.createElement('span')
     label.textContent = item.attachment ? sourceLabel(item.attachment.source_kind) : '网页搜索'
     caption.appendChild(label)
-    if (item.sourceUrl.startsWith('http')) {
-      const source = document.createElement('a')
-      source.href = item.sourceUrl
-      source.target = '_blank'
-      source.rel = 'noopener noreferrer'
-      source.textContent = item.label
-      caption.appendChild(source)
-    }
     figure.appendChild(caption)
     gallery.appendChild(figure)
   }
@@ -125,6 +132,36 @@ function buildSearchGallery(document: Document) {
   }
 }
 
+function appendRemainingAttachments(document: Document, consumed: Set<string>) {
+  const remaining = props.attachments.filter(item => !consumed.has(item.artifact_id))
+  if (!remaining.length) return
+  const gallery = document.createElement('div')
+  gallery.className = 'attachment-grid'
+  for (const attachment of remaining) {
+    const figure = document.createElement('figure')
+    figure.className = 'message-image-card'
+    const preview = document.createElement('button')
+    preview.type = 'button'
+    preview.className = 'attachment-preview'
+    preview.dataset.previewUrl = attachment.url
+    const image = document.createElement('img')
+    image.src = attachment.url
+    image.className = 'message-image'
+    image.alt = attachment.filename || sourceLabel(attachment.source_kind)
+    image.loading = 'lazy'
+    image.dataset.artifactId = attachment.artifact_id
+    preview.appendChild(image)
+    figure.appendChild(preview)
+    const caption = document.createElement('figcaption')
+    const label = document.createElement('span')
+    label.textContent = sourceLabel(attachment.source_kind)
+    caption.appendChild(label)
+    figure.appendChild(caption)
+    gallery.appendChild(figure)
+  }
+  document.querySelector('#markdown-root')?.appendChild(gallery)
+}
+
 const rendered = computed(() => {
   const source = props.content || ''
   const parsed = marked.parse(source, {
@@ -138,10 +175,13 @@ const rendered = computed(() => {
     FORBID_ATTR: ['style'],
   })
   const document = new DOMParser().parseFromString(`<div id="markdown-root">${sanitized}</div>`, 'text/html')
-  buildSearchGallery(document)
+  const consumed = new Set<string>()
+  localizeInlineImages(document, consumed)
+  buildSearchGallery(document, consumed)
+  appendRemainingAttachments(document, consumed)
   return DOMPurify.sanitize(document.querySelector('#markdown-root')?.innerHTML || sanitized, {
     USE_PROFILES: { html: true },
-    ADD_ATTR: ['target', 'rel', 'data-preview-url', 'data-search-image'],
+    ADD_ATTR: ['target', 'rel', 'data-preview-url', 'data-search-image', 'data-artifact-id'],
     FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'form'],
     FORBID_ATTR: ['style'],
   })

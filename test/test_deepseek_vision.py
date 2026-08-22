@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 from fastapi.testclient import TestClient
 from langchain_core.messages import HumanMessage, ToolMessage
 from PIL import Image
@@ -14,6 +15,7 @@ from PIL import Image
 from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegistry
 from shuiyuan_auto_reply.domain import ReplyResult, VisualMediaArtifact
 from shuiyuan_auto_reply.features.mention.deepseek_vision import (
+    DeepSeekVisionMediaManager,
     DeepSeekVisionInput,
     VisionMediaError,
     extract_public_image_urls,
@@ -68,6 +70,22 @@ class VisionContractTests(unittest.TestCase):
         url = "https://cdn.example/original.png/_image_transform.jpg"
         self.assertEqual(extract_public_image_urls(f"![result]({url})"), [url])
 
+    def test_json_escaped_image_urls_are_decoded_and_originals_are_preferred(self):
+        value = (
+            r'{"preview_url":"https:\/\/safebooru.org\/thumbnails\/1\/thumbnail_a.jpg",'
+            r'"sample_url":"https:\u002F\u002Fsafebooru.org\u002Fsamples\u002F1\u002Fsample_a.jpg",'
+            r'"file_url":"https:\/\/safebooru.org\/images\/1\/a.jpg"}'
+        )
+
+        self.assertEqual(
+            extract_public_image_urls(value),
+            [
+                "https://safebooru.org/images/1/a.jpg",
+                "https://safebooru.org/samples/1/sample_a.jpg",
+                "https://safebooru.org/thumbnails/1/thumbnail_a.jpg",
+            ],
+        )
+
     def test_sniff_image_uses_bytes_not_claimed_content_type(self):
         mime_type, width, height = sniff_image(png_bytes())
         self.assertEqual((mime_type, width, height), ("image/png", 4, 3))
@@ -91,6 +109,145 @@ class VisionContractTests(unittest.TestCase):
 
 
 class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_downloaded_public_image_uses_files_api_on_first_request(self):
+        data = png_bytes()
+        artifact = VisualMediaArtifact(
+            artifact_id="asset-public",
+            mime_type="image/png",
+            local_path="/tmp/asset-public.png",
+            byte_count=len(data),
+            source_kind="web_search",
+            source_url="https://cdn.example/result.png",
+        )
+        manager = DeepSeekVisionMediaManager.__new__(DeepSeekVisionMediaManager)
+        manager._register_bytes = AsyncMock(return_value=artifact)
+        manager.ensure_file_id = AsyncMock(return_value="file_asset_public")
+
+        async def respond(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=data,
+                headers={"content-type": "image/png"},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        with patch(
+            "shuiyuan_auto_reply.features.mention.deepseek_vision._assert_public_host",
+            new=AsyncMock(),
+        ), patch(
+            "shuiyuan_auto_reply.features.mention.deepseek_vision.httpx.AsyncClient",
+            return_value=client,
+        ):
+            result = await manager.prepare_public_url(
+                "https://cdn.example/result.png",
+                conversation_id="conversation-1",
+            )
+
+        manager.ensure_file_id.assert_awaited_once_with(artifact)
+        self.assertEqual(
+            result.content_block,
+            {"type": "file", "file_id": "file_asset_public"},
+        )
+
+    async def test_json_escaped_tool_image_is_cached_with_normalized_url(self):
+        artifact = VisualMediaArtifact(
+            artifact_id="asset-json",
+            mime_type="image/jpeg",
+            local_path="/tmp/asset-json.jpg",
+            byte_count=10,
+            source_kind="web_search",
+            source_url="https://safebooru.org/images/1/a.jpg",
+        )
+        image = DeepSeekVisionInput(
+            source_url="https://safebooru.org/images/1/a.jpg",
+            source_kind="web_search",
+            content_block={
+                "type": "image_url",
+                "image_url": {"url": "https://safebooru.org/images/1/a.jpg"},
+            },
+            artifact=artifact,
+        )
+        manager = DeepSeekVisionMediaManager.__new__(DeepSeekVisionMediaManager)
+        manager.prepare_public_url = AsyncMock(return_value=image)
+        content = (
+            "Contents of https://safebooru.org/api/posts:\n"
+            r'{"file_url":"https:\/\/safebooru.org\/images\/1\/a.jpg"}'
+        )
+
+        result = await manager.prepare_tool_output(
+            [
+                ToolMessage(
+                    content=content,
+                    tool_call_id="call-json",
+                    name="fetch_webpage_content",
+                )
+            ],
+            conversation_id="conversation-1",
+            existing_urls=set(),
+            limit=4,
+        )
+
+        self.assertEqual(result, [image])
+        manager.prepare_public_url.assert_awaited_once_with(
+            "https://safebooru.org/images/1/a.jpg",
+            conversation_id="conversation-1",
+            source_kind="web_search",
+            description="来自 fetch_webpage_content",
+            referer="https://safebooru.org/api/posts",
+        )
+
+    async def test_nested_mcp_content_passes_source_page_as_image_referer(self):
+        artifact = VisualMediaArtifact(
+            artifact_id="asset-referer",
+            mime_type="image/webp",
+            local_path="/tmp/asset-referer.webp",
+            byte_count=10,
+            source_kind="web_search",
+            source_url="https://media.example/result.webp",
+        )
+        image = DeepSeekVisionInput(
+            source_url="https://media.example/result.webp",
+            source_kind="web_search",
+            content_block={
+                "type": "image_url",
+                "image_url": {"url": "https://media.example/result.webp"},
+            },
+            artifact=artifact,
+        )
+        manager = DeepSeekVisionMediaManager.__new__(DeepSeekVisionMediaManager)
+        manager.prepare_public_url = AsyncMock(return_value=image)
+        content = [
+            {
+                "type": "text",
+                "text": (
+                    "Contents of https://news.example/article:\n"
+                    "![result](https://media.example/result.webp)"
+                ),
+            }
+        ]
+
+        result = await manager.prepare_tool_output(
+            [
+                ToolMessage(
+                    content=content,
+                    tool_call_id="call-referer",
+                    name="fetch_webpage_content",
+                )
+            ],
+            conversation_id="conversation-1",
+            existing_urls=set(),
+            limit=4,
+        )
+
+        self.assertEqual(result, [image])
+        manager.prepare_public_url.assert_awaited_once_with(
+            "https://media.example/result.webp",
+            conversation_id="conversation-1",
+            source_kind="web_search",
+            description="来自 fetch_webpage_content",
+            referer="https://news.example/article",
+        )
+
     async def test_tool_images_are_appended_as_synthetic_user_message(self):
         artifact = VisualMediaArtifact(
             artifact_id="asset-1",
@@ -103,7 +260,7 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
         image = DeepSeekVisionInput(
             source_url="https://cdn.example/a.png",
             source_kind="web_search",
-            content_block={"type": "image_url", "image_url": {"url": "https://cdn.example/a.png"}},
+            content_block={"type": "file", "file_id": "file_asset_1"},
             artifact=artifact,
         )
         model = MentionDeepSeekModel.__new__(MentionDeepSeekModel)
@@ -120,7 +277,8 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
 
         message = result["messages"][0]
         self.assertIsInstance(message, HumanMessage)
-        self.assertEqual(message.content[1]["type"], "image_url")
+        self.assertIn("artifact://asset-1", message.content[0]["text"])
+        self.assertEqual(message.content[1]["type"], "file")
         self.assertEqual(result["response_visual_artifacts"], [artifact])
 
 
