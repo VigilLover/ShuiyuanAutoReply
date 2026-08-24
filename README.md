@@ -66,5 +66,3 @@ pytest -q --run-live            # 显式启用真实模型、MCP 等外部调用
 npm --prefix web run build
 ```
 
-架构、生命周期和扩展方式见 [架构文档](ARCHITECTURE.md) 与
-[扩展指南](EXTENDING.md)。

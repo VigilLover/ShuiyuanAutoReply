@@ -229,12 +229,6 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
 .markdown-body th { color: var(--text); }
 .markdown-body hr { height: 1px; margin: 1.5em 0; border: 0; background: var(--line); }
 .markdown-body img { max-width: 100%; border-radius: 10px; }
-.search-image-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 12px; margin: 18px 0 22px; }
-.search-image-card { min-width: 0; margin: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-soft); }
-.search-image-preview { width: 100%; display: block; padding: 0; border: 0; background: #0002; cursor: zoom-in; }
-.search-image-preview img { width: 100%; height: 240px; display: block; object-fit: contain; border-radius: 0; }
-.search-image-card figcaption { min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; color: var(--muted); font-size: 10px; }
-.search-image-card figcaption a { min-width: 0; overflow: hidden; color: var(--blue); text-overflow: ellipsis; white-space: nowrap; }
 
 /* Settings */
 .settings-shell { position: fixed; inset: 0; z-index: 50; width: 100vw; height: 100vh; display: grid; place-items: center; padding: 24px; overflow: hidden; background: #0009; backdrop-filter: blur(5px); }
@@ -274,6 +268,12 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
 .form-grid input, .prompt-section textarea { border: 1px solid var(--line-strong); border-radius: 9px; outline: 0; background: var(--panel-soft); color: var(--text); }
 .form-grid input { height: 42px; padding: 0 12px; }
 .form-grid input:focus, .prompt-section textarea:focus { border-color: var(--blue); }
+.api-format-field { display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 11px; }
+.api-format-field > small { color: var(--faint); font-size: 10px; }
+.api-format-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+.api-format-card { width: 100%; cursor: pointer; text-align: left; }
+.api-format-card:hover { background: var(--hover); color: var(--text); }
+.api-format-card:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .outline-action, .text-action, .primary-action { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .outline-action { margin-top: 18px; padding: 8px 11px; border: 1px solid var(--line-strong); border-radius: 8px; }
 .outline-action:hover { background: var(--hover); color: var(--text); }
@@ -363,8 +363,6 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
   .message-entry.user { width: 90%; }
   .attachment-grid { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; }
   .message-image-card { min-width: min(78vw, 280px); scroll-snap-align: start; }
-  .search-image-gallery { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; }
-  .search-image-card { min-width: min(78vw, 280px); scroll-snap-align: start; }
   .image-lightbox { padding: 48px 12px; }
   .composer-dock { right: 0; bottom: 58px; left: 0; padding: 16px 12px; }
   .trace-table-row { grid-template-columns: 80px minmax(0, 1fr); padding: 10px 14px; }
@@ -378,7 +376,7 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
   .settings-window { grid-template-rows: 68px minmax(0, 1fr) 68px; }
   .settings-header { padding: 0 15px; }
   .settings-content { padding: 21px 15px 36px; }
-  .provider-grid, .tool-card-grid, .form-grid { grid-template-columns: 1fr; }
+  .provider-grid, .api-format-grid, .tool-card-grid, .form-grid { grid-template-columns: 1fr; }
   .full-field { grid-column: auto; }
   .settings-footer { padding: 0 13px; }
   .settings-footer button { font-size: 11px; }

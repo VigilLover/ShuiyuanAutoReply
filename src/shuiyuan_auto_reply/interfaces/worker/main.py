@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from shuiyuan_auto_reply.application.handlers import ChatHandler
 from shuiyuan_auto_reply.bootstrap.container import ApplicationContainer
 from shuiyuan_auto_reply.bootstrap.providers import MentionProviderFactory
-from shuiyuan_auto_reply.bootstrap.settings import AppSettings
+from shuiyuan_auto_reply.bootstrap.settings import AppSettings, DeepSeekApiFormat
 from shuiyuan_auto_reply.features.mention import MentionModel
 from shuiyuan_auto_reply.infrastructure.llm import LegacyMentionChatBackend
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
@@ -28,6 +28,7 @@ def _forum_profile_defaults(settings: AppSettings, persona: str) -> dict:
     return {
         "provider": "deepseek",
         "model": DEEPSEEK_VISION_MODEL,
+        "api_format": DeepSeekApiFormat.CHAT_COMPLETIONS.value,
         "fallback_model": None,
         "system_prompt": prompt,
         "enabled_tools": None,
@@ -43,6 +44,9 @@ async def _forum_provider_settings(
         settings.providers,
         mention_provider=provider,
         deepseek_model=DEEPSEEK_VISION_MODEL,
+        deepseek_api_format=DeepSeekApiFormat(
+            profile.get("api_format", DeepSeekApiFormat.CHAT_COMPLETIONS.value)
+        ),
     )
     secret = await vault.get(f"forum:{provider}")
     key_fields = {

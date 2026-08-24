@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from shuiyuan_auto_reply.bootstrap import AppSettings, ApplicationContainer
+from shuiyuan_auto_reply.bootstrap.settings import DeepSeekApiFormat
 from shuiyuan_auto_reply.domain import (
     ActorRef,
     AttachmentRef,
@@ -108,6 +109,7 @@ class ConversationMessageRequest(BaseModel):
 class ProfileDraftRequest(BaseModel):
     provider: str
     model: str | None = None
+    api_format: DeepSeekApiFormat = DeepSeekApiFormat.CHAT_COMPLETIONS
     fallback_model: str | None = None
     system_prompt: str
     enabled_tools: list[str] | None = None
@@ -255,9 +257,14 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             for artifact_id in message.attachments:
                 artifact = await store.get_artifact(artifact_id)
                 if artifact and artifact.available:
+                    artifact_url = f"/api/artifacts/{artifact.id}"
                     display_content = display_content.replace(
-                        f"artifact://{artifact.id}", f"/api/artifacts/{artifact.id}"
+                        f"artifact://{artifact.id}", artifact_url
                     )
+                    if artifact.forum_short_path:
+                        display_content = display_content.replace(
+                            artifact.forum_short_path, artifact_url
+                        )
                     attachments.append({
                         "artifact_id": artifact.id,
                         "url": f"/api/artifacts/{artifact.id}",
@@ -471,6 +478,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         return {
             "provider": "deepseek",
             "model": DEEPSEEK_VISION_MODEL,
+            "api_format": DeepSeekApiFormat.CHAT_COMPLETIONS.value,
             "fallback_model": None,
             "system_prompt": prompt,
             "enabled_tools": None,
@@ -487,6 +495,9 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             for value in (profile["draft"], profile["active"]):
                 value["provider"] = "deepseek"
                 value["model"] = DEEPSEEK_VISION_MODEL
+                value.setdefault(
+                    "api_format", DeepSeekApiFormat.CHAT_COMPLETIONS.value
+                )
                 value["fallback_model"] = None
             provider = "deepseek"
             metadata = await vault.metadata(f"{profile['scope']}:{provider}") if vault else {"configured": False}
@@ -510,7 +521,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="视觉流程固定使用 DeepSeek")
         if payload.model not in {None, DEEPSEEK_VISION_MODEL}:
             raise HTTPException(status_code=400, detail="模型固定为 deepseek-v4-flash-vision-exp")
-        value = payload.model_dump(exclude={"api_key"})
+        value = payload.model_dump(mode="json", exclude={"api_key"})
         value["model"] = DEEPSEEK_VISION_MODEL
         value["fallback_model"] = None
         await _store(request).get_profile(scope, _profile_defaults(scope))

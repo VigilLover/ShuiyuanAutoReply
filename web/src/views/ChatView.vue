@@ -40,6 +40,7 @@ const uploadError = ref('')
 const dragActive = ref(false)
 const dragDepth = ref(0)
 const lightboxUrl = ref('')
+const composerIsComposing = ref(false)
 let searchTimer: number | undefined
 let composerResizeObserver: ResizeObserver | undefined
 
@@ -119,6 +120,15 @@ async function send() {
   } finally {
     images.forEach(image => URL.revokeObjectURL(image.url))
   }
+}
+
+function handleComposerKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return
+  // Enter confirms the current candidate while a Chinese/Japanese/Korean IME
+  // is composing. keyCode 229 covers browsers that do not set isComposing.
+  if (composerIsComposing.value || event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  void send()
 }
 
 const acceptedImageTypes = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
@@ -341,6 +351,7 @@ function scrollToBottom() {
                 <MarkdownContent
                   :content="message.content"
                   :attachments="message.attachments"
+                  :show-unreferenced-attachments="message.role === 'user' && store.selected.conversation.channel === 'web'"
                   @preview="lightboxUrl = $event"
                 />
                 <RunProgress
@@ -383,7 +394,18 @@ function scrollToBottom() {
             </div>
           </div>
           <p v-if="uploadError" class="upload-error">{{ uploadError }}</p>
-          <textarea ref="composerTextarea" v-model="input" rows="1" placeholder="给智能体发送消息" @paste="pasteImages" @input="resizeComposer" @keydown.enter.exact.prevent="send"></textarea>
+          <textarea
+            ref="composerTextarea"
+            v-model="input"
+            rows="1"
+            placeholder="给智能体发送消息"
+            @paste="pasteImages"
+            @input="resizeComposer"
+            @compositionstart="composerIsComposing = true"
+            @compositionend="composerIsComposing = false"
+            @blur="composerIsComposing = false"
+            @keydown="handleComposerKeydown"
+          ></textarea>
           <div class="composer-bottom">
             <input ref="fileInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/gif,image/webp" multiple @change="chooseFiles" />
             <button class="composer-add" type="button" aria-label="添加图片" :disabled="store.running || selectedImages.length >= 20" @click="fileInput?.click()"><PhPlus :size="18" weight="bold" /></button>

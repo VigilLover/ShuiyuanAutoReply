@@ -13,7 +13,12 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from PIL import Image
 
 from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegistry
-from shuiyuan_auto_reply.domain import ReplyResult, VisualMediaArtifact
+from shuiyuan_auto_reply.domain import (
+    Channel,
+    ConversationRef,
+    ReplyResult,
+    VisualMediaArtifact,
+)
 from shuiyuan_auto_reply.features.mention.deepseek_vision import (
     DeepSeekVisionMediaManager,
     DeepSeekVisionInput,
@@ -361,6 +366,69 @@ class VisionUploadApiTests(unittest.TestCase):
                 image = client.get(attachment["url"])
                 self.assertEqual(image.status_code, 200)
                 self.assertEqual(image.content, png_bytes())
+
+    def test_forum_reply_markdown_image_is_rendered_from_matching_artifact(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            "os.environ", {"SHUIYUAN_STATE_DIR": temp}
+        ):
+            store = SQLiteStateStore(Path(temp) / "state.sqlite3")
+            asyncio.run(store.initialize())
+            forum = asyncio.run(
+                store.ensure_conversation(
+                    ConversationRef(
+                        Channel.FORUM,
+                        "topic:42",
+                        "wolf_lumine",
+                        "wolf_lumine",
+                    )
+                )
+            )
+            image_path = Path(temp) / "forum-image.png"
+            image_path.write_bytes(png_bytes())
+            asyncio.run(
+                store.register_artifact(
+                    artifact_id="forum-image",
+                    local_path=str(image_path),
+                    mime_type="image/png",
+                    byte_count=len(png_bytes()),
+                    conversation_id=forum.id,
+                )
+            )
+            asyncio.run(
+                store.set_forum_short_path(
+                    "forum-image", "upload://forum-image.png"
+                )
+            )
+            asyncio.run(
+                store.append_message(
+                    forum.id,
+                    "assistant",
+                    "图片之前\n\n![img](upload://forum-image.png)\n\n图片之后",
+                    attachments=("forum-image",),
+                )
+            )
+            container = SimpleNamespace(
+                state_store=store,
+                bot_service=BotService(
+                    SQLiteSessionRepository(store), HandlerRegistry([_EchoHandler()])
+                ),
+                aclose=lambda: asyncio.sleep(0),
+            )
+
+            async def factory():
+                return container
+
+            with TestClient(create_app(factory)) as client:
+                detail = client.get(f"/api/conversations/{forum.id}").json()
+                message = detail["messages"][0]
+                self.assertEqual(
+                    message["content"],
+                    "图片之前\n\n![img](/api/artifacts/forum-image)\n\n图片之后",
+                )
+                self.assertEqual(
+                    message["attachments"][0]["url"],
+                    "/api/artifacts/forum-image",
+                )
 
     def test_upload_count_and_actual_image_validation(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(

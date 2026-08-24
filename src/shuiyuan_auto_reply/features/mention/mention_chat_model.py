@@ -207,6 +207,10 @@ class MentionChatModel:
         self.graph: Optional[CompiledStateGraph] = None
         self.llm_with_tools = None
         self.openai_tools: List[Dict[str, Any]] = []
+        # Provider-owned tools are always bound but deliberately omitted from
+        # the user-facing tool catalog and local ToolNode.
+        self.hidden_provider_tools: List[Dict[str, Any]] = []
+        self.provider_tool_choice: str | None = None
         self.tools: List[BaseTool] = []
         self.memory_model = MentionMemoryModel(self.embeddings)
         self.model = model
@@ -585,16 +589,27 @@ class MentionChatModel:
                 if str(tool.get("type", "")) in self.enabled_tools
             ]
         all_function_like_tools = enabled_mcp_tools + other_function_like_tools
-        all_tools = all_function_like_tools + self.openai_tools
+        all_tools = (
+            all_function_like_tools
+            + self.openai_tools
+            + getattr(self, "hidden_provider_tools", [])
+        )
         self.tools = all_function_like_tools
         logging.info(
             "Binding LLM with %d function-like tool(s), %d memory tool(s), "
-            "and %d native OpenAI tool(s)",
+            "and %d visible/%d hidden provider-native tool(s)",
             len(all_function_like_tools),
             len(memory_tools),
             len(self.openai_tools),
+            len(getattr(self, "hidden_provider_tools", [])),
         )
-        self.llm_with_tools = self.llm.bind_tools(all_tools).with_retry(
+        bind_kwargs: dict[str, Any] = {}
+        provider_tool_choice = getattr(self, "provider_tool_choice", None)
+        if provider_tool_choice is not None:
+            bind_kwargs["tool_choice"] = provider_tool_choice
+        self.llm_with_tools = self.llm.bind_tools(
+            all_tools, **bind_kwargs
+        ).with_retry(
             stop_after_attempt=DEFAULT_OPENROUTER_MAX_RETRIES
         )
         self.graph = self._build_graph()

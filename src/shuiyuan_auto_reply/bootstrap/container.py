@@ -30,7 +30,7 @@ from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 from .providers import MentionProviderFactory
-from .settings import AppSettings, ProviderSettings
+from .settings import AppSettings, DeepSeekApiFormat, ProviderSettings
 
 DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
 
@@ -202,6 +202,7 @@ class ApplicationContainer:
         return {
             "provider": "deepseek",
             "model": DEEPSEEK_VISION_MODEL,
+            "api_format": DeepSeekApiFormat.CHAT_COMPLETIONS.value,
             "fallback_model": None,
             "system_prompt": prompt,
             "enabled_tools": None,
@@ -214,6 +215,11 @@ class ApplicationContainer:
             self.settings.providers,
             mention_provider=provider,
             deepseek_model=DEEPSEEK_VISION_MODEL,
+            deepseek_api_format=DeepSeekApiFormat(
+                profile.get(
+                    "api_format", DeepSeekApiFormat.CHAT_COMPLETIONS.value
+                )
+            ),
         )
         secret = (
             await self.secret_vault.get(f"{scope}:{provider}")

@@ -7,7 +7,11 @@ import type { Attachment } from '../api'
 const props = withDefaults(defineProps<{
   content: string
   attachments?: Attachment[]
-}>(), { attachments: () => [] })
+  showUnreferencedAttachments?: boolean
+}>(), {
+  attachments: () => [],
+  showUnreferencedAttachments: false,
+})
 
 const emit = defineEmits<{ preview: [url: string] }>()
 
@@ -51,84 +55,6 @@ function localizeInlineImages(document: Document, consumed: Set<string>) {
     link.rel = 'noopener noreferrer'
     link.textContent = image.alt || '查看原图'
     image.replaceWith(link)
-  }
-}
-
-function buildSearchGallery(document: Document, consumed: Set<string>) {
-  const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]'))
-  const candidates: Array<{
-    link: HTMLAnchorElement
-    displayUrl: string
-    label: string
-    attachment?: Attachment
-  }> = []
-  const seen = new Set<string>()
-
-  for (const link of links) {
-    const sourceUrl = link.getAttribute('href') || ''
-    const attachment = matchingAttachment(sourceUrl)
-    if (!attachment) continue
-    if (consumed.has(attachment.artifact_id)) {
-      const listItem = link.closest('li')
-      link.remove()
-      if (listItem && !listItem.textContent?.trim() && !listItem.querySelector('img')) listItem.remove()
-      continue
-    }
-    const identity = attachment.artifact_id
-    if (seen.has(identity)) {
-      link.remove()
-      continue
-    }
-    seen.add(identity)
-    candidates.push({
-      link,
-      displayUrl: attachment.url,
-      label: link.textContent?.trim() || attachment.filename || `图片 ${candidates.length + 1}`,
-      attachment,
-    })
-    consumed.add(attachment.artifact_id)
-  }
-  if (!candidates.length) return
-
-  const gallery = document.createElement('div')
-  gallery.className = 'search-image-gallery'
-  gallery.setAttribute('aria-label', '搜索结果图片')
-  for (const [index, item] of candidates.entries()) {
-    const figure = document.createElement('figure')
-    figure.className = 'search-image-card'
-
-    const preview = document.createElement('button')
-    preview.type = 'button'
-    preview.className = 'search-image-preview'
-    preview.dataset.previewUrl = item.displayUrl
-    preview.setAttribute('aria-label', `预览${item.label}`)
-    const image = document.createElement('img')
-    image.src = item.displayUrl
-    image.alt = item.label
-    image.loading = 'lazy'
-    image.dataset.searchImage = String(index + 1)
-    preview.appendChild(image)
-    figure.appendChild(preview)
-
-    const caption = document.createElement('figcaption')
-    const label = document.createElement('span')
-    label.textContent = item.attachment ? sourceLabel(item.attachment.source_kind) : '网页搜索'
-    caption.appendChild(label)
-    figure.appendChild(caption)
-    gallery.appendChild(figure)
-  }
-
-  const firstLink = candidates[0].link
-  const commonList = firstLink.closest('ul, ol')
-  if (commonList && candidates.every(item => item.link.closest('ul, ol') === commonList)) {
-    commonList.insertAdjacentElement('afterend', gallery)
-  } else {
-    firstLink.insertAdjacentElement('beforebegin', gallery)
-  }
-  for (const { link } of candidates) {
-    const listItem = link.closest('li')
-    link.remove()
-    if (listItem && !listItem.textContent?.trim() && !listItem.querySelector('img')) listItem.remove()
   }
 }
 
@@ -177,11 +103,10 @@ const rendered = computed(() => {
   const document = new DOMParser().parseFromString(`<div id="markdown-root">${sanitized}</div>`, 'text/html')
   const consumed = new Set<string>()
   localizeInlineImages(document, consumed)
-  buildSearchGallery(document, consumed)
-  appendRemainingAttachments(document, consumed)
+  if (props.showUnreferencedAttachments) appendRemainingAttachments(document, consumed)
   return DOMPurify.sanitize(document.querySelector('#markdown-root')?.innerHTML || sanitized, {
     USE_PROFILES: { html: true },
-    ADD_ATTR: ['target', 'rel', 'data-preview-url', 'data-search-image', 'data-artifact-id'],
+    ADD_ATTR: ['target', 'rel', 'data-preview-url', 'data-artifact-id'],
     FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'form'],
     FORBID_ATTR: ['style'],
   })
