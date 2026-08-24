@@ -1,7 +1,47 @@
 """Adapter keeping the proven LangGraph/model pipeline behind the new port."""
 
+import re
+
 from shuiyuan_auto_reply.domain import AttachmentRef, Channel, ChatMessage, ConversationRef, ReplyRequest, ReplyResult
 from shuiyuan_auto_reply.shuiyuan.objects import User
+
+
+_MARKDOWN_IMAGE_RE = re.compile(
+    r"!\[(?P<alt>[^\]]*)\]\(\s*(?P<open><)?(?P<target>[^\s)>]+)(?(open)>)(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)",
+    re.IGNORECASE,
+)
+_HTML_IMAGE_RE = re.compile(
+    r"<img\b[^>]*?\bsrc\s*=\s*(?P<quote>['\"]?)(?P<target>[^'\"\s>]+)(?P=quote)[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def canonicalize_web_artifact_images(text: str, artifacts) -> str:
+    """Keep selected Web images as local artifact Markdown references."""
+
+    replacements: dict[str, str] = {}
+    for artifact in artifacts:
+        uri = str(artifact.uri)
+        replacements[uri] = uri
+        source_url = getattr(artifact, "source_url", None)
+        if source_url:
+            replacements[str(source_url)] = uri
+
+    def markdown_image(match: re.Match[str]) -> str:
+        replacement = replacements.get(match.group("target"))
+        if replacement is None:
+            return match.group(0)
+        return f"![{match.group('alt')}]({replacement})"
+
+    def html_image(match: re.Match[str]) -> str:
+        replacement = replacements.get(match.group("target"))
+        if replacement is None:
+            return match.group(0)
+        return f"![图片]({replacement})"
+
+    return _HTML_IMAGE_RE.sub(
+        html_image, _MARKDOWN_IMAGE_RE.sub(markdown_image, text)
+    )
 
 
 class LegacyMentionChatBackend:
@@ -41,6 +81,9 @@ class LegacyMentionChatBackend:
             input_artifacts = ()
         else:
             text, artifacts, input_artifacts = response
+        if request.conversation.channel is Channel.WEB:
+            text = canonicalize_web_artifact_images(text or "", artifacts)
+
         def attachment(artifact):
             return AttachmentRef(
                 artifact.uri,

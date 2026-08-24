@@ -213,18 +213,6 @@ class TestMentionDeepSeekVisionModel(unittest.IsolatedAsyncioTestCase):
         for p in self._patches:
             p.stop()
 
-    def _mock_neo4j(self):
-        mock_retriever = MagicMock()
-        mock_retriever.ainvoke.return_value = []
-        mock_vector = MagicMock()
-        mock_vector.as_retriever.return_value = mock_retriever
-        p = patch(
-            "langchain_community.vectorstores.neo4j_vector.Neo4jVector.from_existing_graph",
-            return_value=mock_vector,
-        )
-        p.start()
-        self._patches.append(p)
-
     def _mock_agent(self):
         p = patch(
             "shuiyuan_auto_reply.features.mention.mention_chat_model.MentionChatModel.initialize_agent",
@@ -241,7 +229,6 @@ class TestMentionDeepSeekVisionModel(unittest.IsolatedAsyncioTestCase):
         from shuiyuan_auto_reply.features.mention.mention_deepseek_model import MentionDeepSeekModel
         from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
-        self._mock_neo4j()
         self._mock_agent()
 
         with patch.object(ShuiyuanModel, "__init__", lambda self: None):
@@ -269,18 +256,6 @@ class TestMentionTongyiModelFallback(unittest.IsolatedAsyncioTestCase):
         for p in self._patches:
             p.stop()
 
-    def _mock_neo4j(self):
-        mock_retriever = MagicMock()
-        mock_retriever.ainvoke.return_value = []
-        mock_vector = MagicMock()
-        mock_vector.as_retriever.return_value = mock_retriever
-        p = patch(
-            "langchain_community.vectorstores.neo4j_vector.Neo4jVector.from_existing_graph",
-            return_value=mock_vector,
-        )
-        p.start()
-        self._patches.append(p)
-
     def _mock_agent(self):
         p = patch(
             "shuiyuan_auto_reply.features.mention.mention_chat_model.MentionChatModel.initialize_agent",
@@ -298,7 +273,6 @@ class TestMentionTongyiModelFallback(unittest.IsolatedAsyncioTestCase):
         from shuiyuan_auto_reply.features.mention.mention_tongyi_model import MentionTongyiModel
         from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
-        self._mock_neo4j()
         self._mock_agent()
 
         with patch.object(ShuiyuanModel, "__init__", lambda self: None):

@@ -58,12 +58,10 @@ function localizeInlineImages(document: Document, consumed: Set<string>) {
   }
 }
 
-function appendRemainingAttachments(document: Document, consumed: Set<string>) {
-  const remaining = props.attachments.filter(item => !consumed.has(item.artifact_id))
-  if (!remaining.length) return
+function buildAttachmentGallery(document: Document, attachments: Attachment[], deferImages = false) {
   const gallery = document.createElement('div')
   gallery.className = 'attachment-grid'
-  for (const attachment of remaining) {
+  for (const attachment of attachments) {
     const figure = document.createElement('figure')
     figure.className = 'message-image-card'
     const preview = document.createElement('button')
@@ -71,7 +69,8 @@ function appendRemainingAttachments(document: Document, consumed: Set<string>) {
     preview.className = 'attachment-preview'
     preview.dataset.previewUrl = attachment.url
     const image = document.createElement('img')
-    image.src = attachment.url
+    if (deferImages) image.dataset.deferredSrc = attachment.url
+    else image.src = attachment.url
     image.className = 'message-image'
     image.alt = attachment.filename || sourceLabel(attachment.source_kind)
     image.loading = 'lazy'
@@ -85,7 +84,30 @@ function appendRemainingAttachments(document: Document, consumed: Set<string>) {
     figure.appendChild(caption)
     gallery.appendChild(figure)
   }
-  document.querySelector('#markdown-root')?.appendChild(gallery)
+  return gallery
+}
+
+function appendRemainingAttachments(document: Document, consumed: Set<string>) {
+  const remaining = props.attachments.filter(item => !consumed.has(item.artifact_id))
+  const searchImages = remaining.filter(item => item.source_kind === 'web_search')
+  const otherImages = remaining.filter(item => item.source_kind !== 'web_search')
+  const root = document.querySelector('#markdown-root')
+  if (!root) return
+
+  if (searchImages.length) {
+    const disclosure = document.createElement('details')
+    disclosure.className = 'search-attachment-disclosure'
+    const summary = document.createElement('summary')
+    summary.textContent = `网页搜索 · ${searchImages.length} 张图片`
+    const body = document.createElement('div')
+    body.className = 'search-attachment-disclosure-body'
+    body.appendChild(buildAttachmentGallery(document, searchImages, true))
+    disclosure.append(summary, body)
+    root.appendChild(disclosure)
+  }
+  if (props.showUnreferencedAttachments && otherImages.length) {
+    root.appendChild(buildAttachmentGallery(document, otherImages))
+  }
 }
 
 const rendered = computed(() => {
@@ -103,10 +125,11 @@ const rendered = computed(() => {
   const document = new DOMParser().parseFromString(`<div id="markdown-root">${sanitized}</div>`, 'text/html')
   const consumed = new Set<string>()
   localizeInlineImages(document, consumed)
-  if (props.showUnreferencedAttachments) appendRemainingAttachments(document, consumed)
+  appendRemainingAttachments(document, consumed)
   return DOMPurify.sanitize(document.querySelector('#markdown-root')?.innerHTML || sanitized, {
     USE_PROFILES: { html: true },
-    ADD_ATTR: ['target', 'rel', 'data-preview-url', 'data-artifact-id'],
+    ADD_TAGS: ['details', 'summary'],
+    ADD_ATTR: ['target', 'rel', 'data-preview-url', 'data-deferred-src', 'data-artifact-id'],
     FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'form'],
     FORBID_ATTR: ['style'],
   })
@@ -114,6 +137,15 @@ const rendered = computed(() => {
 
 function previewImage(event: MouseEvent) {
   const target = event.target as HTMLElement
+  const disclosure = target.closest<HTMLDetailsElement>('.search-attachment-disclosure')
+  if (target.closest('summary') && disclosure) {
+    for (const image of Array.from(disclosure.querySelectorAll<HTMLImageElement>('img[data-deferred-src]'))) {
+      const deferredSrc = image.dataset.deferredSrc
+      if (deferredSrc && safeImageUrl(deferredSrc)) image.src = deferredSrc
+      delete image.dataset.deferredSrc
+    }
+    return
+  }
   const button = target.closest<HTMLElement>('[data-preview-url]')
   const url = button?.dataset.previewUrl
   if (!url || !safeImageUrl(url)) return

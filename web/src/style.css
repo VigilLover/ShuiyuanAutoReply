@@ -229,6 +229,14 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
 .markdown-body th { color: var(--text); }
 .markdown-body hr { height: 1px; margin: 1.5em 0; border: 0; background: var(--line); }
 .markdown-body img { max-width: 100%; border-radius: 10px; }
+.search-attachment-disclosure { display: block; overflow: hidden; margin: 16px 0 0; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-soft); }
+.search-attachment-disclosure summary { position: relative; padding: 11px 38px 11px 13px; color: var(--text-soft); cursor: pointer; list-style: none; font-size: 12px; line-height: 1.45; }
+.search-attachment-disclosure summary::-webkit-details-marker { display: none; }
+.search-attachment-disclosure summary::after { position: absolute; top: 50%; right: 14px; content: '›'; color: var(--muted); font-size: 18px; transform: translateY(-50%) rotate(90deg); transition: transform .16s ease; }
+.search-attachment-disclosure[open] summary { border-bottom: 1px solid var(--line); }
+.search-attachment-disclosure[open] summary::after { transform: translateY(-50%) rotate(-90deg); }
+.search-attachment-disclosure-body { padding: 12px; background: #0002; }
+.search-attachment-disclosure-body .attachment-grid { margin-top: 0; }
 
 /* Settings */
 .settings-shell { position: fixed; inset: 0; z-index: 50; width: 100vw; height: 100vh; display: grid; place-items: center; padding: 24px; overflow: hidden; background: #0009; backdrop-filter: blur(5px); }

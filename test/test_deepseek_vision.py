@@ -36,6 +36,9 @@ from shuiyuan_auto_reply.infrastructure.persistence import (
     SQLiteSessionRepository,
     SQLiteStateStore,
 )
+from shuiyuan_auto_reply.infrastructure.llm.legacy_chat import (
+    canonicalize_web_artifact_images,
+)
 from shuiyuan_auto_reply.interfaces.api.app import create_app
 
 
@@ -46,6 +49,25 @@ def png_bytes() -> bytes:
 
 
 class VisionContractTests(unittest.TestCase):
+    def test_web_image_references_are_canonicalized_without_promoting_links(self):
+        artifact = VisualMediaArtifact(
+            artifact_id="asset-1",
+            mime_type="image/png",
+            local_path="/tmp/asset-1.png",
+            byte_count=10,
+            source_kind="web_search",
+            source_url="https://cdn.example/asset-1.png",
+        )
+        text = (
+            "正文前 ![搜索结果](https://cdn.example/asset-1.png) 正文后\n"
+            "[原始页面](https://cdn.example/asset-1.png)"
+        )
+
+        canonical = canonicalize_web_artifact_images(text, (artifact,))
+
+        self.assertIn("![搜索结果](artifact://asset-1)", canonical)
+        self.assertIn("[原始页面](https://cdn.example/asset-1.png)", canonical)
+
     def test_deepseek_payload_preserves_file_and_image_url_blocks(self):
         model = _mk_deepseek_llm("test-key", DEEPSEEK_DEFAULT_MODEL)
         content = [
@@ -367,7 +389,7 @@ class VisionUploadApiTests(unittest.TestCase):
                 self.assertEqual(image.status_code, 200)
                 self.assertEqual(image.content, png_bytes())
 
-    def test_forum_reply_markdown_image_is_rendered_from_matching_artifact(self):
+    def test_forum_reply_upload_markdown_maps_to_its_local_artifact(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(
             "os.environ", {"SHUIYUAN_STATE_DIR": temp}
         ):
@@ -392,6 +414,7 @@ class VisionUploadApiTests(unittest.TestCase):
                     mime_type="image/png",
                     byte_count=len(png_bytes()),
                     conversation_id=forum.id,
+                    source_kind="web_search",
                 )
             )
             asyncio.run(
@@ -403,7 +426,7 @@ class VisionUploadApiTests(unittest.TestCase):
                 store.append_message(
                     forum.id,
                     "assistant",
-                    "图片之前\n\n![img](upload://forum-image.png)\n\n图片之后",
+                    "之前\n\n![img](upload://forum-image.png)\n\n之后",
                     attachments=("forum-image",),
                 )
             )
@@ -423,11 +446,14 @@ class VisionUploadApiTests(unittest.TestCase):
                 message = detail["messages"][0]
                 self.assertEqual(
                     message["content"],
-                    "图片之前\n\n![img](/api/artifacts/forum-image)\n\n图片之后",
+                    "之前\n\n![img](/api/artifacts/forum-image)\n\n之后",
                 )
                 self.assertEqual(
                     message["attachments"][0]["url"],
                     "/api/artifacts/forum-image",
+                )
+                self.assertEqual(
+                    message["attachments"][0]["source_kind"], "web_search"
                 )
 
     def test_upload_count_and_actual_image_validation(self):
