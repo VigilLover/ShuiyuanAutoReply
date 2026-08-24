@@ -13,6 +13,10 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from PIL import Image
 
 from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegistry
+from shuiyuan_auto_reply.bootstrap.settings import (
+    DeepSeekApiFormat,
+    ProviderSettings,
+)
 from shuiyuan_auto_reply.domain import (
     Channel,
     ConversationRef,
@@ -69,7 +73,13 @@ class VisionContractTests(unittest.TestCase):
         self.assertIn("[原始页面](https://cdn.example/asset-1.png)", canonical)
 
     def test_deepseek_payload_preserves_file_and_image_url_blocks(self):
-        model = _mk_deepseek_llm("test-key", DEEPSEEK_DEFAULT_MODEL)
+        model = _mk_deepseek_llm(
+            "test-key",
+            DEEPSEEK_DEFAULT_MODEL,
+            ProviderSettings(
+                deepseek_api_format=DeepSeekApiFormat.CHAT_COMPLETIONS
+            ),
+        )
         content = [
             {"type": "text", "text": "看图"},
             {"type": "file", "file_id": "file_123"},

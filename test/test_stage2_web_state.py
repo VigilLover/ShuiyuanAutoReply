@@ -191,12 +191,13 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
                 deepseek_api_key="same-key",
                 deepseek_model="deepseek-primary",
                 deepseek_fallback_model="deepseek-fallback",
+                deepseek_api_format=DeepSeekApiFormat.RESPONSES,
             )
         )
         defaults = ApplicationContainer._profile_defaults(settings)
         self.assertEqual(defaults["provider"], "deepseek")
         self.assertEqual(defaults["model"], "deepseek-v4-flash-vision-exp")
-        self.assertEqual(defaults["api_format"], "chat_completions")
+        self.assertEqual(defaults["api_format"], "responses")
         self.assertIsNone(defaults["fallback_model"])
         container = ApplicationContainer(
             settings,
@@ -211,7 +212,7 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         effective = await container._settings_for_profile("web", defaults)
         self.assertEqual(effective.deepseek_api_key, "same-key")
         self.assertEqual(
-            effective.deepseek_api_format, DeepSeekApiFormat.CHAT_COMPLETIONS
+            effective.deepseek_api_format, DeepSeekApiFormat.RESPONSES
         )
         response_effective = await container._settings_for_profile(
             "web", {**defaults, "api_format": "responses"}
@@ -482,7 +483,12 @@ class PromptInspectionTests(unittest.IsolatedAsyncioTestCase):
 class ManagedApiTests(unittest.TestCase):
     def test_open_web_chat_clear_and_forum_read_only(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(
-            os.environ, {"SHUIYUAN_STATE_DIR": temp}, clear=False
+            os.environ,
+            {
+                "SHUIYUAN_STATE_DIR": temp,
+                "DEEPSEEK_MENTION_API_FORMAT": "chat_completions",
+            },
+            clear=False,
         ):
             store = SQLiteStateStore(Path(temp) / "state.sqlite3")
             asyncio.run(store.initialize())
@@ -540,6 +546,36 @@ class ManagedApiTests(unittest.TestCase):
                     json={**response_draft, "api_format": "legacy"},
                 )
                 self.assertEqual(invalid.status_code, 422)
+                chat_draft = {
+                    **response_draft,
+                    "api_format": "chat_completions",
+                }
+                self.assertEqual(
+                    client.put(
+                        "/api/settings/profiles/web/draft", json=chat_draft
+                    ).status_code,
+                    200,
+                )
+                with patch.dict(
+                    os.environ,
+                    {"DEEPSEEK_MENTION_API_FORMAT": "responses"},
+                ):
+                    restored = client.post(
+                        "/api/settings/profiles/web/restore-default"
+                    )
+                    self.assertEqual(restored.status_code, 200)
+                    restored_profiles = client.get(
+                        "/api/settings/profiles"
+                    ).json()
+                restored_web = next(
+                    p for p in restored_profiles if p["scope"] == "web"
+                )
+                self.assertEqual(
+                    restored_web["draft"]["api_format"], "responses"
+                )
+                self.assertEqual(
+                    restored_web["active"]["api_format"], "chat_completions"
+                )
                 discovered = [
                     SimpleNamespace(name="get_system_time", description="查询时间")
                 ]

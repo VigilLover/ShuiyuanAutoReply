@@ -28,7 +28,7 @@ def _forum_profile_defaults(settings: AppSettings, persona: str) -> dict:
     return {
         "provider": "deepseek",
         "model": DEEPSEEK_VISION_MODEL,
-        "api_format": DeepSeekApiFormat.CHAT_COMPLETIONS.value,
+        "api_format": settings.providers.deepseek_api_format.value,
         "fallback_model": None,
         "system_prompt": prompt,
         "enabled_tools": None,
@@ -45,7 +45,9 @@ async def _forum_provider_settings(
         mention_provider=provider,
         deepseek_model=DEEPSEEK_VISION_MODEL,
         deepseek_api_format=DeepSeekApiFormat(
-            profile.get("api_format", DeepSeekApiFormat.CHAT_COMPLETIONS.value)
+            profile.get(
+                "api_format", settings.providers.deepseek_api_format.value
+            )
         ),
     )
     secret = await vault.get(f"forum:{provider}")

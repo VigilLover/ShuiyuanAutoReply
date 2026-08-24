@@ -109,7 +109,9 @@ class ConversationMessageRequest(BaseModel):
 class ProfileDraftRequest(BaseModel):
     provider: str
     model: str | None = None
-    api_format: DeepSeekApiFormat = DeepSeekApiFormat.CHAT_COMPLETIONS
+    api_format: DeepSeekApiFormat = Field(
+        default_factory=lambda: AppSettings().providers.deepseek_api_format
+    )
     fallback_model: str | None = None
     system_prompt: str
     enabled_tools: list[str] | None = None
@@ -478,7 +480,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         return {
             "provider": "deepseek",
             "model": DEEPSEEK_VISION_MODEL,
-            "api_format": DeepSeekApiFormat.CHAT_COMPLETIONS.value,
+            "api_format": settings.deepseek_api_format.value,
             "fallback_model": None,
             "system_prompt": prompt,
             "enabled_tools": None,
@@ -496,7 +498,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 value["provider"] = "deepseek"
                 value["model"] = DEEPSEEK_VISION_MODEL
                 value.setdefault(
-                    "api_format", DeepSeekApiFormat.CHAT_COMPLETIONS.value
+                    "api_format", AppSettings().providers.deepseek_api_format.value
                 )
                 value["fallback_model"] = None
             provider = "deepseek"
