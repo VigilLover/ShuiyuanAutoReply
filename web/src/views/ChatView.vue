@@ -351,6 +351,7 @@ function scrollToBottom() {
                 <MarkdownContent
                   :content="message.content"
                   :attachments="message.attachments"
+                  :show-unreferenced-attachments="message.role === 'user' && store.selected.conversation.channel === 'web'"
                   @preview="lightboxUrl = $event"
                 />
                 <RunProgress

@@ -257,9 +257,14 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             for artifact_id in message.attachments:
                 artifact = await store.get_artifact(artifact_id)
                 if artifact and artifact.available:
+                    artifact_url = f"/api/artifacts/{artifact.id}"
                     display_content = display_content.replace(
-                        f"artifact://{artifact.id}", f"/api/artifacts/{artifact.id}"
+                        f"artifact://{artifact.id}", artifact_url
                     )
+                    if artifact.forum_short_path:
+                        display_content = display_content.replace(
+                            artifact.forum_short_path, artifact_url
+                        )
                     attachments.append({
                         "artifact_id": artifact.id,
                         "url": f"/api/artifacts/{artifact.id}",
