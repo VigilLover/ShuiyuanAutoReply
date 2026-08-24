@@ -631,7 +631,12 @@ class SQLiteStateStore:
             await db.commit()
             if row is None:
                 raise RuntimeError("failed to initialize runtime profile")
-            return {"scope": scope, "draft": json.loads(row["draft_json"]), "active": json.loads(row["active_json"]), "active_revision": row["active_revision"], "updated_at": row["updated_at"]}
+            # Runtime profiles are JSON-backed. Merge newly introduced optional
+            # fields at read time so old rows remain compatible without a table
+            # migration; the merged shape is persisted on the next normal save.
+            draft = {**defaults, **json.loads(row["draft_json"])}
+            active = {**defaults, **json.loads(row["active_json"])}
+            return {"scope": scope, "draft": draft, "active": active, "active_revision": row["active_revision"], "updated_at": row["updated_at"]}
         finally:
             await db.close()
 

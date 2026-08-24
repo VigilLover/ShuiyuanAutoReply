@@ -15,7 +15,11 @@ from langchain_core.tools import StructuredTool
 from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegistry
 from shuiyuan_auto_reply.bootstrap.container import ApplicationContainer
 from shuiyuan_auto_reply.bootstrap.container import _SwappableBotService
-from shuiyuan_auto_reply.bootstrap.settings import AppSettings, ProviderSettings
+from shuiyuan_auto_reply.bootstrap.settings import (
+    AppSettings,
+    DeepSeekApiFormat,
+    ProviderSettings,
+)
 from shuiyuan_auto_reply.domain import (
     ActorRef,
     Channel,
@@ -192,6 +196,7 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         defaults = ApplicationContainer._profile_defaults(settings)
         self.assertEqual(defaults["provider"], "deepseek")
         self.assertEqual(defaults["model"], "deepseek-v4-flash-vision-exp")
+        self.assertEqual(defaults["api_format"], "chat_completions")
         self.assertIsNone(defaults["fallback_model"])
         container = ApplicationContainer(
             settings,
@@ -205,6 +210,44 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         )
         effective = await container._settings_for_profile("web", defaults)
         self.assertEqual(effective.deepseek_api_key, "same-key")
+        self.assertEqual(
+            effective.deepseek_api_format, DeepSeekApiFormat.CHAT_COMPLETIONS
+        )
+        response_effective = await container._settings_for_profile(
+            "web", {**defaults, "api_format": "responses"}
+        )
+        self.assertEqual(
+            response_effective.deepseek_api_format, DeepSeekApiFormat.RESPONSES
+        )
+
+    async def test_old_profiles_default_to_chat_and_scopes_switch_independently(self):
+        old_defaults = {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash-vision-exp",
+            "system_prompt": "fixture",
+        }
+        await self.store.get_profile("web", old_defaults)
+        await self.store.get_profile("forum", old_defaults)
+        new_defaults = {
+            **old_defaults,
+            "api_format": DeepSeekApiFormat.CHAT_COMPLETIONS.value,
+        }
+
+        old_web = await self.store.get_profile("web", new_defaults)
+        self.assertEqual(old_web["draft"]["api_format"], "chat_completions")
+        self.assertEqual(old_web["active"]["api_format"], "chat_completions")
+
+        web_draft = {**old_web["draft"], "api_format": "responses"}
+        await self.store.save_profile_draft("web", web_draft)
+        before_apply = await self.store.get_profile("web", new_defaults)
+        forum = await self.store.get_profile("forum", new_defaults)
+        self.assertEqual(before_apply["draft"]["api_format"], "responses")
+        self.assertEqual(before_apply["active"]["api_format"], "chat_completions")
+        self.assertEqual(forum["draft"]["api_format"], "chat_completions")
+
+        await self.store.apply_profile("web")
+        after_apply = await self.store.get_profile("web", new_defaults)
+        self.assertEqual(after_apply["active"]["api_format"], "responses")
 
     async def test_web_handler_order_is_help_then_rua_then_chat(self):
         chat_model = SimpleNamespace(
@@ -474,7 +517,29 @@ class ManagedApiTests(unittest.TestCase):
                 profiles = client.get("/api/settings/profiles").json()
                 web_profile = next(p for p in profiles if p["scope"] == "web")
                 self.assertEqual(web_profile["active"]["provider"], "deepseek")
+                self.assertEqual(
+                    web_profile["active"]["api_format"], "chat_completions"
+                )
                 self.assertEqual(web_profile["active"]["disabled_mcp_tools"], [])
+                response_draft = {
+                    **web_profile["draft"],
+                    "api_format": "responses",
+                }
+                saved = client.put(
+                    "/api/settings/profiles/web/draft", json=response_draft
+                )
+                self.assertEqual(saved.status_code, 200)
+                refreshed = client.get("/api/settings/profiles").json()
+                refreshed_web = next(p for p in refreshed if p["scope"] == "web")
+                self.assertEqual(refreshed_web["draft"]["api_format"], "responses")
+                self.assertEqual(
+                    refreshed_web["active"]["api_format"], "chat_completions"
+                )
+                invalid = client.put(
+                    "/api/settings/profiles/web/draft",
+                    json={**response_draft, "api_format": "legacy"},
+                )
+                self.assertEqual(invalid.status_code, 422)
                 discovered = [
                     SimpleNamespace(name="get_system_time", description="查询时间")
                 ]

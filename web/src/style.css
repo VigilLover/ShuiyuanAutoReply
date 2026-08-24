@@ -274,6 +274,12 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
 .form-grid input, .prompt-section textarea { border: 1px solid var(--line-strong); border-radius: 9px; outline: 0; background: var(--panel-soft); color: var(--text); }
 .form-grid input { height: 42px; padding: 0 12px; }
 .form-grid input:focus, .prompt-section textarea:focus { border-color: var(--blue); }
+.api-format-field { display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 11px; }
+.api-format-field > small { color: var(--faint); font-size: 10px; }
+.api-format-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+.api-format-card { width: 100%; cursor: pointer; text-align: left; }
+.api-format-card:hover { background: var(--hover); color: var(--text); }
+.api-format-card:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .outline-action, .text-action, .primary-action { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .outline-action { margin-top: 18px; padding: 8px 11px; border: 1px solid var(--line-strong); border-radius: 8px; }
 .outline-action:hover { background: var(--hover); color: var(--text); }
@@ -378,7 +384,7 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
   .settings-window { grid-template-rows: 68px minmax(0, 1fr) 68px; }
   .settings-header { padding: 0 15px; }
   .settings-content { padding: 21px 15px 36px; }
-  .provider-grid, .tool-card-grid, .form-grid { grid-template-columns: 1fr; }
+  .provider-grid, .api-format-grid, .tool-card-grid, .form-grid { grid-template-columns: 1fr; }
   .full-field { grid-column: auto; }
   .settings-footer { padding: 0 13px; }
   .settings-footer button { font-size: 11px; }

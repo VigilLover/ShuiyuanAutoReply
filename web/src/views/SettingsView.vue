@@ -98,6 +98,10 @@ function setStatus(message: string, error = false) {
   statusError.value = error
 }
 
+function setApiFormat(value: 'chat_completions' | 'responses') {
+  current().draft.api_format = value
+}
+
 onMounted(load)
 </script>
 
@@ -139,6 +143,34 @@ onMounted(load)
             </div>
             <div class="form-grid">
               <label class="full-field"><span>模型名称</span><input value="deepseek-v4-flash-vision-exp" readonly /></label>
+              <div class="full-field api-format-field">
+                <span>API 格式</span>
+                <div class="api-format-grid" role="radiogroup" aria-label="DeepSeek API 格式">
+                  <button
+                    type="button"
+                    class="provider-card api-format-card"
+                    :class="{ selected: current().draft.api_format !== 'responses' }"
+                    role="radio"
+                    :aria-checked="current().draft.api_format !== 'responses'"
+                    @click="setApiFormat('chat_completions')"
+                  >
+                    <strong>Chat Completions</strong>
+                    <span v-if="current().draft.api_format !== 'responses'"><PhCheck :size="15" weight="bold" /> 已选择</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="provider-card api-format-card"
+                    :class="{ selected: current().draft.api_format === 'responses' }"
+                    role="radio"
+                    :aria-checked="current().draft.api_format === 'responses'"
+                    @click="setApiFormat('responses')"
+                  >
+                    <strong>Responses</strong>
+                    <span v-if="current().draft.api_format === 'responses'"><PhCheck :size="15" weight="bold" /> 已选择</span>
+                  </button>
+                </div>
+                <small>仅保存为草稿；点击“应用并热切换”后生效。</small>
+              </div>
               <label class="full-field"><span>API Key</span><input v-model="current().draft.api_key" type="password" :placeholder="current().secret?.configured ? `已配置 ····${current().secret.last_four}` : '输入新密钥'" /></label>
             </div>
             <button class="outline-action" @click="testProvider"><PhPlugsConnected :size="16" />测试 Provider 连接</button>

@@ -2,6 +2,7 @@
 
 import os
 from dataclasses import dataclass, field
+from enum import Enum
 
 
 def _value(name: str, default: str | None = None) -> str | None:
@@ -33,6 +34,11 @@ class ForumSettings:
     bot_username: str = "wolf_lumine"
 
 
+class DeepSeekApiFormat(str, Enum):
+    CHAT_COMPLETIONS = "chat_completions"
+    RESPONSES = "responses"
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderSettings:
     mention_provider: str = field(
@@ -45,6 +51,16 @@ class ProviderSettings:
     deepseek_model: str = field(
         default_factory=lambda: _text(
             "DEEPSEEK_MENTION_MODEL", "deepseek-v4-flash-vision-exp"
+        )
+    )
+    deepseek_api_format: DeepSeekApiFormat = field(
+        default_factory=lambda: DeepSeekApiFormat(
+            _text(
+                "DEEPSEEK_MENTION_API_FORMAT",
+                DeepSeekApiFormat.CHAT_COMPLETIONS.value,
+            )
+            .strip()
+            .lower()
         )
     )
     # Retained only for loading older saved profiles; DeepSeek Vision never uses it.
@@ -120,6 +136,12 @@ class ProviderSettings:
             raise ValueError("Please set the OPENROUTER_API_KEY environment variable.")
 
     def validate_deepseek_options(self) -> None:
+        try:
+            DeepSeekApiFormat(self.deepseek_api_format)
+        except ValueError as exc:
+            raise ValueError(
+                "DEEPSEEK_MENTION_API_FORMAT must be chat_completions or responses"
+            ) from exc
         if self.deepseek_thinking not in {"enabled", "disabled"}:
             raise ValueError("DEEPSEEK_MENTION_THINKING must be enabled or disabled")
         if self.deepseek_reasoning_effort not in {"high", "max"}:
