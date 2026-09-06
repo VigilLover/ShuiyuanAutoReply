@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .deployment import get_deployment
+
 
 def _value(name: str, default: str | None = None) -> str | None:
     return os.getenv(name, default)
@@ -30,8 +32,8 @@ def _flag(name: str, default: bool = False) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class ForumSettings:
-    cookie_file: str = "cookies"
-    bot_username: str = "wolf_lumine"
+    cookie_file: str = field(default_factory=lambda: get_deployment().section("forum")["cookie_file"])
+    bot_username: str = field(default_factory=lambda: get_deployment().section("forum")["bot_username"])
 
 
 class DeepSeekApiFormat(str, Enum):
