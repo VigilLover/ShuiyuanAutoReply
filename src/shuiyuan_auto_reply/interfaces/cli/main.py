@@ -13,7 +13,18 @@ def configure_logging():
 
 async def run_worker(persona):
     from shuiyuan_auto_reply.interfaces.worker.main import run_worker as run
-    await run(persona)
+    import signal
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    installed = False
+    if sys.platform != "win32":
+        loop.add_signal_handler(signal.SIGTERM, task.cancel)
+        installed = True
+    try:
+        await run(persona)
+    finally:
+        if installed:
+            loop.remove_signal_handler(signal.SIGTERM)
 
 
 async def _run_worker_with_web(persona: str, host: str, port: int) -> None:

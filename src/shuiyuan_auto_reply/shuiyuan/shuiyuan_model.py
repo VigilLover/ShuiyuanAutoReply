@@ -196,17 +196,27 @@ class ShuiyuanModel:
         if reply_to_post_number is not None:
             form_data.add_field("reply_to_post_number", str(reply_to_post_number))
 
-        # OK, let's post it
+        from shuiyuan_auto_reply.infrastructure.persistence.work_queue import publication_status
+        await publication_status("sending")
+        # A failed or cancelled publication stays uncertain until inspected.
+        attempts = 0
         while True:
             response = await self._rate_limited_request(
                 "post", reply_url, data=form_data
             )
             if response.status == 200:
+                payload = await response.json()
+                await publication_status("sent", payload.get("id"))
                 break
             elif response.status == 429:
                 logging.warning(f"Failed to reply to post: {await response.text()}")
-                await asyncio.sleep(1)
+                attempts += 1
+                if attempts >= 3:
+                    await publication_status("failed")
+                    raise RuntimeError("Forum publication rate limited")
+                await asyncio.sleep(min(60, float(response.headers.get("Retry-After", 2 ** attempts))))
             else:
+                await publication_status("failed")
                 raise Exception(f"Failed to reply to post: {await response.text()}")
 
     @staticmethod

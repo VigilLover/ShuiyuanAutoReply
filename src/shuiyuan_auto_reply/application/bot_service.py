@@ -22,6 +22,11 @@ class BotService:
         self._observer_factory = observer_factory
 
     async def reply(self, request: ReplyRequest) -> ReplyResult:
+        from .scheduling import get_scheduler
+        async with get_scheduler().admission(request.conversation):
+            return await self._reply(request)
+
+    async def _reply(self, request: ReplyRequest) -> ReplyResult:
         if not request.request_id or (not request.content.strip() and not request.attachments):
             raise ValueError("request_id and content or attachments are required")
 

@@ -141,6 +141,12 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             await container.aclose()
 
     api = FastAPI(title="ShuiyuanAutoReply 对话后端", lifespan=lifespan)
+    from shuiyuan_auto_reply.application.scheduling import BusyError
+    from fastapi.responses import JSONResponse
+
+    @api.exception_handler(BusyError)
+    async def busy_handler(request, exc):
+        return JSONResponse(status_code=429, content={"detail": str(exc)}, headers={"Retry-After": "5"})
     api.add_middleware(
         CORSMiddleware,
         allow_origins=[],
