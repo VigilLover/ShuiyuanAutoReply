@@ -45,6 +45,7 @@ neo4j = ["neomodel"]
 server = ["fastapi[all]"]
 
 [project.scripts]
+shuiyuan-ops = "shuiyuan_auto_reply.interfaces.cli.ops:main"
 shuiyuan-bot = "shuiyuan_auto_reply.interfaces.cli.main:bot_main"
 shuiyuan-api = "shuiyuan_auto_reply.interfaces.cli.main:api_main"
 
