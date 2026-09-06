@@ -25,14 +25,12 @@ dependencies = [
     "langgraph-prebuilt>=1.1,<1.2",
     "langgraph-checkpoint-postgres",
     "langmem",
-    "neomodel",
     "numpy",
     "openai>=3.3.1,<4",
     "pandas",
     "pillow",
     "python-dotenv",
     "requests",
-    "sentence-transformers",
     "skia-python",
     "sqlalchemy",
     "pytest>=9.0.3",
@@ -42,6 +40,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["black", "isort"]
+local-embedding = ["sentence-transformers"]
+neo4j = ["neomodel"]
 server = ["fastapi[all]"]
 
 [project.scripts]

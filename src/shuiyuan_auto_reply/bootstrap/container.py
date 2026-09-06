@@ -8,7 +8,7 @@ from typing import Any
 
 from shuiyuan_auto_reply.application import BotService, HandlerRegistry
 from shuiyuan_auto_reply.application.handlers import ChatHandler, HelpHandler, PetHandler
-from shuiyuan_auto_reply.database.neo4j_mgr import close_global_async_neo4j_manager
+from shuiyuan_auto_reply.infrastructure.retrieval.neo4j import close_neo4j as close_global_async_neo4j_manager
 from shuiyuan_auto_reply.database.postgres_memory_mgr import (
     close_global_async_postgres_memory_manager,
 )
