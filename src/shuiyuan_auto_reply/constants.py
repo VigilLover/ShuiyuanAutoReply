@@ -31,18 +31,18 @@ class Settings:
 
     @property
     def embedding_model_name(self) -> str:
-        return os.getenv("EMBEDDING_MODEL_NAME", "moka-ai/m3e-base")
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+        return get_deployment().section("embedding")["model"]
 
     @property
     def embedding_cache_folder(self) -> str | None:
-        return os.getenv("EMBEDDING_CACHE_FOLDER")
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+        return get_deployment().section("embedding")["cache_folder"] or None
 
     @property
     def embedding_dims(self) -> int:
-        value = os.getenv("EMBEDDING_DIMS")
-        if value is None:
-            raise ValueError("Please set the EMBEDDING_DIMS environment variable.")
-        return int(value)
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+        return get_deployment().section("embedding")["dims"]
 
 
 settings = Settings()

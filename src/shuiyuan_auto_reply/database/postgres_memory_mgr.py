@@ -71,6 +71,8 @@ class AsyncPostgresMemoryDatabaseManager:
             _to_sqlalchemy_async_url(self.conn_string),
             echo=False,
             pool_pre_ping=True,
+            pool_size=1,
+            max_overflow=0,
         )
         self.async_session = async_sessionmaker(
             self.engine,

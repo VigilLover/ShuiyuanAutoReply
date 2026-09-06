@@ -121,7 +121,14 @@ class MentionMemoryModel:
             return
 
         try:
-            await self.postgres.initialize_schema()
+            from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+            from shuiyuan_auto_reply.infrastructure.retrieval.postgres import check_vector_space
+            auto_migrate = get_deployment().section("database")["auto_migrate"]
+            if auto_migrate:
+                await self.postgres.initialize_schema()
+            else:
+                async with self.postgres.engine.connect() as connection:
+                    await check_vector_space(connection)
 
             self._store_context = self.postgres.create_langgraph_store(
                 embedding=self.embedding,
@@ -129,7 +136,8 @@ class MentionMemoryModel:
                 fields=["content"],
             )
             self.store = await self._store_context.__aenter__()
-            await self.store.setup()
+            if auto_migrate:
+                await self.store.setup()
 
             self.tools = self._create_tools()
             logging.info(

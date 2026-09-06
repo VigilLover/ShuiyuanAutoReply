@@ -217,7 +217,8 @@ class MentionChatModel:
         self.supports_multimodal = False
         self.uses_inspect_image_tool = False
         self.multimodal_search_image_limit = 0
-        self.style_retriever = Neo4jStyleRetriever()
+        from shuiyuan_auto_reply.infrastructure.retrieval import create_style_retriever
+        self.style_retriever = create_style_retriever()
         self.pipeline = ChatOrchestrator(self)
 
     def _get_multimodal_prompt_rules(self) -> str:
@@ -1454,6 +1455,8 @@ class MentionChatModel:
     async def aclose(self) -> None:
         """Release lazily initialized resources owned by the chat model."""
         await self.memory_model.aclose()
+        if hasattr(self.style_retriever, "aclose"):
+            await self.style_retriever.aclose()
         seen: set[int] = set()
         candidates = [self.llm]
         candidates.extend(
