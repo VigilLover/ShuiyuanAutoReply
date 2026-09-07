@@ -22,6 +22,4 @@ class ForumChannelContextProvider:
     async def load(self, request: ReplyRequest) -> ChannelContext:
         if request.forum_context is None:
             raise ValueError("forum_context is required")
-        return ChannelContext(
-            await self._loader(request.forum_context.topic_id)
-        )
+        return ChannelContext(await self._loader(request.forum_context.topic_id))

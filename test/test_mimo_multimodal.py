@@ -4,8 +4,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from PIL import Image
@@ -17,8 +16,6 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from shuiyuan_auto_reply.shuiyuan.objects import PostDetails, User
-
 from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
 from shuiyuan_auto_reply.features.mention.mention_multimodal import (
     MentionImageInput,
@@ -29,9 +26,12 @@ from shuiyuan_auto_reply.features.mention.mention_multimodal import (
     prepare_image_input,
 )
 from shuiyuan_auto_reply.features.mention.shuiyuan_tools_objects import PostShort
+from shuiyuan_auto_reply.shuiyuan.objects import PostDetails, User
 
 
-def _post_details(*, raw: str | None = "hello", cooked: str = "<p>hello</p>") -> PostDetails:
+def _post_details(
+    *, raw: str | None = "hello", cooked: str = "<p>hello</p>"
+) -> PostDetails:
     return PostDetails(
         id=1,
         name="Tester",
@@ -88,7 +88,9 @@ class TestMentionMultimodalExtraction(unittest.TestCase):
         )
 
     def test_extract_ignores_non_image_links(self):
-        text = "[plain](https://example.com/page) <a href='upload://not-image.txt'>x</a>"
+        text = (
+            "[plain](https://example.com/page) <a href='upload://not-image.txt'>x</a>"
+        )
 
         self.assertEqual(extract_image_urls(text), [])
 
@@ -150,7 +152,9 @@ class TestMentionMultimodalEncoding(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsInstance(image, MentionImageInput)
-        self.assertEqual(image.source_url, "/user_avatar/shuiyuan.sjtu.edu.cn/alice/288/123.png")
+        self.assertEqual(
+            image.source_url, "/user_avatar/shuiyuan.sjtu.edu.cn/alice/288/123.png"
+        )
         model.download_raw_image.assert_awaited_once_with(
             "/user_avatar/shuiyuan.sjtu.edu.cn/alice/288/123.png"
         )
@@ -158,7 +162,9 @@ class TestMentionMultimodalEncoding(unittest.IsolatedAsyncioTestCase):
 
     def test_normalize_accepts_shuiyuan_avatar_paths(self):
         self.assertEqual(
-            normalize_shuiyuan_image_url("/user_avatar/shuiyuan.sjtu.edu.cn/alice/288/123.png"),
+            normalize_shuiyuan_image_url(
+                "/user_avatar/shuiyuan.sjtu.edu.cn/alice/288/123.png"
+            ),
             "/user_avatar/shuiyuan.sjtu.edu.cn/alice/288/123.png",
         )
 
@@ -177,10 +183,15 @@ class TestMentionMultimodalEncoding(unittest.IsolatedAsyncioTestCase):
             max_images=2,
         )
 
-        self.assertEqual([image.source_url for image in images], ["upload://a.jpeg", "upload://b.jpeg"])
+        self.assertEqual(
+            [image.source_url for image in images],
+            ["upload://a.jpeg", "upload://b.jpeg"],
+        )
         self.assertEqual(model.download_image.await_count, 2)
 
-    async def test_collect_post_image_inputs_seeds_deduplication_from_existing_urls(self):
+    async def test_collect_post_image_inputs_seeds_deduplication_from_existing_urls(
+        self,
+    ):
         model = MagicMock()
         model.download_image = AsyncMock(return_value=_tiny_png_bytes())
         posts = [MagicMock(image_urls=["upload://a.jpeg", "upload://b.jpeg"])]
@@ -196,7 +207,9 @@ class TestMentionMultimodalEncoding(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([image.source_url for image in images], ["upload://b.jpeg"])
         model.download_image.assert_awaited_once_with("upload://b.jpeg")
 
-    async def test_collect_post_image_inputs_counts_existing_bytes_against_total_cap(self):
+    async def test_collect_post_image_inputs_counts_existing_bytes_against_total_cap(
+        self,
+    ):
         model = MagicMock()
         model.download_image = AsyncMock(return_value=_tiny_png_bytes())
         posts = [MagicMock(image_urls=["upload://a.jpeg"])]
@@ -219,7 +232,8 @@ class TestMentionMultimodalEncoding(unittest.IsolatedAsyncioTestCase):
             [
                 MentionImageInput(
                     source_url="upload://a.jpeg",
-                    data_url="data:image/jpeg;base64," + base64.b64encode(b"abc").decode("ascii"),
+                    data_url="data:image/jpeg;base64,"
+                    + base64.b64encode(b"abc").decode("ascii"),
                     origin="current_post",
                     mime_type="image/jpeg",
                     byte_count=3,
@@ -234,7 +248,10 @@ class TestMentionMultimodalEncoding(unittest.IsolatedAsyncioTestCase):
 class TestPostShortImages(unittest.TestCase):
     def test_image_urls_are_extracted_from_full_raw_and_cooked_before_truncation(self):
         raw = "r" * 430 + " ![late](upload://raw-late.jpeg) ![dup](upload://same.png)"
-        cooked = "c" * 430 + '<img src="/uploads/short-url/cooked-late.webp"><img src="upload://same.png">'
+        cooked = (
+            "c" * 430
+            + '<img src="/uploads/short-url/cooked-late.webp"><img src="upload://same.png">'
+        )
 
         post = PostShort(_post_details(raw=raw, cooked=cooked), "Topic")
 
@@ -249,16 +266,28 @@ class TestPostShortImages(unittest.TestCase):
         self.assertLessEqual(len(post.raw), 384)
         self.assertLessEqual(len(post.cooked), 384)
         self.assertIn("PostMeta:", str(post))
-        self.assertIn("Images: upload://raw-late.jpeg, upload://same.png, upload://cooked-late.webp", str(post))
+        self.assertIn(
+            "Images: upload://raw-late.jpeg, upload://same.png, upload://cooked-late.webp",
+            str(post),
+        )
 
 
 class TestMentionMimoModel(unittest.TestCase):
     def test_requires_mimo_api_key(self):
-        from shuiyuan_auto_reply.features.mention.mention_mimo_model import MentionMimoModel
+        from shuiyuan_auto_reply.features.mention.mention_mimo_model import (
+            MentionMimoModel,
+        )
 
-        with patch.dict(os.environ, {}, clear=True), \
-             patch("shuiyuan_auto_reply.features.mention.mention_chat_model.get_global_text_embeddings", return_value=MagicMock()), \
-             patch("shuiyuan_auto_reply.features.mention.mention_chat_model.MentionMemoryModel"):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "shuiyuan_auto_reply.features.mention.mention_chat_model.get_global_text_embeddings",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "shuiyuan_auto_reply.features.mention.mention_chat_model.MentionMemoryModel"
+            ),
+        ):
             with self.assertRaisesRegex(ValueError, "MIMO_API_KEY"):
                 MentionMimoModel(MagicMock())
 
@@ -270,9 +299,16 @@ class TestMentionMimoModel(unittest.TestCase):
             _mk_mimo_llm,
         )
 
-        with patch.dict(os.environ, {"MIMO_API_KEY": "test-key"}, clear=True), \
-             patch("shuiyuan_auto_reply.features.mention.mention_chat_model.get_global_text_embeddings", return_value=MagicMock()), \
-             patch("shuiyuan_auto_reply.features.mention.mention_chat_model.MentionMemoryModel"):
+        with (
+            patch.dict(os.environ, {"MIMO_API_KEY": "test-key"}, clear=True),
+            patch(
+                "shuiyuan_auto_reply.features.mention.mention_chat_model.get_global_text_embeddings",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "shuiyuan_auto_reply.features.mention.mention_chat_model.MentionMemoryModel"
+            ),
+        ):
             model = MentionMimoModel(MagicMock())
 
         self.assertEqual(MIMO_DEFAULT_MODEL, "mimo-v2.5")
@@ -282,7 +318,14 @@ class TestMentionMimoModel(unittest.TestCase):
         llm = _mk_mimo_llm("test-key", MIMO_DEFAULT_MODEL)
         payload = llm._get_request_payload([HumanMessage(content="hi")])
         self.assertEqual(payload["model"], "mimo-v2.5")
-        self.assertEqual(str(payload["base_url"]).rstrip("/") if "base_url" in payload else MIMO_BASE_URL, MIMO_BASE_URL)
+        self.assertEqual(
+            (
+                str(payload["base_url"]).rstrip("/")
+                if "base_url" in payload
+                else MIMO_BASE_URL
+            ),
+            MIMO_BASE_URL,
+        )
         self.assertEqual(payload["extra_body"], {"thinking": {"type": "enabled"}})
         self.assertNotIn("max_completion_tokens", payload)
         self.assertNotIn("max_tokens", payload)
@@ -290,7 +333,11 @@ class TestMentionMimoModel(unittest.TestCase):
 
 class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
     async def test_prepare_messages_uses_plain_string_when_multimodal_disabled(self):
-        state = {"conversation": "hello", "supports_multimodal": False, "image_inputs": []}
+        state = {
+            "conversation": "hello",
+            "supports_multimodal": False,
+            "image_inputs": [],
+        }
 
         result = await MentionChatModel._prepare_messages(state)
 
@@ -300,7 +347,8 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
     async def test_prepare_messages_uses_content_blocks_when_multimodal_enabled(self):
         image = MentionImageInput(
             source_url="upload://a.jpeg",
-            data_url="data:image/jpeg;base64," + base64.b64encode(b"abc").decode("ascii"),
+            data_url="data:image/jpeg;base64,"
+            + base64.b64encode(b"abc").decode("ascii"),
             origin="current_post",
             mime_type="image/jpeg",
             byte_count=3,
@@ -318,7 +366,9 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(content[0]["type"], "image_url")
         self.assertEqual(content[1]["type"], "text")
 
-    async def test_collect_tool_output_images_ignores_post_artifacts_without_inspect_image(self):
+    async def test_collect_tool_output_images_ignores_post_artifacts_without_inspect_image(
+        self,
+    ):
         model = MentionChatModel.__new__(MentionChatModel)
         model.model = MagicMock()
         model.model.download_image = AsyncMock(return_value=_tiny_png_bytes())
@@ -347,18 +397,24 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
         model.model.download_image = AsyncMock(return_value=_tiny_png_bytes())
         model.multimodal_search_image_limit = 1
 
-        artifact = MagicMock(image_urls=["upload://a.jpeg"], source="inspect_image", description="")
+        artifact = MagicMock(
+            image_urls=["upload://a.jpeg"], source="inspect_image", description=""
+        )
         state = {
             "supports_multimodal": True,
             "image_inputs": [],
             "messages": [
-                ToolMessage(content="image inspected", tool_call_id="call-1", artifact=artifact),
+                ToolMessage(
+                    content="image inspected", tool_call_id="call-1", artifact=artifact
+                ),
             ],
         }
 
         result = await MentionChatModel._collect_tool_output_images(model, state)
 
-        self.assertEqual([image.source_url for image in result["image_inputs"]], ["upload://a.jpeg"])
+        self.assertEqual(
+            [image.source_url for image in result["image_inputs"]], ["upload://a.jpeg"]
+        )
         content = result["messages"][0].content
         self.assertEqual(content[0]["type"], "image_url")
         self.assertEqual(content[1]["type"], "text")
@@ -373,9 +429,16 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
         tools = MentionChatModel._load_shuiyuan_tools(model)
         by_name = {tool.name: tool for tool in tools}
 
-        for name in ["search_posts", "recent_posts", "search_posts_by_time", "get_post"]:
+        for name in [
+            "search_posts",
+            "recent_posts",
+            "search_posts_by_time",
+            "get_post",
+        ]:
             self.assertEqual(by_name[name].response_format, "content")
-        self.assertEqual(by_name["inspect_image"].response_format, "content_and_artifact")
+        self.assertEqual(
+            by_name["inspect_image"].response_format, "content_and_artifact"
+        )
         self.assertEqual(by_name["generate_image"].response_format, "content")
 
     async def test_inspect_image_tool_returns_artifact_for_requested_url(self):
@@ -399,11 +462,13 @@ class TestMentionProviderSelection(unittest.TestCase):
         from shuiyuan_auto_reply.bootstrap.settings import AppSettings
 
         mimo_cls = MagicMock()
-        with patch.dict(
-            os.environ,
-            {"MENTION_CHAT_PROVIDER": "mimo", "MIMO_API_KEY": "test-key"},
-        ), \
-             patch.dict(MentionProviderFactory._providers, {"mimo": mimo_cls}):
+        with (
+            patch.dict(
+                os.environ,
+                {"MENTION_CHAT_PROVIDER": "mimo", "MIMO_API_KEY": "test-key"},
+            ),
+            patch.dict(MentionProviderFactory._providers, {"mimo": mimo_cls}),
+        ):
             model = MentionProviderFactory.create(
                 MagicMock(), "wolf_lumine", AppSettings().providers
             )

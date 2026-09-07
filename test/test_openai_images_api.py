@@ -25,7 +25,6 @@ from typing import Any
 import aiohttp
 from dotenv import load_dotenv
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "assets" / "generated_images"
 
@@ -85,8 +84,12 @@ def _request_preview(payload: dict[str, Any]) -> dict[str, Any]:
     return preview
 
 
-async def _download_image(session: aiohttp.ClientSession, url: str, timeout: float) -> bytes:
-    async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+async def _download_image(
+    session: aiohttp.ClientSession, url: str, timeout: float
+) -> bytes:
+    async with session.get(
+        url, timeout=aiohttp.ClientTimeout(total=timeout)
+    ) as response:
         body = await response.read()
         if response.status != 200:
             raise RuntimeError(f"image download HTTP {response.status}: {body[:300]!r}")
@@ -130,7 +133,9 @@ async def _post_images_request(args: argparse.Namespace) -> int:
         print("ERROR: IMAGE_GEN_API_KEY is not set")
         return 2
     if not base_url:
-        print("ERROR: IMAGE_GEN_API_URL is not set. Use a base URL such as https://4router.net/v1")
+        print(
+            "ERROR: IMAGE_GEN_API_URL is not set. Use a base URL such as https://4router.net/v1"
+        )
         return 2
 
     operation = args.operation
@@ -148,7 +153,9 @@ async def _post_images_request(args: argparse.Namespace) -> int:
         if not args.reference:
             print("ERROR: --reference is required for --operation edit")
             return 2
-        payload["images"] = [{"image_url": _encode_reference(item)} for item in args.reference]
+        payload["images"] = [
+            {"image_url": _encode_reference(item)} for item in args.reference
+        ]
 
     print(f"Base URL: {base_url}")
     print(f"Endpoint: {endpoint}")
@@ -172,7 +179,9 @@ async def _post_images_request(args: argparse.Namespace) -> int:
             ) as response:
                 text = await response.text()
                 elapsed = time.monotonic() - started
-                print(f"HTTP {response.status} in {elapsed:.2f}s, response bytes={len(text.encode('utf-8'))}")
+                print(
+                    f"HTTP {response.status} in {elapsed:.2f}s, response bytes={len(text.encode('utf-8'))}"
+                )
                 if response.status != 200:
                     print("Response body preview:")
                     print(text[:1200])
@@ -188,8 +197,14 @@ async def _post_images_request(args: argparse.Namespace) -> int:
             return 1
 
         print(f"Response keys: {list(data.keys())}")
-        first_image = data.get("data", [{}])[0] if isinstance(data.get("data"), list) and data.get("data") else {}
-        print(f"data[0] keys: {list(first_image.keys()) if isinstance(first_image, dict) else type(first_image)}")
+        first_image = (
+            data.get("data", [{}])[0]
+            if isinstance(data.get("data"), list) and data.get("data")
+            else {}
+        )
+        print(
+            f"data[0] keys: {list(first_image.keys()) if isinstance(first_image, dict) else type(first_image)}"
+        )
 
         try:
             image_bytes = await _extract_image_bytes(session, data, args.timeout)
@@ -200,7 +215,10 @@ async def _post_images_request(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     extension = _guess_extension(image_bytes)
-    output_path = output_dir / f"live_images_api_{operation}_{time.strftime('%Y%m%d_%H%M%S')}{extension}"
+    output_path = (
+        output_dir
+        / f"live_images_api_{operation}_{time.strftime('%Y%m%d_%H%M%S')}{extension}"
+    )
     output_path.write_bytes(image_bytes)
     print(f"Saved image: {output_path} ({len(image_bytes) / 1024:.1f} KB)")
     return 0
@@ -219,14 +237,22 @@ def _parse_args() -> argparse.Namespace:
         default="A simple square test image of a cute orange cat sitting on a windowsill, clean anime illustration.",
         help="prompt to send to the image model",
     )
-    parser.add_argument("--size", default="1024x1024", help="image size, for example 1024x1024")
+    parser.add_argument(
+        "--size", default="1024x1024", help="image size, for example 1024x1024"
+    )
     parser.add_argument(
         "--reference",
         action="append",
         help="reference image path, URL, or data URL; can be passed multiple times",
     )
-    parser.add_argument("--timeout", type=float, default=600.0, help="request timeout seconds")
-    parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="where to save the returned image")
+    parser.add_argument(
+        "--timeout", type=float, default=600.0, help="request timeout seconds"
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="where to save the returned image",
+    )
     return parser.parse_args()
 
 

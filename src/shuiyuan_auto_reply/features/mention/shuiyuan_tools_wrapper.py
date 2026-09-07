@@ -147,8 +147,10 @@ class ShuiyuanToolsWrapper:
         :return: A list of PostShort instances matching the criteria or error message.
         """
         try:
-            posts_dict = await self.shuiyuan_model.search_post_details_by_time_range_and_topic(
-                topic_id, after_date, before_date
+            posts_dict = (
+                await self.shuiyuan_model.search_post_details_by_time_range_and_topic(
+                    topic_id, after_date, before_date
+                )
             )
             return [
                 PostShort(post, title)

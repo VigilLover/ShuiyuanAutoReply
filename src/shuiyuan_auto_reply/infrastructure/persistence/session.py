@@ -26,7 +26,10 @@ class InMemorySessionRepository(SessionRepository):
         async with self._lock:
             history = self._messages.setdefault(key, [])
             history.extend(
-                (ChatMessage("user", request.content), ChatMessage("assistant", result.text))
+                (
+                    ChatMessage("user", request.content),
+                    ChatMessage("assistant", result.text),
+                )
             )
 
     async def clear(self, key: ConversationRef) -> None:

@@ -62,7 +62,9 @@ def infer_stat_names(responses: dict, endings: dict) -> List[str]:
     return sorted(stat_names)
 
 
-def choose_ending_id(state: Dict[str, int], stat_names: List[str], endings: dict) -> str:
+def choose_ending_id(
+    state: Dict[str, int], stat_names: List[str], endings: dict
+) -> str:
     limits_hit = []
     for stat_name in stat_names:
         value = state.get(stat_name, 0)
@@ -121,7 +123,9 @@ def simulate(
             unfinished += 1
 
     finished_trials = trials - unfinished
-    average_steps = (total_steps_until_end / finished_trials) if finished_trials > 0 else 0.0
+    average_steps = (
+        (total_steps_until_end / finished_trials) if finished_trials > 0 else 0.0
+    )
     return mood_trigger_counter, ending_counter, unfinished, average_steps
 
 
@@ -241,9 +245,11 @@ def main() -> None:
                 for ending_id in endings.keys()
             },
             "ending_probability_finished_trials": {
-                ending_id: (ending_counter.get(ending_id, 0) / finished_trials)
-                if finished_trials > 0
-                else 0.0
+                ending_id: (
+                    (ending_counter.get(ending_id, 0) / finished_trials)
+                    if finished_trials > 0
+                    else 0.0
+                )
                 for ending_id in endings.keys()
             },
             "unfinished": unfinished,

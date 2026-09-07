@@ -3,6 +3,8 @@ from typing import Dict, List
 import langchain_core.utils.function_calling as function_calling
 from langchain_openai import ChatOpenAI
 
+from shuiyuan_auto_reply.application.ports.prompt import PromptScope
+from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 from shuiyuan_auto_reply.openrouter.openrouter_model import (
     DEFAULT_OPENROUTER_MAX_RETRIES,
     OPENROUTER_BASE_URL,
@@ -10,8 +12,6 @@ from shuiyuan_auto_reply.openrouter.openrouter_model import (
     openrouter_headers,
     openrouter_http_client,
 )
-from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
-from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 from .mention_chat_model import MentionChatModel
@@ -44,7 +44,15 @@ class MentionOpenRouterModel(MentionChatModel):
         system_prompt_override: str | None = None,
     ):
         # Initialize the base class first to set up retriever and other components
-        super().__init__(model, username=username, prompt_scope=prompt_scope, enabled_tools=enabled_tools, disabled_mcp_tools=disabled_mcp_tools, state_store=state_store, system_prompt_override=system_prompt_override)
+        super().__init__(
+            model,
+            username=username,
+            prompt_scope=prompt_scope,
+            enabled_tools=enabled_tools,
+            disabled_mcp_tools=disabled_mcp_tools,
+            state_store=state_store,
+            system_prompt_override=system_prompt_override,
+        )
 
         current = provider_settings or ProviderSettings()
         api_key = current.openrouter_api_key
@@ -66,7 +74,9 @@ class MentionOpenRouterModel(MentionChatModel):
             temperature=0.8,
             default_headers=openrouter_headers(),
             http_client=openrouter_http_client(proxy=proxy, trust_env=False),
-            http_async_client=openrouter_async_http_client(proxy=proxy, trust_env=False),
+            http_async_client=openrouter_async_http_client(
+                proxy=proxy, trust_env=False
+            ),
             max_retries=DEFAULT_OPENROUTER_MAX_RETRIES,
         )
 

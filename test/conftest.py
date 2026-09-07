@@ -11,7 +11,9 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "live: requires explicitly enabled external services")
+    config.addinivalue_line(
+        "markers", "live: requires explicitly enabled external services"
+    )
 
 
 def pytest_collection_modifyitems(config, items):

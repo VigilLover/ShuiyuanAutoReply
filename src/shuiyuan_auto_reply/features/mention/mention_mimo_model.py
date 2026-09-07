@@ -4,9 +4,9 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatResult
 from langchain_openai import ChatOpenAI
 
-from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
-from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
+from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
+from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 from .mention_chat_model import MentionChatModel
 
@@ -39,7 +39,9 @@ class MiMoChatOpenAI(ChatOpenAI):
         ):
             if not isinstance(source_message, AIMessage):
                 continue
-            reasoning_content = source_message.additional_kwargs.get("reasoning_content")
+            reasoning_content = source_message.additional_kwargs.get(
+                "reasoning_content"
+            )
             if reasoning_content and "reasoning_content" not in payload_message:
                 payload_message["reasoning_content"] = reasoning_content
 
@@ -50,7 +52,9 @@ class MiMoChatOpenAI(ChatOpenAI):
         response: Any,
         generation_info: dict | None = None,
     ) -> ChatResult:
-        response_dict = response if isinstance(response, dict) else response.model_dump()
+        response_dict = (
+            response if isinstance(response, dict) else response.model_dump()
+        )
         reasoning_by_index = [
             (choice.get("message") or {}).get("reasoning_content")
             for choice in response_dict.get("choices", [])
@@ -115,7 +119,15 @@ class MentionMimoModel(MentionChatModel):
         state_store=None,
         system_prompt_override: str | None = None,
     ):
-        super().__init__(model, username=username, prompt_scope=prompt_scope, enabled_tools=enabled_tools, disabled_mcp_tools=disabled_mcp_tools, state_store=state_store, system_prompt_override=system_prompt_override)
+        super().__init__(
+            model,
+            username=username,
+            prompt_scope=prompt_scope,
+            enabled_tools=enabled_tools,
+            disabled_mcp_tools=disabled_mcp_tools,
+            state_store=state_store,
+            system_prompt_override=system_prompt_override,
+        )
 
         current = provider_settings or ProviderSettings()
         api_key = current.mimo_api_key

@@ -18,9 +18,7 @@ from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 def image_bytes(image_format: str = "PNG") -> bytes:
     output = io.BytesIO()
-    Image.new("RGBA", (4, 3), (92, 134, 232, 160)).save(
-        output, format=image_format
-    )
+    Image.new("RGBA", (4, 3), (92, 134, 232, 160)).save(output, format=image_format)
     return output.getvalue()
 
 
@@ -114,9 +112,7 @@ class ForumMediaUploaderTests(unittest.IsolatedAsyncioTestCase):
         )
         store = SimpleNamespace(
             get_artifact=AsyncMock(
-                return_value=SimpleNamespace(
-                    forum_short_path="upload://cached.png"
-                )
+                return_value=SimpleNamespace(forum_short_path="upload://cached.png")
             )
         )
         forum = SimpleNamespace(upload_image=AsyncMock())
@@ -176,9 +172,7 @@ class ForumReplyMediaPublisherTests(unittest.IsolatedAsyncioTestCase):
         selected = self.artifact("selected", "https://cdn.example/selected.png")
         unused = self.artifact("unused", "https://cdn.example/unused.png")
         uploader = SimpleNamespace(
-            upload=AsyncMock(
-                return_value=ForumMediaUpload("upload://selected.png")
-            )
+            upload=AsyncMock(return_value=ForumMediaUpload("upload://selected.png"))
         )
         text = (
             "![结果](https://cdn.example/selected.png)\n"
@@ -233,8 +227,7 @@ class ForumReplyMediaPublisherTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             result.text,
-            "（图片本地化或上传失败）\n"
-            "（图片本地化或上传失败）",
+            "（图片本地化或上传失败）\n" "（图片本地化或上传失败）",
         )
         self.assertNotIn("https://", result.text)
 
@@ -254,9 +247,7 @@ class ForumReplyMediaPublisherTests(unittest.IsolatedAsyncioTestCase):
             '<img alt="HTML 图片说明" src="https://cdn.example/html.png">'
         )
 
-        result = await ForumReplyMediaPublisher(uploader).publish(
-            text, [marker, html]
-        )
+        result = await ForumReplyMediaPublisher(uploader).publish(text, [marker, html])
 
         self.assertIn("![标识](upload://marker.png)", result.text)
         self.assertIn("![HTML 图片说明](upload://html.png)", result.text)
@@ -265,9 +256,7 @@ class ForumReplyMediaPublisherTests(unittest.IsolatedAsyncioTestCase):
     async def test_escaped_markdown_is_canonicalized_without_backslashes(self):
         artifact = self.artifact("escaped", "https://cdn.example/escaped.jpeg")
         uploader = SimpleNamespace(
-            upload=AsyncMock(
-                return_value=ForumMediaUpload("upload://token123.jpeg")
-            )
+            upload=AsyncMock(return_value=ForumMediaUpload("upload://token123.jpeg"))
         )
 
         result = await ForumReplyMediaPublisher(uploader).publish(
@@ -278,9 +267,7 @@ class ForumReplyMediaPublisherTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("\\", result.text)
 
     async def test_existing_forum_upload_is_reused_without_upload(self):
-        artifact = self.artifact(
-            "forum", "upload://existing.png", "forum_search"
-        )
+        artifact = self.artifact("forum", "upload://existing.png", "forum_search")
         uploader = SimpleNamespace(upload=AsyncMock())
         store = SimpleNamespace(set_forum_short_path=AsyncMock())
 
@@ -332,15 +319,18 @@ class ForumReplyMediaPublisherTests(unittest.IsolatedAsyncioTestCase):
         uploader = SimpleNamespace(
             upload=AsyncMock(
                 side_effect=[
-                    ForumMediaUpload(f"upload://{index}.png")
-                    for index in range(5)
+                    ForumMediaUpload(f"upload://{index}.png") for index in range(5)
                 ]
             )
         )
-        text = "[grid]" + "".join(
-            f"![图{index}]({artifact.uri})"
-            for index, artifact in enumerate(artifacts)
-        ) + "[/grid]"
+        text = (
+            "[grid]"
+            + "".join(
+                f"![图{index}]({artifact.uri})"
+                for index, artifact in enumerate(artifacts)
+            )
+            + "[/grid]"
+        )
 
         result = await ForumReplyMediaPublisher(uploader).publish(text, artifacts)
 

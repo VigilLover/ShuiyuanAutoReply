@@ -86,14 +86,16 @@ class BaseTopicModel:
         """
         # Flag to track if we're currently recovering from an error
         is_recovering = False
-        
+
         while True:
             # Get the topic details
             try:
                 topic_details = await self.model.get_topic_details(self.topic_id)
                 # If we successfully fetched details after an error, log the recovery
                 if is_recovering:
-                    logging.info(f"Successfully reconnected and fetched topic details for {self.topic_id}.")
+                    logging.info(
+                        f"Successfully reconnected and fetched topic details for {self.topic_id}."
+                    )
                     is_recovering = False
             except Exception:
                 logging.error(
@@ -132,7 +134,7 @@ class BaseTopicModel:
 
             # Update the stream list with the new stream
             self.stream_list = new_stream
-            
+
             # Wait for a while before the next check
             await asyncio.sleep(interval)
 

@@ -7,7 +7,6 @@ import dotenv
 
 from shuiyuan_auto_reply.database.neo4j_mgr import create_global_async_neo4j_manager
 
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",

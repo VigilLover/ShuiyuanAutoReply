@@ -13,7 +13,9 @@ from shuiyuan_auto_reply.application.ports.prompt import PromptBundle, PromptSco
 class FilePromptRepository:
     def __init__(self, package: str = "shuiyuan_auto_reply.prompts") -> None:
         root = resources.files(package)
-        manifest = json.loads(root.joinpath("manifest.json").read_text(encoding="utf-8"))
+        manifest = json.loads(
+            root.joinpath("manifest.json").read_text(encoding="utf-8")
+        )
         self._root = root
         self._version = str(manifest["version"])
         self._default = manifest["default_persona"]
@@ -38,14 +40,17 @@ class FilePromptRepository:
         selected = persona_id if persona_id in self._personas else self._default
         persona = self._read_text(self._root.joinpath(self._personas[selected]))
         template_path = (
-            self._web_system_template if scope is PromptScope.WEB else self._system_template
+            self._web_system_template
+            if scope is PromptScope.WEB
+            else self._system_template
         )
         template = self._read_text(self._root.joinpath(template_path))
         capability_text = ""
         if "multimodal" in capabilities:
-            capability_text = self._read_text(
-                self._root.joinpath(self._capabilities["multimodal"])
-            ) + "\n\n"
+            capability_text = (
+                self._read_text(self._root.joinpath(self._capabilities["multimodal"]))
+                + "\n\n"
+            )
         system_prompt = (
             template.replace("{{persona_prompt}}", persona)
             .replace("{{persona_id}}", persona_id)

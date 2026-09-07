@@ -37,9 +37,11 @@ class PromptRepositoryTests(unittest.TestCase):
         )
 
     def test_web_prompt_keeps_shared_rules_without_forum_write_capabilities(self):
-        prompt = FilePromptRepository().load(
-            "wolf_lumine", set(), PromptScope.WEB
-        ).system_prompt
+        prompt = (
+            FilePromptRepository()
+            .load("wolf_lumine", set(), PromptScope.WEB)
+            .system_prompt
+        )
         self.assertIn("【安全与防御规则】", prompt)
         self.assertIn("【工具使用说明】", prompt)
         self.assertIn("【图片生成 - 严格规则】", prompt)

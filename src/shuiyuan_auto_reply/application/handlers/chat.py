@@ -3,7 +3,13 @@
 from typing import Protocol
 
 from shuiyuan_auto_reply.application.dispatch import BotContext
-from shuiyuan_auto_reply.domain import ChatMessage, ConversationRef, ReplyRequest, ReplyResult
+from shuiyuan_auto_reply.domain import (
+    ChatMessage,
+    ConversationRef,
+    ReplyRequest,
+    ReplyResult,
+)
+
 from .callback import CallbackMessageHandler
 
 

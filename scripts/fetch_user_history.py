@@ -22,7 +22,6 @@ from shuiyuan_auto_reply.shuiyuan.constants import (
 )
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
-
 CSV_FIELDS = [
     "topic_title",
     "categories",
@@ -178,7 +177,7 @@ def cooked_emoji_to_text(html: str) -> str:
         attrs = match.group(0)
         title_match = re.search(r'title="([^"]+)"', attrs)
         alt_match = re.search(r'alt="([^"]+)"', attrs)
-        value = (title_match or alt_match)
+        value = title_match or alt_match
         if value is None:
             return ""
 
@@ -373,7 +372,9 @@ async def fetch_topic_metadata(
             f"{get_topic_url}/{topic_id}.json",
         )
         if response.status != 200:
-            raise RuntimeError(f"获取 topic {topic_id} 元数据失败: {await response.text()}")
+            raise RuntimeError(
+                f"获取 topic {topic_id} 元数据失败: {await response.text()}"
+            )
         return await response.json()
 
     topic = await with_retries(f"获取 topic {topic_id} 元数据", request_topic)
@@ -427,7 +428,9 @@ async def build_archive_rows(
     raw_topic_payloads: list[dict[str, Any]] = []
     total_topics = len(actions_by_topic)
 
-    for index, (topic_id, topic_actions) in enumerate(actions_by_topic.items(), start=1):
+    for index, (topic_id, topic_actions) in enumerate(
+        actions_by_topic.items(), start=1
+    ):
         post_ids = [int(action["post_id"]) for action in topic_actions]
         print(f"读取详情 {index}/{total_topics}: topic {topic_id}, {len(post_ids)} 条")
         payload = await fetch_topic_posts(model, topic_id, post_ids)
@@ -696,7 +699,9 @@ async def run(args: argparse.Namespace) -> Path:
                 until_dt,
                 args.max_pages,
             )
-            rows, topic_payloads = await build_archive_rows(model, actions, category_map)
+            rows, topic_payloads = await build_archive_rows(
+                model, actions, category_map
+            )
 
         return write_archive(
             args.username,

@@ -1,8 +1,8 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+from shuiyuan_auto_reply.application.ports.memory import MemoryCommand, MemoryScope
 from shuiyuan_auto_reply.domain import (
     ActorRef,
     Channel,
@@ -13,13 +13,12 @@ from shuiyuan_auto_reply.domain import (
 )
 from shuiyuan_auto_reply.infrastructure.forum import (
     EmptyChannelContextProvider,
-    ForumOutputFormatter,
     ForumChannelContextProvider,
+    ForumOutputFormatter,
+    ShuiyuanForumGateway,
 )
-from shuiyuan_auto_reply.infrastructure.retrieval import Neo4jStyleRetriever
-from shuiyuan_auto_reply.infrastructure.forum import ShuiyuanForumGateway
 from shuiyuan_auto_reply.infrastructure.persistence import PostgresLongTermMemoryAdapter
-from shuiyuan_auto_reply.application.ports.memory import MemoryCommand, MemoryScope
+from shuiyuan_auto_reply.infrastructure.retrieval import Neo4jStyleRetriever
 
 
 def forum_request() -> ReplyRequest:
