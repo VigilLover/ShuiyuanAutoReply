@@ -3,6 +3,10 @@
 import base64
 import os
 import unittest
+
+import pytest
+
+pytestmark = pytest.mark.live
 from pathlib import Path
 
 from dotenv import load_dotenv

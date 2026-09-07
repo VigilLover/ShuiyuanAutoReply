@@ -1,10 +1,11 @@
 """One bounded, conversation-ordered scheduler shared by all channels."""
+
 import asyncio
 import contextvars
 import weakref
 from contextlib import asynccontextmanager
 
-_held = contextvars.ContextVar('scheduler_held', default=False)
+_held = contextvars.ContextVar("scheduler_held", default=False)
 _schedulers = weakref.WeakKeyDictionary()
 
 
@@ -27,7 +28,7 @@ class ReplyScheduler:
             yield
             return
         if self.waiting >= self.queue_limit:
-            raise BusyError('Reply queue is full; try again later')
+            raise BusyError("Reply queue is full; try again later")
         self.waiting += 1
         entry = self.locks.setdefault(key, [asyncio.Lock(), 0])
         entry[1] += 1
@@ -57,6 +58,9 @@ def get_scheduler():
     loop = asyncio.get_running_loop()
     if loop not in _schedulers:
         from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
-        config = get_deployment().section('runtime')
-        _schedulers[loop] = ReplyScheduler(config['concurrency'], config['queue_limit'], config['timeout'])
+
+        config = get_deployment().section("runtime")
+        _schedulers[loop] = ReplyScheduler(
+            config["concurrency"], config["queue_limit"], config["timeout"]
+        )
     return _schedulers[loop]

@@ -3,10 +3,9 @@ from __future__ import annotations
 import logging
 import threading
 from _thread import LockType
-from typing import ClassVar, List, Optional, cast
+from typing import TYPE_CHECKING, ClassVar, List, Optional, cast
 
 from langchain_core.embeddings import Embeddings
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer

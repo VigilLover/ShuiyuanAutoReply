@@ -20,7 +20,9 @@ class Settings:
     @property
     def auto_reply_tag_pattern(self) -> _re.Pattern:
         return _re.compile(
-            _re.escape(self.auto_reply_tag) + "|" + _re.escape(self.legacy_auto_reply_tag)
+            _re.escape(self.auto_reply_tag)
+            + "|"
+            + _re.escape(self.legacy_auto_reply_tag)
         )
 
     def contains_auto_reply_tag(self, text: str) -> bool:
@@ -32,16 +34,19 @@ class Settings:
     @property
     def embedding_model_name(self) -> str:
         from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
         return get_deployment().section("embedding")["model"]
 
     @property
     def embedding_cache_folder(self) -> str | None:
         from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
         return get_deployment().section("embedding")["cache_folder"] or None
 
     @property
     def embedding_dims(self) -> int:
         from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
         return get_deployment().section("embedding")["dims"]
 
 

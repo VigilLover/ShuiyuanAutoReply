@@ -8,28 +8,27 @@ from typing import Annotated, Any, Dict, List, Optional, Tuple, TypedDict
 
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_community.tools import DuckDuckGoSearchResults
+from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatResult
-from langchain_core.runnables import RunnableLambda
-from langchain_core.callbacks import CallbackManagerForLLMRun
-from pydantic import ConfigDict
 from langchain_core.prompts import (
     ChatPromptTemplate,
     MessagesPlaceholder,
     SystemMessagePromptTemplate,
 )
+from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, StructuredTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.graph import END, StateGraph
-from langgraph.graph.message import add_messages, RemoveMessage
+from langgraph.graph.message import RemoveMessage, add_messages
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
+from pydantic import ConfigDict
 
-from shuiyuan_auto_reply.embeddings import get_global_text_embeddings
-from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
-from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.application.events import emit_event
+from shuiyuan_auto_reply.application.ports.prompt import PromptScope
+from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 from shuiyuan_auto_reply.domain import (
     AttachmentRef,
     Channel,
@@ -37,15 +36,17 @@ from shuiyuan_auto_reply.domain import (
     ConversationRef,
     GeneratedImageArtifact,
 )
+from shuiyuan_auto_reply.embeddings import get_global_text_embeddings
+from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 from shuiyuan_auto_reply.infrastructure.retrieval import Neo4jStyleRetriever
-from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 from shuiyuan_auto_reply.openrouter.openrouter_model import (
     DEFAULT_OPENROUTER_MAX_RETRIES,
 )
 from shuiyuan_auto_reply.shuiyuan.objects import User
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
-from .image_generation import ImageGenerationService, create_image_generation_tool
+
 from .chat_pipeline import ChatOrchestrator
+from .image_generation import ImageGenerationService, create_image_generation_tool
 from .mention_memory_model import MentionMemoryModel
 from .mention_multimodal import (
     ImageInspectResult,
@@ -111,7 +112,9 @@ class FallbackLLM(BaseChatModel):
         try:
             return self.primary._generate(messages, stop, run_manager, **kwargs)
         except Exception:
-            logging.warning("[FallbackLLM] Primary LLM failed, falling back to secondary...")
+            logging.warning(
+                "[FallbackLLM] Primary LLM failed, falling back to secondary..."
+            )
             return self.fallback._generate(messages, stop, run_manager, **kwargs)
 
     async def _agenerate(
@@ -124,7 +127,9 @@ class FallbackLLM(BaseChatModel):
         try:
             return await self.primary._agenerate(messages, stop, run_manager, **kwargs)
         except Exception:
-            logging.warning("[FallbackLLM] Primary LLM failed, falling back to secondary...")
+            logging.warning(
+                "[FallbackLLM] Primary LLM failed, falling back to secondary..."
+            )
             return await self.fallback._agenerate(messages, stop, run_manager, **kwargs)
 
     @property
@@ -139,14 +144,18 @@ class FallbackLLM(BaseChatModel):
             try:
                 return await primary_bound.ainvoke(input, config, **kw)
             except Exception:
-                logging.warning("[FallbackLLM] Primary LLM failed, falling back to secondary...")
+                logging.warning(
+                    "[FallbackLLM] Primary LLM failed, falling back to secondary..."
+                )
                 return await fallback_bound.ainvoke(input, config, **kw)
 
         def _fn(input, config=None, **kw):
             try:
                 return primary_bound.invoke(input, config, **kw)
             except Exception:
-                logging.warning("[FallbackLLM] Primary LLM failed, falling back to secondary...")
+                logging.warning(
+                    "[FallbackLLM] Primary LLM failed, falling back to secondary..."
+                )
                 return fallback_bound.invoke(input, config, **kw)
 
         return RunnableLambda(_fn, afunc=_afn)
@@ -179,9 +188,7 @@ class MentionChatModel:
         self.embeddings = get_global_text_embeddings()
 
         prompt_repository = FilePromptRepository()
-        capabilities = (
-            {"multimodal"} if self._get_multimodal_prompt_rules() else set()
-        )
+        capabilities = {"multimodal"} if self._get_multimodal_prompt_rules() else set()
         system_prompt = prompt_repository.load(
             username, capabilities, prompt_scope
         ).system_prompt
@@ -202,6 +209,7 @@ class MentionChatModel:
 
         # Initialize message histories
         self._histories: Dict[int | str, ChatMessageHistory] = {}
+        self._history_access = {}
 
         # LangGraph runtime objects are initialized after subclass sets self.llm.
         self.graph: Optional[CompiledStateGraph] = None
@@ -218,6 +226,7 @@ class MentionChatModel:
         self.uses_inspect_image_tool = False
         self.multimodal_search_image_limit = 0
         from shuiyuan_auto_reply.infrastructure.retrieval import create_style_retriever
+
         self.style_retriever = create_style_retriever()
         self.pipeline = ChatOrchestrator(self)
 
@@ -226,6 +235,26 @@ class MentionChatModel:
         return ""
 
     def get_session_history(self, session_id: int | str) -> ChatMessageHistory:
+        import time
+
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
+        limits = get_deployment().section("runtime")
+        now = time.monotonic()
+        for key in list(self._histories):
+            if now - self._history_access.get(key, now) > limits["history_ttl"]:
+                self._histories.pop(key, None)
+                self._history_access.pop(key, None)
+        if (
+            session_id not in self._histories
+            and len(self._histories) >= limits["history_limit"]
+        ):
+            oldest = min(
+                self._histories, key=lambda key: self._history_access.get(key, 0)
+            )
+            self._histories.pop(oldest, None)
+            self._history_access.pop(oldest, None)
+        self._history_access[session_id] = now
         history = self._histories.setdefault(session_id, ChatMessageHistory())
         self._trim_session_history(history)
         return history
@@ -268,15 +297,15 @@ class MentionChatModel:
                     )
             return serialized
         if isinstance(value, (list, tuple)):
-            return [
-                cls._prompt_event_value(item, depth=depth + 1) for item in value
-            ]
+            return [cls._prompt_event_value(item, depth=depth + 1) for item in value]
         if value is None or isinstance(value, (bool, int, float)):
             return value
         return str(value)
 
     @classmethod
-    def _prompt_messages_for_event(cls, prompt_value: object) -> list[dict[str, object]]:
+    def _prompt_messages_for_event(
+        cls, prompt_value: object
+    ) -> list[dict[str, object]]:
         """Serialize the role/content payload sent to the chat model for the UI."""
         to_messages = getattr(prompt_value, "to_messages", None)
         messages = to_messages() if callable(to_messages) else []
@@ -284,9 +313,7 @@ class MentionChatModel:
         for message in messages:
             item: dict[str, object] = {
                 "role": getattr(message, "type", type(message).__name__),
-                "content": cls._prompt_event_value(
-                    getattr(message, "content", "")
-                ),
+                "content": cls._prompt_event_value(getattr(message, "content", "")),
             }
             name = getattr(message, "name", None)
             if name:
@@ -358,7 +385,9 @@ class MentionChatModel:
         try:
             value = int(raw_value)
         except ValueError:
-            logging.warning("Invalid integer for %s=%r, using %s", name, raw_value, default)
+            logging.warning(
+                "Invalid integer for %s=%r, using %s", name, raw_value, default
+            )
             return default
         return value if value > 0 else default
 
@@ -456,7 +485,10 @@ class MentionChatModel:
             "uses_inspect_image_tool",
             getattr(self, "supports_multimodal", False),
         ):
-            async def inspect_image(image_url: str, description: str = "") -> tuple[str, ImageInspectResult]:
+
+            async def inspect_image(
+                image_url: str, description: str = ""
+            ) -> tuple[str, ImageInspectResult]:
                 """
                 Read a Shuiyuan image or user avatar URL for MiMo multimodal understanding.
 
@@ -478,7 +510,9 @@ class MentionChatModel:
                     )
                 return (
                     "图片已读取，将在下一轮结合该图片回答。",
-                    ImageInspectResult(image_urls=[normalized], description=description),
+                    ImageInspectResult(
+                        image_urls=[normalized], description=description
+                    ),
                 )
 
             tools.append(
@@ -493,9 +527,7 @@ class MentionChatModel:
 
         # 注册图片生成工具 (本地实现, 生成后自动上传水源并返回 Markdown)
         if getattr(self, "state_store", None) is not None:
-            gen_img_func = ImageGenerationService(
-                self.model, self.state_store
-            ).generate
+            gen_img_func = ImageGenerationService(self.model, self.state_store).generate
         else:
             # Compatibility path for direct legacy construction and its snapshots.
             gen_img_func = create_image_generation_tool(self.model)
@@ -506,7 +538,9 @@ class MentionChatModel:
                 description=inspect.getdoc(gen_img_func)
                 or "根据文字描述生成图片并保存为本地 Artifact.",
                 response_format=(
-                    "content_and_artifact" if getattr(self, "state_store", None) is not None else "content"
+                    "content_and_artifact"
+                    if getattr(self, "state_store", None) is not None
+                    else "content"
                 ),
             )
         )
@@ -526,7 +560,9 @@ class MentionChatModel:
         mcp_server_url = self.provider_settings.mcp_server_url
 
         if mcp_server_url:
-            logging.info(f"==> [MCP] Attempting connection to MCP server at URL: {mcp_server_url}")
+            logging.info(
+                f"==> [MCP] Attempting connection to MCP server at URL: {mcp_server_url}"
+            )
             # Create MCP streams and session, then load tools from it
             try:
                 mcp_tools = await self._load_mcp_tools(mcp_server_url)
@@ -557,18 +593,19 @@ class MentionChatModel:
             tool for tool in mcp_tools if tool.name not in self.disabled_mcp_tools
         ]
         other_function_like_tools = shuiyuan_tools + memory_tools
-        tool_catalog = [
-            {"name": tool.name, "source": "mcp"} for tool in mcp_tools
-        ] + [
-            {"name": tool.name, "source": "forum-read/image"}
-            for tool in shuiyuan_tools
-        ] + [
-            {"name": tool.name, "source": "memory"} for tool in memory_tools
-        ] + [
-            {"name": str(tool.get("type")), "source": "provider-native"}
-            for tool in self.openai_tools
-            if tool.get("type")
-        ]
+        tool_catalog = (
+            [{"name": tool.name, "source": "mcp"} for tool in mcp_tools]
+            + [
+                {"name": tool.name, "source": "forum-read/image"}
+                for tool in shuiyuan_tools
+            ]
+            + [{"name": tool.name, "source": "memory"} for tool in memory_tools]
+            + [
+                {"name": str(tool.get("type")), "source": "provider-native"}
+                for tool in self.openai_tools
+                if tool.get("type")
+            ]
+        )
         for item in tool_catalog:
             if item["source"] == "mcp":
                 item["enabled"] = item["name"] not in self.disabled_mcp_tools
@@ -582,11 +619,13 @@ class MentionChatModel:
             )
         if self.enabled_tools is not None:
             other_function_like_tools = [
-                tool for tool in other_function_like_tools
+                tool
+                for tool in other_function_like_tools
                 if tool.name in self.enabled_tools
             ]
             self.openai_tools = [
-                tool for tool in self.openai_tools
+                tool
+                for tool in self.openai_tools
                 if str(tool.get("type", "")) in self.enabled_tools
             ]
         all_function_like_tools = enabled_mcp_tools + other_function_like_tools
@@ -608,9 +647,7 @@ class MentionChatModel:
         provider_tool_choice = getattr(self, "provider_tool_choice", None)
         if provider_tool_choice is not None:
             bind_kwargs["tool_choice"] = provider_tool_choice
-        self.llm_with_tools = self.llm.bind_tools(
-            all_tools, **bind_kwargs
-        ).with_retry(
+        self.llm_with_tools = self.llm.bind_tools(all_tools, **bind_kwargs).with_retry(
             stop_after_attempt=DEFAULT_OPENROUTER_MAX_RETRIES
         )
         self.graph = self._build_graph()
@@ -631,7 +668,9 @@ class MentionChatModel:
         workflow.add_node("load_long_term_memory", self.pipeline.memory)
         if self.supports_multimodal:
             workflow.add_node("load_current_images", self.pipeline.multimodal.current)
-            workflow.add_node("load_replied_post_images", self.pipeline.multimodal.replied)
+            workflow.add_node(
+                "load_replied_post_images", self.pipeline.multimodal.replied
+            )
         workflow.add_node("prepare_messages", self.pipeline.messages)
         workflow.add_node("call_model", self.pipeline.runtime)
         workflow.add_node("log_tool_calls", self._log_tool_calls)
@@ -800,9 +839,13 @@ class MentionChatModel:
             "image_inputs": existing_images + new_images,
         }
 
-    async def _load_replied_post_images(self, state: MentionGraphState) -> MentionGraphState:
+    async def _load_replied_post_images(
+        self, state: MentionGraphState
+    ) -> MentionGraphState:
         existing_images = list(state.get("image_inputs", []) or [])
-        if not state.get("supports_multimodal") or not state.get("reply_to_post_number"):
+        if not state.get("supports_multimodal") or not state.get(
+            "reply_to_post_number"
+        ):
             return {"image_inputs": existing_images}
 
         max_images = self._env_positive_int("MIMO_MULTIMODAL_MAX_IMAGES", 4)
@@ -844,7 +887,9 @@ class MentionChatModel:
             return {
                 "messages": [
                     HumanMessage(
-                        content=build_mimo_content(content, state.get("image_inputs", []))
+                        content=build_mimo_content(
+                            content, state.get("image_inputs", [])
+                        )
                     )
                 ]
             }
@@ -906,16 +951,19 @@ class MentionChatModel:
             if tool_name not in valid_tool_names:
                 logging.warning(
                     "Filtering out hallucinated tool call: name=%s id=%s",
-                    tool_name, call_id,
+                    tool_name,
+                    call_id,
                 )
-                error_messages.append(ToolMessage(
-                    content=(
-                        f"错误: 工具 '{tool_name}' 不存在。"
-                        f"可用的工具有: {', '.join(sorted(valid_tool_names))}。"
-                        f"请使用正确的工具名称重试。"
-                    ),
-                    tool_call_id=call_id or f"invalid_{len(error_messages)}",
-                ))
+                error_messages.append(
+                    ToolMessage(
+                        content=(
+                            f"错误: 工具 '{tool_name}' 不存在。"
+                            f"可用的工具有: {', '.join(sorted(valid_tool_names))}。"
+                            f"请使用正确的工具名称重试。"
+                        ),
+                        tool_call_id=call_id or f"invalid_{len(error_messages)}",
+                    )
+                )
                 continue
 
             # 检查 2: generate_image 必须有合法 prompt
@@ -945,10 +993,13 @@ class MentionChatModel:
                         prompt[:80],
                         call_id,
                     )
-                    error_messages.append(ToolMessage(
-                        content=f"错误: {reject_reason}",
-                        tool_call_id=call_id or f"invalid_prompt_{len(error_messages)}",
-                    ))
+                    error_messages.append(
+                        ToolMessage(
+                            content=f"错误: {reject_reason}",
+                            tool_call_id=call_id
+                            or f"invalid_prompt_{len(error_messages)}",
+                        )
+                    )
                     continue
 
             valid_calls.append(tc)
@@ -1011,21 +1062,34 @@ class MentionChatModel:
             )
             await emit_event(
                 event_type,
-                {"name": getattr(message, "name", "<unknown>"), "output": MentionChatModel._preview_text(getattr(message, "content", message), 2000)},
+                {
+                    "name": getattr(message, "name", "<unknown>"),
+                    "output": MentionChatModel._preview_text(
+                        getattr(message, "content", message), 2000
+                    ),
+                },
             )
             artifact = getattr(message, "artifact", None)
             if isinstance(artifact, GeneratedImageArtifact):
                 generated.append(artifact)
                 await emit_event(
                     "image.generated",
-                    {"artifact_id": artifact.artifact_id, "byte_count": artifact.byte_count},
+                    {
+                        "artifact_id": artifact.artifact_id,
+                        "byte_count": artifact.byte_count,
+                    },
                 )
 
         return {"generated_artifacts": generated}
 
-    async def _collect_tool_output_images(self, state: MentionGraphState) -> MentionGraphState:
+    async def _collect_tool_output_images(
+        self, state: MentionGraphState
+    ) -> MentionGraphState:
         existing_images = list(state.get("image_inputs", []) or [])
-        if not state.get("supports_multimodal") or self.multimodal_search_image_limit <= 0:
+        if (
+            not state.get("supports_multimodal")
+            or self.multimodal_search_image_limit <= 0
+        ):
             return {"image_inputs": existing_images}
 
         tool_messages = []
@@ -1115,9 +1179,8 @@ class MentionChatModel:
             if isinstance(message, AIMessage) and getattr(message, "tool_calls", None):
                 segment = [message]
                 index += 1
-                while (
-                    index < len(messages)
-                    and isinstance(messages[index], ToolMessage)
+                while index < len(messages) and isinstance(
+                    messages[index], ToolMessage
                 ):
                     segment.append(messages[index])
                     index += 1
@@ -1159,7 +1222,7 @@ class MentionChatModel:
         # 从尾部尽量保留最近的完整块，同时为中间的摘要留 1 条消息空间。
         tail_segments: List[List[AnyMessage]] = []
         tail_msgs = 0
-        for segment in reversed(segments[len(head_segments):]):
+        for segment in reversed(segments[len(head_segments) :]):
             if (
                 head_msgs + tail_msgs + len(segment) + 1
                 > MentionChatModel._MAX_TOOL_LOOP_MESSAGES
@@ -1188,9 +1251,7 @@ class MentionChatModel:
                 )
             )
         )
-        trimmed.extend(
-            message for segment in tail_segments for message in segment
-        )
+        trimmed.extend(message for segment in tail_segments for message in segment)
         logging.info(
             "Trimmed tool-loop messages: %d → %d messages",
             len(messages),
@@ -1232,7 +1293,9 @@ class MentionChatModel:
         await emit_event("model.completed", {"usage": usage})
         if usage:
             await emit_event("usage.recorded", usage)
-        if not getattr(response, "content", None) and not getattr(response, "tool_calls", None):
+        if not getattr(response, "content", None) and not getattr(
+            response, "tool_calls", None
+        ):
             logging.warning(
                 "Model returned empty AIMessage (no content, no tool_calls). "
                 "message_keys=%s",
@@ -1246,12 +1309,13 @@ class MentionChatModel:
         # reasoning_content 兜底：qwen thinking 模式下输出可能在 reasoning 字段；
         # LangChain 不同版本会放在顶层属性或 additional_kwargs 中
         if not raw_output and self.prompt_scope is PromptScope.FORUM:
-            reasoning = (
-                getattr(last_message, "reasoning_content", None)
-                or getattr(last_message, "additional_kwargs", {}).get("reasoning_content")
-            )
+            reasoning = getattr(last_message, "reasoning_content", None) or getattr(
+                last_message, "additional_kwargs", {}
+            ).get("reasoning_content")
             if reasoning:
-                logging.info("Using reasoning_content as fallback (%d chars)", len(reasoning))
+                logging.info(
+                    "Using reasoning_content as fallback (%d chars)", len(reasoning)
+                )
                 raw_output = reasoning
         if not raw_output:
             additional = getattr(last_message, "additional_kwargs", {})
@@ -1445,9 +1509,9 @@ class MentionChatModel:
             self._preview_text(final_text or "", None),
         )
         if include_artifacts:
-            output_artifacts = tuple(response.get("generated_artifacts", []) or ()) + tuple(
-                response.get("response_visual_artifacts", []) or ()
-            )
+            output_artifacts = tuple(
+                response.get("generated_artifacts", []) or ()
+            ) + tuple(response.get("response_visual_artifacts", []) or ())
             input_artifacts = tuple(response.get("input_visual_artifacts", []) or ())
             return final_text, output_artifacts, input_artifacts
         return final_text

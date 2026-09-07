@@ -3,17 +3,25 @@ import asyncio
 import logging
 import sys
 
-from shuiyuan_auto_reply.bootstrap.deployment import add_config_arguments, load_deployment
+from shuiyuan_auto_reply.bootstrap.deployment import (
+    add_config_arguments,
+    load_deployment,
+)
 
 
 def configure_logging():
-    from shuiyuan_auto_reply.interfaces.worker.main import configure_logging as configure
+    from shuiyuan_auto_reply.interfaces.worker.main import (
+        configure_logging as configure,
+    )
+
     configure()
 
 
 async def run_worker(persona):
-    from shuiyuan_auto_reply.interfaces.worker.main import run_worker as run
     import signal
+
+    from shuiyuan_auto_reply.interfaces.worker.main import run_worker as run
+
     loop = asyncio.get_running_loop()
     task = asyncio.current_task()
     installed = False
@@ -44,7 +52,19 @@ async def _run_worker_with_web(persona: str, host: str, port: int) -> None:
             reload=False,
         )
     )
-    worker_task = asyncio.create_task(run_worker(persona), name="forum-worker")
+
+    async def supervise_worker():
+        while True:
+            try:
+                await run_worker(persona)
+                return
+            except Exception:
+                logging.exception(
+                    "Forum worker unavailable; management stays online, retrying in 30s"
+                )
+                await asyncio.sleep(30)
+
+    worker_task = asyncio.create_task(supervise_worker(), name="forum-worker")
     web_task = asyncio.create_task(server.serve(), name="management-web")
     try:
         done, _ = await asyncio.wait(
@@ -108,7 +128,9 @@ def bot_main() -> None:
 
 
 def api_main() -> None:
-    parser = argparse.ArgumentParser(description="Run the Shuiyuan management API and UI.")
+    parser = argparse.ArgumentParser(
+        description="Run the Shuiyuan management API and UI."
+    )
     add_config_arguments(parser)
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)

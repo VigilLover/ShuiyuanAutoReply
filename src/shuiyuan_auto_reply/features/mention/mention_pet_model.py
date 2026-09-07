@@ -24,7 +24,9 @@ class MentionPetModel:
         from shuiyuan_auto_reply.constants import settings
 
         self.filepath = filepath or os.path.join(settings.assets_directory, "pet_responses.json")
-        self.state_path = state_path or os.path.join(settings.assets_directory, "pet_state.json")
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+        from shuiyuan_auto_reply.infrastructure.persistence.state import state_directory
+        self.state_path = state_path or (str(state_directory() / "pet_state.json") if get_deployment().profile == "remote" else os.path.join(settings.assets_directory, "pet_state.json"))
         self.endings_path = endings_path or os.path.join(settings.assets_directory, "pet_endings.json")
         self.persona = persona
 
@@ -41,17 +43,13 @@ class MentionPetModel:
             return ""
 
         try:
-            from shuiyuan_auto_reply.database.neo4j_mgr import create_global_async_neo4j_manager
-
-            neo4j_manager = await create_global_async_neo4j_manager()
-            if neo4j_manager is None:
-                return ""
-
-            style_items = await neo4j_manager.search_similar(
-                user_text,
-                top_k=8,
-                userid=self.persona,
-            )
+            from shuiyuan_auto_reply.infrastructure.retrieval import create_style_retriever
+            retriever = create_style_retriever()
+            try:
+                style_items = await retriever.search(self.persona, user_text, 8)
+            finally:
+                if hasattr(retriever, "aclose"):
+                    await retriever.aclose()
             context = "\n".join(item.text for item in style_items)
             return context.strip()
         except Exception as e:

@@ -9,7 +9,9 @@ from .state import SQLiteStateStore, state_directory, utc_now
 
 
 class LocalSecretVault:
-    def __init__(self, store: SQLiteStateStore, key_path: str | Path | None = None) -> None:
+    def __init__(
+        self, store: SQLiteStateStore, key_path: str | Path | None = None
+    ) -> None:
         self.store = store
         self.key_path = Path(key_path) if key_path else state_directory() / "master.key"
         self._fernet: Fernet | None = None
@@ -22,7 +24,18 @@ class LocalSecretVault:
         else:
             self.key_path.parent.mkdir(parents=True, exist_ok=True)
             key = Fernet.generate_key()
-            self.key_path.write_bytes(key + b"\n")
+            temporary = self.key_path.with_name(
+                self.key_path.name + "." + __import__("uuid").uuid4().hex
+            )
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as target:
+                target.write(key + b"\n")
+            try:
+                os.link(temporary, self.key_path)
+            except FileExistsError:
+                key = self.key_path.read_bytes().strip()
+            finally:
+                temporary.unlink(missing_ok=True)
             try:
                 os.chmod(self.key_path, 0o600)
             except OSError:
@@ -48,7 +61,11 @@ class LocalSecretVault:
     async def get(self, name: str) -> str | None:
         db = await self.store._connect()
         try:
-            row = await (await db.execute("SELECT ciphertext FROM secret_values WHERE name=?", (name,))).fetchone()
+            row = await (
+                await db.execute(
+                    "SELECT ciphertext FROM secret_values WHERE name=?", (name,)
+                )
+            ).fetchone()
             return self._cipher().decrypt(row["ciphertext"]).decode() if row else None
         finally:
             await db.close()
@@ -56,7 +73,16 @@ class LocalSecretVault:
     async def metadata(self, name: str) -> dict[str, object]:
         db = await self.store._connect()
         try:
-            row = await (await db.execute("SELECT last_four, updated_at FROM secret_values WHERE name=?", (name,))).fetchone()
-            return {"configured": bool(row), "last_four": row["last_four"] if row else None, "updated_at": row["updated_at"] if row else None}
+            row = await (
+                await db.execute(
+                    "SELECT last_four, updated_at FROM secret_values WHERE name=?",
+                    (name,),
+                )
+            ).fetchone()
+            return {
+                "configured": bool(row),
+                "last_four": row["last_four"] if row else None,
+                "updated_at": row["updated_at"] if row else None,
+            }
         finally:
             await db.close()

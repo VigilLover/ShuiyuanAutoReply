@@ -75,11 +75,17 @@ class BaseUserActionModel:
         """
         import json
         from collections import deque
+
         from dacite import from_dict
+
+        from shuiyuan_auto_reply.application.scheduling import get_scheduler
         from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
         from shuiyuan_auto_reply.infrastructure.persistence.state import state_directory
-        from shuiyuan_auto_reply.infrastructure.persistence.work_queue import ForumQueue, _current_job
-        from shuiyuan_auto_reply.application.scheduling import get_scheduler
+        from shuiyuan_auto_reply.infrastructure.persistence.work_queue import (
+            ForumQueue,
+            _current_job,
+        )
+
         config = get_deployment().section("runtime")
         queue = ForumQueue(state_directory() / "state.sqlite3", self.username)
         await queue.initialize()
@@ -89,19 +95,30 @@ class BaseUserActionModel:
             token = _current_job.set((queue, post_id))
             try:
                 action = from_dict(UserActionDetails, json.loads(payload))
-                async with get_scheduler().admission(("forum", self.username, action.topic_id)):
+                async with get_scheduler().admission(
+                    ("forum", self.username, action.topic_id)
+                ):
                     await queue.status(post_id, "running")
                     await self._new_action_routine(action)
                     if await queue.state(post_id) not in {"sent", "needs_review"}:
                         await queue.status(post_id, "done")
             except asyncio.CancelledError:
                 state = await queue.state(post_id)
-                await queue.status(post_id, "needs_review" if state in {"sending", "needs_review"} else "sent" if state == "sent" else "pending")
+                await queue.status(
+                    post_id,
+                    (
+                        "needs_review"
+                        if state in {"sending", "needs_review"}
+                        else "sent" if state == "sent" else "pending"
+                    ),
+                )
                 raise
             except Exception:
                 state = await queue.state(post_id)
                 if state not in {"sent", "needs_review"}:
-                    await queue.status(post_id, "needs_review" if state == "sending" else "failed")
+                    await queue.status(
+                        post_id, "needs_review" if state == "sending" else "failed"
+                    )
                 logging.exception("Forum job failed: %s", post_id)
             finally:
                 _current_job.reset(token)
@@ -122,7 +139,11 @@ class BaseUserActionModel:
                     offset = 0
                     collected = deque(maxlen=free)
                     while True:
-                        page = (await self.model.get_actions(self.username, self.action_type, offset=offset)).user_actions
+                        page = (
+                            await self.model.get_actions(
+                                self.username, self.action_type, offset=offset
+                            )
+                        ).user_actions
                         if cursor is None:
                             await queue.enqueue([], page[0].post_id if page else 0)
                             break
@@ -134,7 +155,9 @@ class BaseUserActionModel:
                             collected.append(action)
                         if stop or not page:
                             ordered = list(reversed(collected))
-                            await queue.enqueue(ordered, ordered[-1].post_id if ordered else cursor)
+                            await queue.enqueue(
+                                ordered, ordered[-1].post_id if ordered else cursor
+                            )
                             break
                         offset += len(page)
             except Exception:
@@ -155,7 +178,10 @@ class BaseUserActionModel:
         tasks = tuple(self._bg_tasks)
         if tasks:
             from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
-            _, pending = await asyncio.wait(tasks, timeout=get_deployment().section("runtime")["shutdown_timeout"])
+
+            _, pending = await asyncio.wait(
+                tasks, timeout=get_deployment().section("runtime")["shutdown_timeout"]
+            )
         else:
             pending = ()
         for task in pending:

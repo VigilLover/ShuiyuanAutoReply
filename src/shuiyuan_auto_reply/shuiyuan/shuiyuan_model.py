@@ -100,14 +100,49 @@ class ShuiyuanModel:
                 )
 
             # Create a new aiohttp session and load cookies
-            session = aiohttp.ClientSession()
-            with open(file_path, "rb") as f:
-                cookies = pickle.load(f)
-                session.cookie_jar.update_cookies(cookies)
+            import json
+            from pathlib import Path
+
+            from yarl import URL
+
+            from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
+            config = get_deployment()
+            raw = Path(file_path).read_bytes()
+            if raw.lstrip().startswith(b"{"):
+                document = json.loads(raw)
+                if (
+                    document.get("version") != 1
+                    or document.get("domain") != "shuiyuan.sjtu.edu.cn"
+                ):
+                    raise ValueError("Invalid cookie document version or domain")
+                cookies = document.get("cookies")
+                if (
+                    not isinstance(cookies, dict)
+                    or not cookies
+                    or not all(
+                        isinstance(k, str) and isinstance(v, str)
+                        for k, v in cookies.items()
+                    )
+                ):
+                    raise ValueError("Cookie values must be nonempty string mapping")
+            elif config.profile == "remote":
+                raise ValueError("Remote deployment accepts JSON cookies only")
+            else:
+                cookies = pickle.loads(raw)
+            session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+            session.cookie_jar.update_cookies(
+                cookies, response_url=URL("https://shuiyuan.sjtu.edu.cn")
+            )
 
             # Update the shared session using Shuiyuan API
             cls._shared_session = session
-            await cls._update_cookies()
+            try:
+                await cls._update_cookies()
+            except BaseException:
+                await session.close()
+                cls._shared_session = None
+                raise
             return cls._shared_session
 
     @classmethod
@@ -196,7 +231,10 @@ class ShuiyuanModel:
         if reply_to_post_number is not None:
             form_data.add_field("reply_to_post_number", str(reply_to_post_number))
 
-        from shuiyuan_auto_reply.infrastructure.persistence.work_queue import publication_status
+        from shuiyuan_auto_reply.infrastructure.persistence.work_queue import (
+            publication_status,
+        )
+
         await publication_status("sending")
         # A failed or cancelled publication stays uncertain until inspected.
         attempts = 0
@@ -214,7 +252,9 @@ class ShuiyuanModel:
                 if attempts >= 3:
                     await publication_status("failed")
                     raise RuntimeError("Forum publication rate limited")
-                await asyncio.sleep(min(60, float(response.headers.get("Retry-After", 2 ** attempts))))
+                await asyncio.sleep(
+                    min(60, float(response.headers.get("Retry-After", 2**attempts)))
+                )
             else:
                 await publication_status("failed")
                 raise Exception(f"Failed to reply to post: {await response.text()}")
@@ -579,7 +619,9 @@ class ShuiyuanModel:
             allow_redirects=True,
         )
         if response.status != 200:
-            raise Exception(f"Failed to download Shuiyuan image: {await response.text()}")
+            raise Exception(
+                f"Failed to download Shuiyuan image: {await response.text()}"
+            )
 
         return await response.read()
 
@@ -786,9 +828,11 @@ class ShuiyuanModel:
 
         return topic_details.title, post_details[:limit]
 
-
     async def _search_post_details_by_time_range_and_topic(
-        self, topic_id: int, after_date: Optional[str] = None, before_date: Optional[str] = None
+        self,
+        topic_id: int,
+        after_date: Optional[str] = None,
+        before_date: Optional[str] = None,
     ) -> Dict[str, List[PostDetails]]:
         """
         Search for posts within a specific topic and time range, and return detailed information.
@@ -809,21 +853,32 @@ class ShuiyuanModel:
             "get", f"{post_search_url}", params=params
         )
         if response.status != 200:
-            raise Exception(f"Failed to search posts by time range: {await response.text()}")
+            raise Exception(
+                f"Failed to search posts by time range: {await response.text()}"
+            )
 
         data = await response.json()
-        post_list = [from_dict(PostSearchResult, post) for post in data.get("posts", [])]
+        post_list = [
+            from_dict(PostSearchResult, post) for post in data.get("posts", [])
+        ]
         if not post_list:
             return {}
 
         # Get post details in batch (all posts share the same topic_id)
         post_ids = [post.id for post in post_list]
         details_list = await self.get_post_details_batch_by_topic_id(topic_id, post_ids)
-        topic_title = data.get("topics", [{}])[0].get("title", str(topic_id)) if data.get("topics") else str(topic_id)
+        topic_title = (
+            data.get("topics", [{}])[0].get("title", str(topic_id))
+            if data.get("topics")
+            else str(topic_id)
+        )
         return {topic_title: details_list}
 
     async def search_post_details_by_time_range_and_topic(
-        self, topic_id: int, after_date: Optional[str] = None, before_date: Optional[str] = None
+        self,
+        topic_id: int,
+        after_date: Optional[str] = None,
+        before_date: Optional[str] = None,
     ) -> Dict[str, List[PostDetails]]:
         """
         Search for posts within a specific topic and time range, and return detailed information.
