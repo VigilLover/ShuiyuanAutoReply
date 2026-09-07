@@ -148,6 +148,7 @@ class MentionMemoryModel:
                 self.namespace_template,
             )
         except Exception as exc:
+            self._initialized = False
             await self._close_store_context()
             self.store = None
             self.tools = []

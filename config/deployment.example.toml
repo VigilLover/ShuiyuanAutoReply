@@ -1,0 +1,63 @@
+# Copy to config/deployment.toml. Paths are relative to this file.
+[common.runtime]
+concurrency = 3
+queue_limit = 100
+timeout = 900
+poll_interval = 5
+shutdown_timeout = 60
+history_limit = 100
+history_ttl = 1800
+
+[common.media]
+max_images = 20
+max_image_bytes = 20971520
+max_turn_bytes = 41943040
+max_pixels = 4000000
+max_long_edge = 2048
+quota_bytes = 3221225472
+retention_days = 30
+
+[profiles.local.embedding]
+backend = "local"
+model = "moka-ai/m3e-base"
+dims = 768
+[profiles.local.retrieval]
+backend = "neo4j"
+# Local database/API keys/cookies default to the existing .env and working directory.
+
+[profiles.remote.embedding]
+backend = "openai"
+model = "qwen3.7-text-embedding"
+dims = 1024
+# Replace this with the exact OpenAI-compatible base URL from your provider console.
+base_url = "https://YOUR_WORKSPACE_ID.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+api_key = {file = "/run/secrets/embedding_key"}
+batch_size = 10
+max_batch_size = 20
+concurrency = 2
+timeout = 30
+attempts = 3
+preprocessing = "raw-v1"
+
+[profiles.remote.forum]
+bot_username = "wolf_lumine"
+cookie_file = "/run/secrets/forum_cookie"
+[profiles.remote.retrieval]
+backend = "pgvector"
+[profiles.remote.database]
+url = {file = "/run/secrets/database_url"}
+record_url = ""
+memory_url = ""
+auto_migrate = false
+strict = true
+[profiles.remote.paths]
+state_dir = "/var/lib/shuiyuan"
+[profiles.remote.providers]
+DEEPSEEK_API_KEY = {file = "/run/secrets/deepseek_key"}
+# Add only the providers your tools need, e.g. IMAGE_GEN_API_KEY={file="/run/secrets/image_key"}.
+[profiles.remote.mcp]
+enabled = true
+url = "http://mcp:58000/sse"
+[profiles.remote.web]
+host = "0.0.0.0"
+port = 11451

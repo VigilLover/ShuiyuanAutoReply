@@ -7,11 +7,9 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from shuiyuan_auto_reply.application.operations.migration import digest, write_json
 from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
 from shuiyuan_auto_reply.constants import settings
-
-
-from shuiyuan_auto_reply.application.operations.migration import write_json, digest
 
 
 @asynccontextmanager
@@ -52,6 +50,16 @@ async def migrate_database():
             await connection.run_sync(RecordPostgresBase.metadata.create_all)
         async with memory_store(migration=True) as store:
             await store.setup()
+        from shuiyuan_auto_reply.infrastructure.persistence.state import (
+            SQLiteStateStore,
+        )
+        from shuiyuan_auto_reply.infrastructure.persistence.work_queue import ForumQueue
+
+        state = SQLiteStateStore()
+        await state.initialize(migrate=True)
+        await ForumQueue(
+            state.path, get_deployment().section("forum")["bot_username"]
+        ).initialize(migrate=True)
     finally:
         await engine.dispose()
 
@@ -142,19 +150,31 @@ async def import_data(kind, source, *, dry_run=False):
         source=digest(source), fingerprint=get_deployment().fingerprint, kind=kind
     )
     progress = dict(identity, completed=[])
-    if checkpoint.exists():
-        progress = json.loads(checkpoint.read_text())
-        if any(progress.get(key) != value for key, value in identity.items()):
-            raise ValueError("Checkpoint belongs to different source or vector space")
-    completed = set(progress["completed"])
+    completed = set()
     errors = []
     count = 0
     engine = engine_for()
     retriever = None
     try:
         if not dry_run:
+            from sqlalchemy import text
+
             async with engine.connect() as connection:
                 await check_vector_space(connection)
+                generation = await connection.execute(
+                    text(
+                        "SELECT generation FROM deployment_vector_space WHERE singleton=1"
+                    )
+                )
+                identity["generation"] = generation.scalar_one()
+            progress = dict(identity, completed=[])
+            if checkpoint.exists():
+                progress = json.loads(checkpoint.read_text())
+                if any(progress.get(key) != value for key, value in identity.items()):
+                    raise ValueError(
+                        "Checkpoint belongs to different source, database generation or vector space"
+                    )
+                completed = set(progress["completed"])
         async with optional_memory_store(kind == "memory" and not dry_run) as store:
             if kind == "corpus" and not dry_run:
                 retriever = PostgresStyleRetriever(engine=engine)
@@ -216,6 +236,11 @@ async def import_data(kind, source, *, dry_run=False):
                             completed.add(number)
                             progress["completed"] = sorted(completed)
                             write_json(checkpoint, progress)
+                        if count % 10 == 0:
+                            print(
+                                f"{kind}: processed={count} line={number} failed={len(errors)} dry_run={dry_run}",
+                                flush=True,
+                            )
                     except Exception as exc:
                         # Never persist provider errors that may contain credentials or text.
                         errors.append(dict(line=number, error=type(exc).__name__))

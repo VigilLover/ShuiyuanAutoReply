@@ -19,6 +19,9 @@ def parser():
     commands.add_parser("config").add_argument("action", choices=["check"])
     doctor = commands.add_parser("doctor")
     doctor.add_argument(
+        "--probe-forum", action="store_true", help="Read-only community identity check"
+    )
+    doctor.add_argument(
         "--probe-embedding", action="store_true", help="Explicit paid embedding request"
     )
     commands.add_parser("db").add_argument("action", choices=["migrate"])
@@ -73,9 +76,20 @@ async def run(args, config):
                     await check_vector_space(connection)
         finally:
             await engine.dispose()
+        if args.probe_forum:
+            from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
+
+            model = await ShuiyuanModel.create(config.section("forum")["cookie_file"])
+            try:
+                await model.verify_identity(config.section("forum")["bot_username"])
+            finally:
+                await model.close()
         if args.probe_embedding:
             await get_embeddings().aembed_query("连接测试")
-        print("Configuration, cookie path and database OK; forum identity not verified")
+        print(
+            "Configuration, cookie path and database OK; identity probe="
+            + str(args.probe_forum)
+        )
     elif args.command in ("corpus", "memory"):
         if args.action == "import":
             count = await migration.import_data(

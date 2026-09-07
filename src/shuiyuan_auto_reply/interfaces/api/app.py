@@ -183,6 +183,8 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         )
         try:
             result = await request.app.state.container.bot_service.reply(reply_request)
+        except BusyError:
+            raise
         except Exception as exc:
             logger.exception("处理消息时发生错误")
             raise HTTPException(
@@ -227,6 +229,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
     @api.get("/api/runtime-health")
     async def readiness(request: Request):
         from .health import runtime_health
+
         return await runtime_health(_store(request))
 
     @api.get("/api/bootstrap")

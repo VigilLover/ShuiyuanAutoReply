@@ -42,4 +42,17 @@ class RequestLimits:
                 raise HTTPException(413, "Request too large")
             return message
 
-        await self.app(scope, bounded_receive, send)
+        if scope["method"] == "POST" and "/messages/stream" in scope["path"]:
+            from shuiyuan_auto_reply.application.scheduling import BusyError
+
+            # Reserve a slot before reading uploads; waiting requests do not hold
+            # decoded pictures or complete multipart bodies in application memory.
+            try:
+                async with get_scheduler().admission(scope["path"]):
+                    await self.app(scope, bounded_receive, send)
+            except BusyError:
+                await JSONResponse({"detail": "Reply queue is full"}, status_code=429)(
+                    scope, receive, send
+                )
+        else:
+            await self.app(scope, bounded_receive, send)

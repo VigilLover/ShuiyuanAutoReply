@@ -1,11 +1,12 @@
-import logging
 import asyncio
+import logging
 import random
 import re
 import traceback
 from typing import Any, Dict, List, Optional
 
 from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegistry
+from shuiyuan_auto_reply.application.events import emit_event
 from shuiyuan_auto_reply.application.handlers import (
     CallbackChatHandler,
     ClearHandler,
@@ -17,8 +18,8 @@ from shuiyuan_auto_reply.application.handlers import (
 from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.domain import (
-    AttachmentRef,
     ActorRef,
+    AttachmentRef,
     Channel,
     ConversationRef,
     DispatchMode,
@@ -26,13 +27,16 @@ from shuiyuan_auto_reply.domain import (
     ReplyRequest,
     ReplyResult,
 )
-from shuiyuan_auto_reply.infrastructure.persistence import InMemorySessionRepository, SQLiteExecutionObserver, SQLiteSessionRepository
 from shuiyuan_auto_reply.infrastructure.forum import (
     ForumMediaUploader,
     ForumOutputFormatter,
     ForumReplyMediaPublisher,
 )
-from shuiyuan_auto_reply.application.events import emit_event
+from shuiyuan_auto_reply.infrastructure.persistence import (
+    InMemorySessionRepository,
+    SQLiteExecutionObserver,
+    SQLiteSessionRepository,
+)
 from shuiyuan_auto_reply.shuiyuan.objects import User, UserActionDetails
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from shuiyuan_auto_reply.shuiyuan.user_action_model import BaseUserActionModel
@@ -81,7 +85,9 @@ class MentionModel(BaseUserActionModel):
             "存档读取": {"trigger": "【存读】", "nickname": "存读bot"},
             "MonkeysPumpkin": {"trigger": "【小南瓜】", "nickname": "南瓜bot"},
         }
-        self.config = self.persona_configs.get(persona, self.persona_configs["wolf_lumine"])
+        self.config = self.persona_configs.get(
+            persona, self.persona_configs["wolf_lumine"]
+        )
         self.trigger_word = self.config["trigger"]
         self.nickname = self.config["nickname"]
 
@@ -89,7 +95,9 @@ class MentionModel(BaseUserActionModel):
         self._runtime_lock = asyncio.Lock()
         self._runtime_counts: dict[Any, int] = {chat_model: 0}
         self._retired_runtimes: set[Any] = set()
-        self._closed_runtimes: set[Any] = set()
+        import weakref
+
+        self._closed_runtimes = weakref.WeakSet()
         self.pet_model = MentionPetModel(
             persona=persona, provider_settings=provider_settings
         )
@@ -101,7 +109,11 @@ class MentionModel(BaseUserActionModel):
             self.media_uploader, state_store
         )
         self.bot_service = BotService(
-            SQLiteSessionRepository(state_store) if state_store else InMemorySessionRepository(),
+            (
+                SQLiteSessionRepository(state_store)
+                if state_store
+                else InMemorySessionRepository()
+            ),
             HandlerRegistry(
                 [
                     HelpHandler(
@@ -137,7 +149,9 @@ class MentionModel(BaseUserActionModel):
                     ),
                 ]
             ),
-            observer_factory=(lambda: SQLiteExecutionObserver(state_store)) if state_store else None,
+            observer_factory=(
+                (lambda: SQLiteExecutionObserver(state_store)) if state_store else None
+            ),
         )
 
     async def swap_chat_model(self, candidate: Any) -> None:
@@ -221,6 +235,7 @@ class MentionModel(BaseUserActionModel):
             forum.reply_to_post_number,
             context.request.content,
             User(user_id, actor.username, actor.display_name),
+            external_history=context.history,
         )
 
     async def _handle_dice(self, context: BotContext) -> str | None:
@@ -233,6 +248,7 @@ class MentionModel(BaseUserActionModel):
         return await self._poll_condition(
             context.request.content, forum.topic_id, forum.reply_to_post_number
         )
+
     @staticmethod
     def _parse_prompt_text(raw: str, prompt: str) -> Optional[str]:
         """
@@ -253,7 +269,13 @@ class MentionModel(BaseUserActionModel):
         return ShuiyuanModel.remove_shuiyuan_signature(raw.replace(prompt, "")).strip()
 
     async def _pumpkin_condition(
-        self, topic_id: int, reply_to_post_number: Optional[int], raw: str, user: User
+        self,
+        topic_id: int,
+        reply_to_post_number: Optional[int],
+        raw: str,
+        user: User,
+        *,
+        external_history=None,
     ) -> Optional[str | ReplyResult]:
         """
         Check if the raw content of a post contains the target trigger word.
@@ -267,10 +289,14 @@ class MentionModel(BaseUserActionModel):
         # If the raw content does not contain the trigger word, we return None
         raw = MentionModel._parse_prompt_text(raw, self.trigger_word)
         if raw is None:
-            logging.info(f"==> [MentionModel] post did not contain keyword {self.trigger_word}, skipping AI spawn.")
+            logging.info(
+                f"==> [MentionModel] post did not contain keyword {self.trigger_word}, skipping AI spawn."
+            )
             return None
 
-        logging.info(f"==> [MentionModel] Triggered AI spawn with prompt: '{raw}' for user: {user.username}")
+        logging.info(
+            f"==> [MentionModel] Triggered AI spawn with prompt: '{raw}' for user: {user.username}"
+        )
         # Let the Tongyi model respond based on conversation and similar responses
         artifacts = ()
         input_artifacts = ()
@@ -288,6 +314,7 @@ class MentionModel(BaseUserActionModel):
                     self.persona,
                 ),
                 include_artifacts=True,
+                external_history=external_history,
             )
             if len(response) == 2:
                 reply, artifacts = response
@@ -296,10 +323,14 @@ class MentionModel(BaseUserActionModel):
         except ValueError as e:
             if "DataInspectionFailed" in str(e):
                 reply = "抱歉，您的输入包含不当内容，无法处理。"
-                logging.error(f"==> [MentionModel] AI replied with DataInspectionFailed: {str(e)}")
+                logging.error(
+                    f"==> [MentionModel] AI replied with DataInspectionFailed: {str(e)}"
+                )
             else:
                 reply = "抱歉，遇到了一些错误。"
-                logging.error(f"==> [MentionModel] AI replied with ValueError: {str(e)}")
+                logging.error(
+                    f"==> [MentionModel] AI replied with ValueError: {str(e)}"
+                )
         except Exception as e:
             reply = "抱歉，遇到了一些未知错误。"
             logging.error(f"==> [MentionModel] AI replied with Exception: {str(e)}")
@@ -333,6 +364,7 @@ class MentionModel(BaseUserActionModel):
         logging.info(f"==> [MentionModel] AI replied with length {len(reply)}.")
         formatted = self.output_formatter.format_chat(reply, self.nickname)
         if artifacts or input_artifacts:
+
             def attachment(artifact):
                 return AttachmentRef(
                     artifact.uri,
@@ -344,6 +376,7 @@ class MentionModel(BaseUserActionModel):
                     getattr(artifact, "width", None),
                     getattr(artifact, "height", None),
                 )
+
             return ReplyResult(
                 formatted,
                 tuple(attachment(artifact) for artifact in artifacts),
@@ -592,7 +625,9 @@ class MentionModel(BaseUserActionModel):
         :param action: The details of the user action (mention).
         :return: None
         """
-        logging.info(f"==> [MentionModel] Event triggered for action_type={action.action_type} on post_id={action.post_id}")
+        logging.info(
+            f"==> [MentionModel] Event triggered for action_type={action.action_type} on post_id={action.post_id}"
+        )
 
         if self.runtime_refresher is not None:
             try:
@@ -601,7 +636,7 @@ class MentionModel(BaseUserActionModel):
                 logging.exception(
                     "Failed to apply the latest forum runtime; keeping the previous runtime"
                 )
-        
+
         # This is the text to reply to the post
         text: Optional[str] = None
 
@@ -613,7 +648,9 @@ class MentionModel(BaseUserActionModel):
                 post_details.username,
                 post_details.name,
             )
-            logging.info(f"==> [MentionModel] Fetched post details successfully. User={post_user.username}")
+            logging.info(
+                f"==> [MentionModel] Fetched post details successfully. User={post_user.username}"
+            )
 
             # If the member "raw" is not present, we should skip it
             if post_details.raw is None:
@@ -627,12 +664,17 @@ class MentionModel(BaseUserActionModel):
                 f"Failed to get post details for {action.post_id}, "
                 f"traceback is as follows:\n{traceback.format_exc()}"
             )
-            return
+            raise
 
         try:
             # If the post is an auto-reply send by the bot, we should skip it
-            if settings.contains_auto_reply_tag(post_details.raw) and post_details.username == self.username:
-                logging.info(f"==> [MentionModel] Post {action.post_id} is an auto-reply. Skipping.")
+            if (
+                settings.contains_auto_reply_tag(post_details.raw)
+                and post_details.username == self.username
+            ):
+                logging.info(
+                    f"==> [MentionModel] Post {action.post_id} is an auto-reply. Skipping."
+                )
                 return
 
             # Check if the mention actually exists
@@ -694,7 +736,9 @@ class MentionModel(BaseUserActionModel):
 
         finally:
             if text is not None:
-                logging.info(f"==> [MentionModel] Replying to topic {action.topic_id} at post {action.post_number}...")
+                logging.info(
+                    f"==> [MentionModel] Replying to topic {action.topic_id} at post {action.post_number}..."
+                )
                 await self.model.reply_to_post(
                     text,
                     action.topic_id,
@@ -708,6 +752,11 @@ class MentionModel(BaseUserActionModel):
                     await self.state_store.append_event_for_request(
                         f"forum:{action.post_id}",
                         "forum.reply_published",
-                        {"topic_id": action.topic_id, "post_number": action.post_number},
+                        {
+                            "topic_id": action.topic_id,
+                            "post_number": action.post_number,
+                        },
                     )
-                logging.info(f"==> [MentionModel] Reply successfully sent to post {action.post_id}.")
+                logging.info(
+                    f"==> [MentionModel] Reply successfully sent to post {action.post_id}."
+                )

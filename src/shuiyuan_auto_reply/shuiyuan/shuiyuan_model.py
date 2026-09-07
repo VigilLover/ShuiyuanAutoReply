@@ -72,6 +72,16 @@ class ShuiyuanModel:
         cls._active_instances += 1
         return instance
 
+    async def verify_identity(self, expected_username: str) -> None:
+        response = await self._rate_limited_request(
+            "get", "https://shuiyuan.sjtu.edu.cn/session/current.json"
+        )
+        if response.status != 200:
+            raise ValueError("Community session is not authenticated")
+        data = await response.json()
+        if data.get("current_user", {}).get("username") != expected_username:
+            raise ValueError("Community session username does not match configured bot")
+
     @classmethod
     def _ensure_locks(cls) -> None:
         # Initialize locks if they are not already initialized

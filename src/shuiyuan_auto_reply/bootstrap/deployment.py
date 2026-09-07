@@ -226,8 +226,7 @@ def load_deployment(
     for dotted, name in ENV.items():
         section, key = dotted.split(".")
         value = values[section][key]
-        if value != "":
-            os.environ[name] = str(value)
+        os.environ[name] = str(value)
     os.environ["MCP_SERVER_URL"] = (
         values["mcp"]["url"] if values["mcp"]["enabled"] else ""
     )

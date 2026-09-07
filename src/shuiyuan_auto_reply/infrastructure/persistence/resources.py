@@ -20,6 +20,8 @@ def normalize_image(data):
     from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
 
     config = get_deployment().section("media")
+    if len(data) > config["max_image_bytes"]:
+        raise ValueError("Image exceeds upload byte limit")
     with Image.open(io.BytesIO(data)) as image:
         if image.width * image.height > config["max_pixels"]:
             raise ValueError("Image exceeds decoded pixel limit")

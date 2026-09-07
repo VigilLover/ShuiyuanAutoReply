@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import uuid
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -46,18 +47,29 @@ async def check_vector_space(connection):
 
 async def initialize_vector_schema(connection):
     config = get_deployment()
+    if config.profile == "remote":
+        existing = await connection.execute(
+            text(
+                "SELECT to_regclass('public.deployment_vector_space'), to_regclass('public.store')"
+            )
+        )
+        registry, memory = existing.one()
+        if registry is None and memory is not None:
+            raise RuntimeError(
+                "Unversioned memory database: use a new target database and re-embed"
+            )
     dims = int(config.section("embedding")["dims"])
     await connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     await connection.execute(
         text(
-            "CREATE TABLE IF NOT EXISTS deployment_vector_space (singleton integer PRIMARY KEY CHECK(singleton=1), fingerprint text NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS deployment_vector_space (singleton integer PRIMARY KEY CHECK(singleton=1), fingerprint text NOT NULL, generation text NOT NULL)"
         )
     )
     await connection.execute(
         text(
-            "INSERT INTO deployment_vector_space VALUES (1,:fp) ON CONFLICT DO NOTHING"
+            "INSERT INTO deployment_vector_space VALUES (1,:fp,:generation) ON CONFLICT DO NOTHING"
         ),
-        {"fp": config.fingerprint},
+        {"fp": config.fingerprint, "generation": str(uuid.uuid4())},
     )
     await check_vector_space(connection)
     await connection.execute(
@@ -94,6 +106,17 @@ class PostgresStyleRetriever:
             return [StyleExample(row.text, row.score) for row in rows]
 
     async def store(self, persona_id, content):
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        async with self.engine.connect() as connection:
+            await check_vector_space(connection)
+            existing = await connection.execute(
+                text(
+                    "SELECT 1 FROM style_sentences WHERE persona_id=:persona AND text_hash=:hash"
+                ),
+                {"persona": persona_id, "hash": content_hash},
+            )
+            if existing.first() is not None:
+                return
         vector = await self.embedding.aembed_query(content)
         async with self.engine.begin() as connection:
             await check_vector_space(connection)

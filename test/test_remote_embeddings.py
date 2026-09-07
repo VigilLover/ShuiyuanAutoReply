@@ -54,3 +54,35 @@ def test_async_batches_raw_text():
     model.async_client.embeddings.create = AsyncMock(side_effect=create)
     assert len(asyncio.run(model.aembed_documents(["a", "b", "c"]))) == 3
     assert model.async_client.embeddings.create.call_count == 2
+
+
+def test_retry_after_and_authentication_failure():
+    from unittest.mock import patch
+
+    import httpx
+    from openai import APIStatusError
+
+    model = make()
+    model.settings["attempts"] = 3
+    request = httpx.Request("POST", "https://example.com/v1/embeddings")
+    limited = APIStatusError(
+        "limited",
+        response=httpx.Response(429, request=request, headers={"Retry-After": "2"}),
+        body=None,
+    )
+    ok = SimpleNamespace(data=[SimpleNamespace(index=0, embedding=[1.0, 0.0])])
+
+    async def run():
+        model.async_client.embeddings.create = AsyncMock(side_effect=[limited, ok])
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
+            assert await model.aembed_query("hello") == [1.0, 0.0]
+            sleep.assert_awaited_once_with(2)
+        denied = APIStatusError(
+            "denied", response=httpx.Response(401, request=request), body=None
+        )
+        model.async_client.embeddings.create = AsyncMock(side_effect=denied)
+        with pytest.raises(APIStatusError):
+            await model.aembed_query("hello")
+        assert model.async_client.embeddings.create.await_count == 1
+
+    asyncio.run(run())

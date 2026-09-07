@@ -74,6 +74,20 @@ def restore(source):
         raise ValueError(
             "Restore requires an empty state directory and an empty target database"
         )
+    import psycopg
+
+    connection_env = postgres_environment()
+    with psycopg.connect(
+        host=connection_env["PGHOST"],
+        port=connection_env["PGPORT"],
+        user=connection_env["PGUSER"],
+        password=connection_env["PGPASSWORD"],
+        dbname=connection_env["PGDATABASE"],
+    ) as connection:
+        if connection.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema'))"
+        ).fetchone()[0]:
+            raise ValueError("Restore requires an empty target database")
     subprocess.run(
         [
             "pg_restore",

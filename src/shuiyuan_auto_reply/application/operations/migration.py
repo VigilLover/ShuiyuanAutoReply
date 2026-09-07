@@ -1,4 +1,5 @@
 """Storage-independent migration checkpoints and source identity."""
+
 import hashlib
 import json
 from pathlib import Path
@@ -17,5 +18,3 @@ def digest(path):
         for block in iter(lambda: source.read(1024 * 1024), b""):
             result.update(block)
     return result.hexdigest()
-
-

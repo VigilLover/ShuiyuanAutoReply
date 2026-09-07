@@ -39,7 +39,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["black", "isort"]
+dev = ["black", "isort", "markdownify==1.2.0"]
 local-embedding = ["sentence-transformers"]
 neo4j = ["neomodel"]
 server = ["fastapi[all]"]
@@ -79,3 +79,9 @@ shuiyuan_auto_reply = [
 
 [tool.isort]
 profile = "black"
+
+[tool.black]
+target-version = ["py312"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]

@@ -13,6 +13,7 @@ from typing import Any
 
 import aiosqlite
 
+from shuiyuan_auto_reply.application.events import current_run_id
 from shuiyuan_auto_reply.domain import (
     AttachmentRef,
     Channel,
@@ -21,7 +22,6 @@ from shuiyuan_auto_reply.domain import (
     ReplyRequest,
     ReplyResult,
 )
-from shuiyuan_auto_reply.application.events import current_run_id
 
 
 def utc_now() -> str:
@@ -40,7 +40,14 @@ def _safe_event_value(
     list_limit: int = 50,
 ) -> Any:
     normalized = key.lower().replace("-", "_")
-    if normalized in {"authorization", "cookie", "set_cookie", "api_key", "apikey", "secret"} or normalized.endswith("_api_key"):
+    if normalized in {
+        "authorization",
+        "cookie",
+        "set_cookie",
+        "api_key",
+        "apikey",
+        "secret",
+    } or normalized.endswith("_api_key"):
         return "[REDACTED]"
     if isinstance(value, dict):
         return {
@@ -70,7 +77,11 @@ def _safe_event_value(
 
 def state_directory() -> Path:
     configured = os.getenv("SHUIYUAN_STATE_DIR")
-    root = Path(configured).expanduser() if configured else Path.home() / ".shuiyuan-auto-reply"
+    root = (
+        Path(configured).expanduser()
+        if configured
+        else Path.home() / ".shuiyuan-auto-reply"
+    )
     try:
         root.mkdir(parents=True, exist_ok=True)
         probe = root / f".write-test-{uuid.uuid4().hex}"
@@ -220,16 +231,29 @@ class SQLiteStateStore:
         await db.execute("PRAGMA busy_timeout=5000")
         return db
 
-    async def initialize(self) -> None:
+    async def initialize(self, *, migrate: bool = False) -> None:
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
+        if not migrate and not get_deployment().section("database")["auto_migrate"]:
+            db = await self._connect()
+            try:
+                await db.execute("SELECT version FROM schema_version LIMIT 1")
+            finally:
+                await db.close()
+            return
         db = await self._connect()
         try:
             await db.executescript(SCHEMA)
-            row = await (await db.execute("SELECT version FROM schema_version LIMIT 1")).fetchone()
+            row = await (
+                await db.execute("SELECT version FROM schema_version LIMIT 1")
+            ).fetchone()
             if row is None:
                 await db.execute("INSERT INTO schema_version(version) VALUES (1)")
             columns = {
                 item["name"]
-                for item in await (await db.execute("PRAGMA table_info(artifacts)")).fetchall()
+                for item in await (
+                    await db.execute("PRAGMA table_info(artifacts)")
+                ).fetchall()
             }
             migrations = {
                 "source_kind": "ALTER TABLE artifacts ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'generated'",
@@ -244,7 +268,9 @@ class SQLiteStateStore:
             await db.execute(
                 "UPDATE artifacts SET last_accessed_at=created_at WHERE last_accessed_at=''"
             )
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_sha256 ON artifacts(sha256)")
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_artifacts_sha256 ON artifacts(sha256)"
+            )
             await db.execute("UPDATE schema_version SET version=2")
             await db.commit()
         finally:
@@ -256,24 +282,39 @@ class SQLiteStateStore:
         data["title_custom"] = bool(data["title_custom"])
         return ConversationRecord(**data)
 
-    async def ensure_conversation(self, ref: ConversationRef, *, title: str | None = None) -> ConversationRecord:
+    async def ensure_conversation(
+        self, ref: ConversationRef, *, title: str | None = None
+    ) -> ConversationRecord:
         now = utc_now()
         conversation_id = str(uuid.uuid4())
         topic = ref.external_id.removeprefix("topic:")
-        default_title = title or ("新对话" if ref.channel in {Channel.WEB, Channel.API} else f"话题 {topic}")
+        default_title = title or (
+            "新对话" if ref.channel in {Channel.WEB, Channel.API} else f"话题 {topic}"
+        )
         db = await self._connect()
         try:
             await db.execute(
                 """INSERT OR IGNORE INTO conversations
                 (id, channel, external_id, bot_id, persona_id, title, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (conversation_id, ref.channel.value, ref.external_id, ref.bot_id, ref.persona_id, default_title, now, now),
+                (
+                    conversation_id,
+                    ref.channel.value,
+                    ref.external_id,
+                    ref.bot_id,
+                    ref.persona_id,
+                    default_title,
+                    now,
+                    now,
+                ),
             )
-            row = await (await db.execute(
-                """SELECT * FROM conversations WHERE channel=? AND external_id=?
+            row = await (
+                await db.execute(
+                    """SELECT * FROM conversations WHERE channel=? AND external_id=?
                 AND bot_id=? AND persona_id=?""",
-                (ref.channel.value, ref.external_id, ref.bot_id, ref.persona_id),
-            )).fetchone()
+                    (ref.channel.value, ref.external_id, ref.bot_id, ref.persona_id),
+                )
+            ).fetchone()
             await db.commit()
             if row is None:
                 raise RuntimeError("failed to create conversation")
@@ -284,12 +325,18 @@ class SQLiteStateStore:
     async def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
         db = await self._connect()
         try:
-            row = await (await db.execute("SELECT * FROM conversations WHERE id=?", (conversation_id,))).fetchone()
+            row = await (
+                await db.execute(
+                    "SELECT * FROM conversations WHERE id=?", (conversation_id,)
+                )
+            ).fetchone()
             return self._conversation(row) if row else None
         finally:
             await db.close()
 
-    async def update_title(self, conversation_id: str, title: str, *, custom: bool) -> None:
+    async def update_title(
+        self, conversation_id: str, title: str, *, custom: bool
+    ) -> None:
         db = await self._connect()
         try:
             await db.execute(
@@ -305,7 +352,14 @@ class SQLiteStateStore:
         if not record.title_custom:
             await self.update_title(record.id, title, custom=False)
 
-    async def list_conversations(self, *, channel: str | None = None, search: str | None = None, limit: int = 100, offset: int = 0) -> list[ConversationRecord]:
+    async def list_conversations(
+        self,
+        *,
+        channel: str | None = None,
+        search: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ConversationRecord]:
         clauses: list[str] = []
         params: list[Any] = []
         if channel:
@@ -318,35 +372,82 @@ class SQLiteStateStore:
         params.extend((max(1, min(limit, 200)), max(0, offset)))
         db = await self._connect()
         try:
-            rows = await (await db.execute(f"SELECT * FROM conversations{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?", params)).fetchall()
+            rows = await (
+                await db.execute(
+                    f"SELECT * FROM conversations{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                    params,
+                )
+            ).fetchall()
             return [self._conversation(row) for row in rows]
         finally:
             await db.close()
 
-    async def append_message(self, conversation_id: str, role: str, content: str, *, run_id: str | None = None, status: str = "completed", attachments: tuple[str, ...] = (), epoch: int | None = None) -> MessageRecord:
+    async def append_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        *,
+        run_id: str | None = None,
+        status: str = "completed",
+        attachments: tuple[str, ...] = (),
+        epoch: int | None = None,
+    ) -> MessageRecord:
         conversation = await self.get_conversation(conversation_id)
         if conversation is None:
             raise LookupError("conversation not found")
         current_epoch = conversation.context_epoch if epoch is None else epoch
-        record = MessageRecord(str(uuid.uuid4()), conversation_id, current_epoch, role, content, status, run_id, attachments, utc_now())
+        record = MessageRecord(
+            str(uuid.uuid4()),
+            conversation_id,
+            current_epoch,
+            role,
+            content,
+            status,
+            run_id,
+            attachments,
+            utc_now(),
+        )
         db = await self._connect()
         try:
             await db.execute(
                 """INSERT INTO messages
                 (id, conversation_id, epoch, role, content, status, run_id, attachments_json, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (record.id, conversation_id, current_epoch, role, content, status, run_id, json.dumps(attachments), record.created_at),
+                (
+                    record.id,
+                    conversation_id,
+                    current_epoch,
+                    role,
+                    content,
+                    status,
+                    run_id,
+                    json.dumps(attachments),
+                    record.created_at,
+                ),
             )
-            await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (record.created_at, conversation_id))
-            if role == "user" and not conversation.title_custom and conversation.title == "新对话":
+            await db.execute(
+                "UPDATE conversations SET updated_at=? WHERE id=?",
+                (record.created_at, conversation_id),
+            )
+            if (
+                role == "user"
+                and not conversation.title_custom
+                and conversation.title == "新对话"
+            ):
                 title = " ".join(content.strip().split())[:24] or "新对话"
-                await db.execute("UPDATE conversations SET title=? WHERE id=?", (title, conversation_id))
+                await db.execute(
+                    "UPDATE conversations SET title=? WHERE id=?",
+                    (title, conversation_id),
+                )
             await db.commit()
             return record
         finally:
             await db.close()
 
-    async def list_messages(self, conversation_id: str, *, current_epoch_only: bool = False) -> list[MessageRecord]:
+    async def list_messages(
+        self, conversation_id: str, *, current_epoch_only: bool = False
+    ) -> list[MessageRecord]:
         conversation = await self.get_conversation(conversation_id)
         if conversation is None:
             return []
@@ -359,18 +460,30 @@ class SQLiteStateStore:
         db = await self._connect()
         try:
             rows = await (await db.execute(sql, params)).fetchall()
-            return [MessageRecord(
-                id=row["id"], conversation_id=row["conversation_id"], epoch=row["epoch"], role=row["role"],
-                content=row["content"], status=row["status"], run_id=row["run_id"],
-                attachments=tuple(json.loads(row["attachments_json"])), created_at=row["created_at"],
-            ) for row in rows]
+            return [
+                MessageRecord(
+                    id=row["id"],
+                    conversation_id=row["conversation_id"],
+                    epoch=row["epoch"],
+                    role=row["role"],
+                    content=row["content"],
+                    status=row["status"],
+                    run_id=row["run_id"],
+                    attachments=tuple(json.loads(row["attachments_json"])),
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            ]
         finally:
             await db.close()
 
     async def clear_context(self, conversation_id: str) -> None:
         db = await self._connect()
         try:
-            await db.execute("UPDATE conversations SET context_epoch=context_epoch+1, updated_at=? WHERE id=?", (utc_now(), conversation_id))
+            await db.execute(
+                "UPDATE conversations SET context_epoch=context_epoch+1, updated_at=? WHERE id=?",
+                (utc_now(), conversation_id),
+            )
             await db.commit()
         finally:
             await db.close()
@@ -379,14 +492,26 @@ class SQLiteStateStore:
     async def delete_conversation(self, conversation_id: str) -> list[str]:
         db = await self._connect()
         try:
-            rows = await (await db.execute("SELECT local_path FROM artifacts WHERE conversation_id=?", (conversation_id,))).fetchall()
+            rows = await (
+                await db.execute(
+                    "SELECT local_path FROM artifacts WHERE conversation_id=?",
+                    (conversation_id,),
+                )
+            ).fetchall()
             await db.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
             await db.commit()
             return [row["local_path"] for row in rows]
         finally:
             await db.close()
 
-    async def create_run(self, request_id: str, conversation_id: str, *, provider: str | None = None, model: str | None = None) -> str:
+    async def create_run(
+        self,
+        request_id: str,
+        conversation_id: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> str:
         run_id = str(uuid.uuid4())
         db = await self._connect()
         try:
@@ -399,7 +524,9 @@ class SQLiteStateStore:
         finally:
             await db.close()
 
-    async def append_event(self, run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> None:
+    async def append_event(
+        self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
+    ) -> None:
         is_model_prompt = event_type == "model.prompt_prepared"
         is_tool_instruction = event_type == "tool.started"
         encoded = json.dumps(
@@ -423,46 +550,83 @@ class SQLiteStateStore:
             )
         db = await self._connect()
         try:
-            await db.execute("INSERT INTO run_events(run_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)", (run_id, event_type, encoded, utc_now()))
-            await db.commit()
-        finally:
-            await db.close()
-
-    async def finish_run(self, run_id: str, *, status: str, error: str | None = None, usage: dict[str, int] | None = None) -> None:
-        usage = usage or {}
-        db = await self._connect()
-        try:
             await db.execute(
-                "UPDATE runs SET status=?, error=?, input_tokens=?, output_tokens=?, total_tokens=?, finished_at=? WHERE id=?",
-                (status, error, usage.get("input_tokens"), usage.get("output_tokens"), usage.get("total_tokens"), utc_now(), run_id),
+                "INSERT INTO run_events(run_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)",
+                (run_id, event_type, encoded, utc_now()),
             )
             await db.commit()
         finally:
             await db.close()
 
-    async def list_events_for_conversation(self, conversation_id: str) -> list[RunEventRecord]:
+    async def finish_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        error: str | None = None,
+        usage: dict[str, int] | None = None,
+    ) -> None:
+        usage = usage or {}
         db = await self._connect()
         try:
-            rows = await (await db.execute(
-                """SELECT e.* FROM run_events e JOIN runs r ON r.id=e.run_id
-                WHERE r.conversation_id=? ORDER BY e.id""", (conversation_id,)
-            )).fetchall()
-            return [RunEventRecord(row["id"], row["run_id"], row["event_type"], json.loads(row["payload_json"]), row["created_at"]) for row in rows]
+            await db.execute(
+                "UPDATE runs SET status=?, error=?, input_tokens=?, output_tokens=?, total_tokens=?, finished_at=? WHERE id=?",
+                (
+                    status,
+                    error,
+                    usage.get("input_tokens"),
+                    usage.get("output_tokens"),
+                    usage.get("total_tokens"),
+                    utc_now(),
+                    run_id,
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    async def list_events_for_conversation(
+        self, conversation_id: str
+    ) -> list[RunEventRecord]:
+        db = await self._connect()
+        try:
+            rows = await (
+                await db.execute(
+                    """SELECT e.* FROM run_events e JOIN runs r ON r.id=e.run_id
+                WHERE r.conversation_id=? ORDER BY e.id""",
+                    (conversation_id,),
+                )
+            ).fetchall()
+            return [
+                RunEventRecord(
+                    row["id"],
+                    row["run_id"],
+                    row["event_type"],
+                    json.loads(row["payload_json"]),
+                    row["created_at"],
+                )
+                for row in rows
+            ]
         finally:
             await db.close()
 
     async def list_events_for_request(self, request_id: str) -> list[RunEventRecord]:
         db = await self._connect()
         try:
-            rows = await (await db.execute(
-                """SELECT e.* FROM run_events e JOIN runs r ON r.id=e.run_id
+            rows = await (
+                await db.execute(
+                    """SELECT e.* FROM run_events e JOIN runs r ON r.id=e.run_id
                 WHERE r.request_id=? ORDER BY e.id""",
-                (request_id,),
-            )).fetchall()
+                    (request_id,),
+                )
+            ).fetchall()
             return [
                 RunEventRecord(
-                    row["id"], row["run_id"], row["event_type"],
-                    json.loads(row["payload_json"]), row["created_at"]
+                    row["id"],
+                    row["run_id"],
+                    row["event_type"],
+                    json.loads(row["payload_json"]),
+                    row["created_at"],
                 )
                 for row in rows
             ]
@@ -474,10 +638,12 @@ class SQLiteStateStore:
     ) -> None:
         db = await self._connect()
         try:
-            row = await (await db.execute(
-                "SELECT id FROM runs WHERE request_id=? ORDER BY started_at DESC LIMIT 1",
-                (request_id,),
-            )).fetchone()
+            row = await (
+                await db.execute(
+                    "SELECT id FROM runs WHERE request_id=? ORDER BY started_at DESC LIMIT 1",
+                    (request_id,),
+                )
+            ).fetchone()
         finally:
             await db.close()
         if row is not None:
@@ -508,19 +674,35 @@ class SQLiteStateStore:
                  source_kind, source_url, filename, sha256, last_accessed_at, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    artifact_id, conversation_id, run_id, local_path, mime_type,
-                    byte_count, width, height, source_kind, source_url, filename,
-                    sha256, now, now,
+                    artifact_id,
+                    conversation_id,
+                    run_id,
+                    local_path,
+                    mime_type,
+                    byte_count,
+                    width,
+                    height,
+                    source_kind,
+                    source_url,
+                    filename,
+                    sha256,
+                    now,
+                    now,
                 ),
             )
             await db.commit()
         finally:
             await db.close()
 
-    async def attach_artifact(self, artifact_id: str, *, conversation_id: str, run_id: str | None = None) -> None:
+    async def attach_artifact(
+        self, artifact_id: str, *, conversation_id: str, run_id: str | None = None
+    ) -> None:
         db = await self._connect()
         try:
-            await db.execute("UPDATE artifacts SET conversation_id=?, run_id=COALESCE(?, run_id) WHERE id=?", (conversation_id, run_id, artifact_id))
+            await db.execute(
+                "UPDATE artifacts SET conversation_id=?, run_id=COALESCE(?, run_id) WHERE id=?",
+                (conversation_id, run_id, artifact_id),
+            )
             await db.commit()
         finally:
             await db.close()
@@ -528,7 +710,10 @@ class SQLiteStateStore:
     async def set_forum_short_path(self, artifact_id: str, short_path: str) -> None:
         db = await self._connect()
         try:
-            await db.execute("UPDATE artifacts SET forum_short_path=? WHERE id=?", (short_path, artifact_id))
+            await db.execute(
+                "UPDATE artifacts SET forum_short_path=? WHERE id=?",
+                (short_path, artifact_id),
+            )
             await db.commit()
         finally:
             await db.close()
@@ -536,7 +721,9 @@ class SQLiteStateStore:
     async def get_artifact(self, artifact_id: str) -> ArtifactRecord | None:
         db = await self._connect()
         try:
-            row = await (await db.execute("SELECT * FROM artifacts WHERE id=?", (artifact_id,))).fetchone()
+            row = await (
+                await db.execute("SELECT * FROM artifacts WHERE id=?", (artifact_id,))
+            ).fetchone()
             if row:
                 await db.execute(
                     "UPDATE artifacts SET last_accessed_at=? WHERE id=?",
@@ -554,12 +741,14 @@ class SQLiteStateStore:
             return None
         db = await self._connect()
         try:
-            row = await (await db.execute(
-                """SELECT * FROM artifacts
+            row = await (
+                await db.execute(
+                    """SELECT * FROM artifacts
                 WHERE conversation_id=? AND sha256=? AND source_kind=?
                 ORDER BY created_at DESC LIMIT 1""",
-                (conversation_id, sha256, source_kind),
-            )).fetchone()
+                    (conversation_id, sha256, source_kind),
+                )
+            ).fetchone()
             record = ArtifactRecord(**dict(row)) if row else None
             return record if record and record.available else None
         finally:
@@ -570,11 +759,13 @@ class SQLiteStateStore:
     ) -> dict[str, str] | None:
         db = await self._connect()
         try:
-            row = await (await db.execute(
-                """SELECT file_id, expires_at FROM provider_files
+            row = await (
+                await db.execute(
+                    """SELECT file_id, expires_at FROM provider_files
                 WHERE artifact_id=? AND provider=? AND credential_fingerprint=?""",
-                (artifact_id, provider, credential_fingerprint),
-            )).fetchone()
+                    (artifact_id, provider, credential_fingerprint),
+                )
+            ).fetchone()
             return dict(row) if row else None
         finally:
             await db.close()
@@ -598,8 +789,12 @@ class SQLiteStateStore:
                   file_id=excluded.file_id, expires_at=excluded.expires_at,
                   created_at=excluded.created_at""",
                 (
-                    artifact_id, provider, credential_fingerprint, file_id,
-                    expires_at, utc_now(),
+                    artifact_id,
+                    provider,
+                    credential_fingerprint,
+                    file_id,
+                    expires_at,
+                    utc_now(),
                 ),
             )
             await db.commit()
@@ -611,12 +806,14 @@ class SQLiteStateStore:
     ) -> list[dict[str, str]]:
         db = await self._connect()
         try:
-            rows = await (await db.execute(
-                """SELECT p.provider, p.file_id, p.expires_at
+            rows = await (
+                await db.execute(
+                    """SELECT p.provider, p.file_id, p.expires_at
                 FROM provider_files p JOIN artifacts a ON a.id=p.artifact_id
                 WHERE a.conversation_id=?""",
-                (conversation_id,),
-            )).fetchall()
+                    (conversation_id,),
+                )
+            ).fetchall()
             return [dict(row) for row in rows]
         finally:
             await db.close()
@@ -626,8 +823,15 @@ class SQLiteStateStore:
         encoded = json.dumps(defaults, ensure_ascii=False)
         db = await self._connect()
         try:
-            await db.execute("INSERT OR IGNORE INTO runtime_profiles(scope, draft_json, active_json, updated_at) VALUES (?, ?, ?, ?)", (scope, encoded, encoded, now))
-            row = await (await db.execute("SELECT * FROM runtime_profiles WHERE scope=?", (scope,))).fetchone()
+            await db.execute(
+                "INSERT OR IGNORE INTO runtime_profiles(scope, draft_json, active_json, updated_at) VALUES (?, ?, ?, ?)",
+                (scope, encoded, encoded, now),
+            )
+            row = await (
+                await db.execute(
+                    "SELECT * FROM runtime_profiles WHERE scope=?", (scope,)
+                )
+            ).fetchone()
             await db.commit()
             if row is None:
                 raise RuntimeError("failed to initialize runtime profile")
@@ -636,14 +840,23 @@ class SQLiteStateStore:
             # migration; the merged shape is persisted on the next normal save.
             draft = {**defaults, **json.loads(row["draft_json"])}
             active = {**defaults, **json.loads(row["active_json"])}
-            return {"scope": scope, "draft": draft, "active": active, "active_revision": row["active_revision"], "updated_at": row["updated_at"]}
+            return {
+                "scope": scope,
+                "draft": draft,
+                "active": active,
+                "active_revision": row["active_revision"],
+                "updated_at": row["updated_at"],
+            }
         finally:
             await db.close()
 
     async def save_profile_draft(self, scope: str, value: dict[str, Any]) -> None:
         db = await self._connect()
         try:
-            await db.execute("UPDATE runtime_profiles SET draft_json=?, updated_at=? WHERE scope=?", (json.dumps(value, ensure_ascii=False), utc_now(), scope))
+            await db.execute(
+                "UPDATE runtime_profiles SET draft_json=?, updated_at=? WHERE scope=?",
+                (json.dumps(value, ensure_ascii=False), utc_now(), scope),
+            )
             await db.commit()
         finally:
             await db.close()
@@ -651,16 +864,20 @@ class SQLiteStateStore:
     async def apply_profile(self, scope: str, persona_id: str = "wolf_lumine") -> int:
         db = await self._connect()
         try:
-            profile = await (await db.execute(
-                "SELECT draft_json FROM runtime_profiles WHERE scope=?", (scope,)
-            )).fetchone()
+            profile = await (
+                await db.execute(
+                    "SELECT draft_json FROM runtime_profiles WHERE scope=?", (scope,)
+                )
+            ).fetchone()
             if profile is None:
                 raise LookupError("profile not found")
             prompt = json.loads(profile["draft_json"]).get("system_prompt", "")
-            version_row = await (await db.execute(
-                "SELECT COALESCE(MAX(version), 0) AS version FROM prompt_versions WHERE scope=? AND persona_id=?",
-                (scope, persona_id),
-            )).fetchone()
+            version_row = await (
+                await db.execute(
+                    "SELECT COALESCE(MAX(version), 0) AS version FROM prompt_versions WHERE scope=? AND persona_id=?",
+                    (scope, persona_id),
+                )
+            ).fetchone()
             version = int(version_row["version"]) + 1
             now = utc_now()
             await db.execute(
@@ -672,8 +889,16 @@ class SQLiteStateStore:
                 VALUES (?, ?, ?, ?, 1, ?)""",
                 (scope, persona_id, version, prompt, now),
             )
-            await db.execute("UPDATE runtime_profiles SET active_json=draft_json, active_revision=active_revision+1, updated_at=? WHERE scope=?", (now, scope))
-            row = await (await db.execute("SELECT active_revision FROM runtime_profiles WHERE scope=?", (scope,))).fetchone()
+            await db.execute(
+                "UPDATE runtime_profiles SET active_json=draft_json, active_revision=active_revision+1, updated_at=? WHERE scope=?",
+                (now, scope),
+            )
+            row = await (
+                await db.execute(
+                    "SELECT active_revision FROM runtime_profiles WHERE scope=?",
+                    (scope,),
+                )
+            ).fetchone()
             await db.commit()
             return int(row["active_revision"])
         finally:
@@ -684,10 +909,12 @@ class SQLiteStateStore:
     ) -> int:
         db = await self._connect()
         try:
-            row = await (await db.execute(
-                "SELECT COALESCE(MAX(version), 0) AS version FROM prompt_versions WHERE scope=? AND persona_id=?",
-                (scope, persona_id),
-            )).fetchone()
+            row = await (
+                await db.execute(
+                    "SELECT COALESCE(MAX(version), 0) AS version FROM prompt_versions WHERE scope=? AND persona_id=?",
+                    (scope, persona_id),
+                )
+            ).fetchone()
             version = int(row["version"]) + 1
             if active:
                 await db.execute(
@@ -734,10 +961,12 @@ class SQLiteStateStore:
     async def list_tool_catalog(self, scope: str) -> list[dict[str, Any]]:
         db = await self._connect()
         try:
-            rows = await (await db.execute(
-                "SELECT name, source, enabled, loaded, error FROM runtime_tools WHERE scope=? ORDER BY rowid",
-                (scope,),
-            )).fetchall()
+            rows = await (
+                await db.execute(
+                    "SELECT name, source, enabled, loaded, error FROM runtime_tools WHERE scope=? ORDER BY rowid",
+                    (scope,),
+                )
+            ).fetchall()
             return [
                 {
                     "name": row["name"],
@@ -758,7 +987,9 @@ class SQLiteSessionRepository:
 
     async def load(self, key: ConversationRef) -> list[ChatMessage]:
         conversation = await self.store.ensure_conversation(key)
-        records = await self.store.list_messages(conversation.id, current_epoch_only=True)
+        records = await self.store.list_messages(
+            conversation.id, current_epoch_only=True
+        )
         history = []
         for record in records:
             if record.role not in {"user", "assistant"}:
@@ -783,7 +1014,9 @@ class SQLiteSessionRepository:
             history.append(ChatMessage(record.role, record.content, tuple(attachments)))
         return history[-16:]
 
-    async def append(self, key: ConversationRef, request: ReplyRequest, result: ReplyResult) -> None:
+    async def append(
+        self, key: ConversationRef, request: ReplyRequest, result: ReplyResult
+    ) -> None:
         conversation = await self.store.ensure_conversation(key)
         run_id = current_run_id()
         input_artifact_ids = tuple(
@@ -798,7 +1031,11 @@ class SQLiteSessionRepository:
             run_id=run_id,
             attachments=tuple(dict.fromkeys(input_artifact_ids)),
         )
-        artifact_ids = tuple(a.url.removeprefix("artifact://") for a in result.attachments if a.url.startswith("artifact://"))
+        artifact_ids = tuple(
+            a.url.removeprefix("artifact://")
+            for a in result.attachments
+            if a.url.startswith("artifact://")
+        )
         await self.store.append_message(
             conversation.id,
             "assistant",
@@ -816,4 +1053,12 @@ class SQLiteSessionRepository:
         await self.store.clear_context(conversation.id)
 
 
-__all__ = ["ArtifactRecord", "ConversationRecord", "MessageRecord", "RunEventRecord", "SQLiteSessionRepository", "SQLiteStateStore", "state_directory"]
+__all__ = [
+    "ArtifactRecord",
+    "ConversationRecord",
+    "MessageRecord",
+    "RunEventRecord",
+    "SQLiteSessionRepository",
+    "SQLiteStateStore",
+    "state_directory",
+]

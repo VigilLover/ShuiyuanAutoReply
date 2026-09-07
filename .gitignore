@@ -251,3 +251,13 @@ design-qa.md
 
 .codex/
 .claude/
+
+# Deployment inputs and fetched pinned build contexts
+config/deployment.toml
+secrets/
+backups/
+deploy/vendor/
+deploy/runtime.env
+*.checkpoint.json
+*.failures.json
+!docs/deployment.md

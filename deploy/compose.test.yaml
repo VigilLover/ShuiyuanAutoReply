@@ -1,0 +1,41 @@
+# Separate, disposable stack. Contains no production keys or forum credentials.
+name: shuiyuan-validation
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-shuiyuan-postgres:17.6-vector0.8.2}
+    environment:
+      POSTGRES_PASSWORD: synthetic-only
+      POSTGRES_DB: shuiyuan
+    # Bypass production role provisioning; this isolated database only uses synthetic data.
+    volumes:
+      - ./test-empty-init:/docker-entrypoint-initdb.d:ro
+    mem_limit: 384m
+    command: [postgres, -c, shared_buffers=96MB, -c, work_mem=2MB, -c, maintenance_work_mem=32MB, -c, max_connections=15]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres -d shuiyuan']
+      interval: 5s
+      retries: 15
+    networks: [validation]
+  mcp:
+    image: ${MCP_IMAGE:-shuiyuan-mcp:de42d48}
+    mem_limit: 256m
+    networks: [validation]
+    healthcheck:
+      test: [CMD, python, -c, "import socket; s=socket.create_connection(('127.0.0.1',58000),3); s.close()"]
+      interval: 5s
+      retries: 15
+  checks:
+    image: ${BOT_IMAGE:-shuiyuan-bot:remote-v1}
+    mem_limit: 800m
+    environment:
+      VALIDATION_DB_URL: postgresql://postgres:synthetic-only@postgres:5432/shuiyuan
+      VALIDATION_SECONDS: ${VALIDATION_SECONDS:-60}
+    volumes:
+      - ../scripts/deploy/check_stack.py:/checks/check_stack.py:ro
+    command: [python, /checks/check_stack.py]
+    depends_on:
+      postgres: {condition: service_healthy}
+      mcp: {condition: service_healthy}
+    networks: [validation]
+networks:
+  validation: {internal: true}

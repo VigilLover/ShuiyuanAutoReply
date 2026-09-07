@@ -42,6 +42,39 @@ def test_timeout_releases_capacity():
     asyncio.run(run())
 
 
+def test_backpressure_and_cancelled_waiter():
+    async def run():
+        scheduler = ReplyScheduler(1, 1, 2)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def first():
+            async with scheduler.admission("a"):
+                entered.set()
+                await release.wait()
+
+        async def waiting():
+            async with scheduler.admission("a"):
+                pass
+
+        active = asyncio.create_task(first())
+        await entered.wait()
+        queued = asyncio.create_task(waiting())
+        await asyncio.sleep(0)
+        with pytest.raises(BusyError):
+            async with scheduler.admission("b"):
+                pass
+        queued.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await queued
+        release.set()
+        await active
+        assert scheduler.waiting == scheduler.active == 0
+        assert not scheduler.locks
+
+    asyncio.run(run())
+
+
 def test_queue_recovers_uncertain_publication(tmp_path):
     async def run():
         import aiosqlite

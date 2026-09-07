@@ -26,16 +26,19 @@ class ForumQueue:
         await db.execute("PRAGMA busy_timeout=5000")
         return db
 
-    async def initialize(self):
+    async def initialize(self, *, migrate=False):
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
         db = await self.connect()
         try:
-            await db.executescript(
-                """CREATE TABLE IF NOT EXISTS forum_jobs (
+            if migrate or get_deployment().section("database")["auto_migrate"]:
+                await db.executescript(
+                    """CREATE TABLE IF NOT EXISTS forum_jobs (
                 username TEXT NOT NULL, post_id INTEGER NOT NULL, payload TEXT NOT NULL,
                 status TEXT NOT NULL, reply_id INTEGER, updated REAL NOT NULL,
                 PRIMARY KEY(username,post_id));
                 CREATE TABLE IF NOT EXISTS forum_cursor (username TEXT PRIMARY KEY, post_id INTEGER, last_poll REAL);"""
-            )
+                )
             await db.execute(
                 "UPDATE forum_jobs SET status=CASE WHEN status='sending' THEN 'needs_review' ELSE 'pending' END WHERE username=? AND status IN ('running','sending')",
                 (self.username,),
