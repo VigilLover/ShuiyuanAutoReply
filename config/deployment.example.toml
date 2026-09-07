@@ -54,7 +54,7 @@ strict = true
 state_dir = "/var/lib/shuiyuan"
 [profiles.remote.providers]
 DEEPSEEK_API_KEY = {file = "/run/secrets/deepseek_key"}
-# Add only the providers your tools need, e.g. IMAGE_GEN_API_KEY={file="/run/secrets/image_key"}.
+IMAGE_GEN_API_KEY = {file = "/run/secrets/image_key"}
 [profiles.remote.mcp]
 enabled = true
 url = "http://mcp:58000/sse"

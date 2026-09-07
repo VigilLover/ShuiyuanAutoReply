@@ -52,6 +52,7 @@ services:
         target: database_url
       - embedding_key
       - deepseek_key
+      - image_key
       - forum_cookie
     depends_on:
       postgres: {condition: service_healthy}
@@ -59,7 +60,7 @@ services:
     restart: 'no'
   bot:
     <<: *application
-    secrets: [database_url, embedding_key, deepseek_key, forum_cookie]
+    secrets: [database_url, embedding_key, deepseek_key, image_key, forum_cookie]
     depends_on:
       postgres: {condition: service_healthy}
     mem_limit: 800m
@@ -112,3 +113,4 @@ secrets:
   embedding_key: {file: ../secrets/embedding_key}
   deepseek_key: {file: ../secrets/deepseek_key}
   forum_cookie: {file: ../secrets/forum_cookie.json}
+  image_key: {file: ../secrets/image_key}

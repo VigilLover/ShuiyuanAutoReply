@@ -29,9 +29,9 @@ cp config/deployment.example.toml config/deployment.toml
 
 `providers` 中的键是现有 Provider 环境变量名，例如 `DEEPSEEK_API_KEY`、
 `IMAGE_GEN_API_KEY`、`IMAGE_GEN_API_URL`、`OPENROUTER_API_KEY`。
-额外模型功能需要对应 Key；部署脚本默认只初始化 DeepSeek 与 Embedding Key。
-如使用图片生成，添加对应 secret 文件、Compose secret 声明和 Bot/migrate 的挂载，再在
-`[profiles.remote.providers]` 中添加 `IMAGE_GEN_API_KEY={file="/run/secrets/image_key"}`。
+部署脚本初始化 DeepSeek、Embedding 和图片生成 Key；Compose 已为 Bot/migrate 挂载 `image_key`，
+配置示例使用 `IMAGE_GEN_API_KEY={file="/run/secrets/image_key"}`。
+不使用生图时可留空，脚本仍创建空 secret 文件以满足 Compose 挂载；生图功能需有效 Key 才能调用。
 不要在构建参数、Dockerfile 或 Git 中放入真实 Key。
 
 基础设施配置在重启后生效。Web 中的 Prompt、聊天 Key 和工具配置继续支持热切换，
@@ -114,8 +114,13 @@ uv run --no-sync shuiyuan-ops cookie convert cookies /tmp/forum-cookie.json --tr
 python3 scripts/deploy/init_secrets.py --cookie /tmp/forum-cookie.json
 ```
 
-脚本隐藏输入 Embedding 和 DeepSeek Key，自动生成不同的 PostgreSQL 管理员及运行账号密码；
+脚本隐藏输入 Embedding、DeepSeek 和图片生成 Key，自动生成不同的 PostgreSQL 管理员及运行账号密码；
 不会打印真实凭据，也不会覆盖已有文件。
+
+已有部署仅补充缺失的生图 Key 时执行 `python3 scripts/deploy/init_secrets.py --image-key-only`，
+不会改动已有数据库密码或其他 Key。如果 `secrets/image_key` 已存在则拒绝覆盖。
+更新 Compose/config 后执行 `docker compose -f deploy/compose.yaml up -d --force-recreate bot`，
+无需重新构建镜像。
 
 `secrets/` 是 0700 私有目录；里面的文件为 0444，以便 Docker 将单个 secret 挂载给不同容器 UID。
 不要将该目录本身改成公开可读。普通 Compose 文件型 secret 不代表宿主机加密存储；
