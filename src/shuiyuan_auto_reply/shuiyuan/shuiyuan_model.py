@@ -9,6 +9,7 @@ import pickle
 import re
 import time
 import traceback
+from html.parser import HTMLParser
 from typing import ClassVar, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
@@ -21,6 +22,17 @@ from shuiyuan_auto_reply.retry import async_retry
 
 from .constants import *
 from .objects import *
+
+
+class _CSRFParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.token = None
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == "meta" and attributes.get("name") == "csrf-token":
+            self.token = attributes.get("content")
 
 
 class CookiesFileNotFoundError(Exception):
@@ -164,19 +176,31 @@ class ShuiyuanModel:
         cls._shared_session.headers.update({"User-Agent": default_user_agent})
         response = await cls._rate_limited_request("get", get_cookies_url)
 
-        # now let's try to get CSRF Token from response
-        format = r'<meta name="csrf-token" content="([^"]+)"[^>]*>'
-        match = re.search(format, await response.text())
-        if not match:
-            raise CSRFTokenNotFoundError(
-                "[INITIALIZATION] "
-                "Failed to find CSRF token in the response, "
-                "please check the cookies file or the website structure"
-            )
-
-        # OK, let's update the CSRF token in the session headers
-        csrf_token = match.group(1)
-        cls._shared_session.headers.update({"X-CSRF-Token": csrf_token})
+        try:
+            # Never include redirect paths, query strings, cookies or HTML in errors.
+            host = response.url.host
+            if host != "shuiyuan.sjtu.edu.cn":
+                raise CSRFTokenNotFoundError(
+                    "[INITIALIZATION] Forum authentication redirected outside the "
+                    "forum. Renew the login cookies using get_cookies.ipynb and "
+                    "check the configured cookie file."
+                )
+            if response.status != 200:
+                raise CSRFTokenNotFoundError(
+                    f"[INITIALIZATION] Forum authentication returned HTTP {response.status}. "
+                    "Check login cookies and network access."
+                )
+            parser = _CSRFParser()
+            parser.feed(await response.text())
+            if not parser.token:
+                raise CSRFTokenNotFoundError(
+                    "[INITIALIZATION] Forum page contains no CSRF token. Check the "
+                    "configured cookie file, renew the login cookies, and verify "
+                    "that the forum page is accessible (its structure may have changed)."
+                )
+            cls._shared_session.headers.update({"X-CSRF-Token": parser.token})
+        finally:
+            response.release()
 
     async def _load_persistence_cookie(self, file_path: str) -> None:
         # load the shared session once and reuse it across instances

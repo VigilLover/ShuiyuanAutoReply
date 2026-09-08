@@ -90,6 +90,16 @@ Docker 发布端口可能绕过 UFW 的预期过滤，因此不要把端口映�
 
 ## 4. Cookie、模型 Key 和数据库密码
 
+### 本地启动提示缺少 CSRF Token
+
+如果 `uv run --no-sync shuiyuan-bot --web` 提示 `CSRFTokenNotFoundError`，说明论坛认证响应没有可用的 CSRF Token，不能仅据此认定 Cookie 过期。认证跳转至论坛之外、HTTP 错误和页面结构变化会分别给出诊断；日志不会输出 Cookie、响应正文或登录跳转参数。
+
+1. 用 `uv run --no-sync shuiyuan-ops config check` 核对实际 `forum.cookie_file` 路径；使用 TOML 时带上启动时相同的 `--config`、`--profile`。无配置文件时可用 `SHUIYUAN_COOKIE_FILE` 指定文件。
+2. 在浏览器确认该账号能正常访问水源，再在可信本机运行 `get_cookies.ipynb` 重新登录，保存到实际配置的 Cookie 文件。不要提交 Cookie 或 Notebook 的敏感输出。
+3. 停止旧进程，再运行原启动命令；论坛工作线程会在认证成功后继续启动。若仍失败，根据 HTTP 状态、登录跳转提示检查网络或论坛页面变化。
+
+本地和远程的管理 Web 均延迟初始化聊天与论坛客户端；Cookie 失效或缺失不会阻止管理页面启动，论坛工作线程仍每 30 秒重试。管理页面可访问并不代表 Bot 已成功登录或可以回复。Web 中需要论坛访问的工具仍要求有效 Cookie。
+
 ### 4.1 获取并转换 Cookie
 
 在可信本机使用仓库已有 `get_cookies.ipynb` 完成正常 jAccount 登录。不得把交互登录、账号密码

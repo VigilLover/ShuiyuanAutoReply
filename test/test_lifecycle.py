@@ -38,24 +38,63 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(finished.is_set())
         self.assertEqual(watcher._bg_tasks, set())
 
-    async def test_failed_api_startup_closes_forum_session(self):
+    async def test_api_startup_defers_forum_and_chat_in_local_and_remote(self):
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+        from shuiyuan_auto_reply.infrastructure.forum.lazy import LazyChat, LazyForum
+
+        config = get_deployment()
+        for profile in ("local", "remote"):
+            with (
+                self.subTest(profile=profile),
+                tempfile.TemporaryDirectory() as temp,
+                patch.dict(
+                    os.environ,
+                    {
+                        "SHUIYUAN_STATE_DIR": temp,
+                        "MENTION_CHAT_PROVIDER": "deepseek",
+                        "DEEPSEEK_API_KEY": "test-key",
+                    },
+                ),
+                patch(
+                    "shuiyuan_auto_reply.bootstrap.deployment.get_deployment",
+                    return_value=SimpleNamespace(
+                        profile=profile, section=config.section
+                    ),
+                ),
+                patch(
+                    "shuiyuan_auto_reply.bootstrap.container.ShuiyuanModel.create",
+                    new=AsyncMock(side_effect=RuntimeError("login failed")),
+                ) as login,
+                patch(
+                    "shuiyuan_auto_reply.bootstrap.container.MentionProviderFactory.create",
+                    side_effect=RuntimeError("model unavailable"),
+                ) as build,
+            ):
+                container = await ApplicationContainer.for_api()
+                try:
+                    self.assertIsInstance(container.forum_model, LazyForum)
+                    self.assertIsInstance(
+                        container.chat_handler._backend.model, LazyChat
+                    )
+                    login.assert_not_awaited()
+                    build.assert_not_called()
+                finally:
+                    await container.aclose()
+                login.assert_not_awaited()
+                build.assert_not_called()
+
+    async def test_failed_api_startup_closes_lazy_forum(self):
         forum = SimpleNamespace(close=AsyncMock())
         with (
             tempfile.TemporaryDirectory() as temp,
-            patch.dict(
-                os.environ,
-                {
-                    "SHUIYUAN_STATE_DIR": temp,
-                    "MENTION_CHAT_PROVIDER": "deepseek",
-                    "DEEPSEEK_API_KEY": "test-key",
-                },
-            ),
+            patch.dict(os.environ, {"SHUIYUAN_STATE_DIR": temp}),
             patch(
-                "shuiyuan_auto_reply.bootstrap.container.ShuiyuanModel.create",
-                new=AsyncMock(return_value=forum),
+                "shuiyuan_auto_reply.infrastructure.forum.lazy.LazyForum",
+                return_value=forum,
             ),
-            patch(
-                "shuiyuan_auto_reply.bootstrap.container.MentionProviderFactory.create",
+            patch.object(
+                ApplicationContainer,
+                "_settings_for_profile",
                 side_effect=RuntimeError("startup failed"),
             ),
         ):

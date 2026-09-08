@@ -255,15 +255,9 @@ class ApplicationContainer:
         state_store = SQLiteStateStore()
         await state_store.initialize()
         secret_vault = LocalSecretVault(state_store)
-        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
         from shuiyuan_auto_reply.infrastructure.forum.lazy import LazyChat, LazyForum
 
-        remote = get_deployment().profile == "remote"
-        forum_model = (
-            LazyForum(current.forum.cookie_file)
-            if remote
-            else await ShuiyuanModel.create(current.forum.cookie_file)
-        )
+        forum_model = LazyForum(current.forum.cookie_file)
         try:
             container = cls(
                 current,
@@ -314,7 +308,7 @@ class ApplicationContainer:
                         system_prompt_override=profile["active"].get("system_prompt"),
                     )
 
-                chat_model = LazyChat(build_chat) if remote else build_chat()
+                chat_model = LazyChat(build_chat)
             chat_handler, service = cls._build_web_service(
                 chat_model, effective, state_store
             )
