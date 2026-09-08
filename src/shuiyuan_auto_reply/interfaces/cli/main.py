@@ -3,7 +3,36 @@ import asyncio
 import logging
 import sys
 
-from shuiyuan_auto_reply.interfaces.worker.main import configure_logging, run_worker
+from shuiyuan_auto_reply.bootstrap.deployment import (
+    add_config_arguments,
+    load_deployment,
+)
+
+
+def configure_logging():
+    from shuiyuan_auto_reply.interfaces.worker.main import (
+        configure_logging as configure,
+    )
+
+    configure()
+
+
+async def run_worker(persona):
+    import signal
+
+    from shuiyuan_auto_reply.interfaces.worker.main import run_worker as run
+
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    installed = False
+    if sys.platform != "win32":
+        loop.add_signal_handler(signal.SIGTERM, task.cancel)
+        installed = True
+    try:
+        await run(persona)
+    finally:
+        if installed:
+            loop.remove_signal_handler(signal.SIGTERM)
 
 
 async def _run_worker_with_web(persona: str, host: str, port: int) -> None:
@@ -23,7 +52,19 @@ async def _run_worker_with_web(persona: str, host: str, port: int) -> None:
             reload=False,
         )
     )
-    worker_task = asyncio.create_task(run_worker(persona), name="forum-worker")
+
+    async def supervise_worker():
+        while True:
+            try:
+                await run_worker(persona)
+                return
+            except Exception:
+                logging.exception(
+                    "Forum worker unavailable; management stays online, retrying in 30s"
+                )
+                await asyncio.sleep(30)
+
+    worker_task = asyncio.create_task(supervise_worker(), name="forum-worker")
     web_task = asyncio.create_task(server.serve(), name="management-web")
     try:
         done, _ = await asyncio.wait(
@@ -58,6 +99,7 @@ async def _run_worker_with_web(persona: str, host: str, port: int) -> None:
 
 def bot_main() -> None:
     parser = argparse.ArgumentParser(description="Run the Shuiyuan auto-reply bot.")
+    add_config_arguments(parser)
     parser.add_argument(
         "persona",
         nargs="?",
@@ -69,9 +111,12 @@ def bot_main() -> None:
         action="store_true",
         help="同时启动本地 FastAPI 管理站和 Vue 页面（默认关闭）",
     )
-    parser.add_argument("--web-host", default="127.0.0.1", help="管理站监听地址")
-    parser.add_argument("--web-port", type=int, default=11451, help="管理站监听端口")
+    parser.add_argument("--web-host", default=None, help="管理站监听地址")
+    parser.add_argument("--web-port", type=int, default=None, help="管理站监听端口")
     args = parser.parse_args()
+    deployment = load_deployment(args.config, args.profile)
+    args.web_host = args.web_host or deployment.section("web")["host"]
+    args.web_port = args.web_port or deployment.section("web")["port"]
     configure_logging()
     print(f"当前使用的人物模型: {args.persona}")
     if sys.platform == "win32":
@@ -83,10 +128,16 @@ def bot_main() -> None:
 
 
 def api_main() -> None:
-    parser = argparse.ArgumentParser(description="Run the Shuiyuan management API and UI.")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=11451)
+    parser = argparse.ArgumentParser(
+        description="Run the Shuiyuan management API and UI."
+    )
+    add_config_arguments(parser)
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()
+    deployment = load_deployment(args.config, args.profile)
+    args.host = args.host or deployment.section("web")["host"]
+    args.port = args.port or deployment.section("web")["port"]
     try:
         import uvicorn
     except ImportError as exc:

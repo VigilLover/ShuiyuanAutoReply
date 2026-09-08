@@ -3,6 +3,10 @@
 import base64
 import os
 import unittest
+
+import pytest
+
+pytestmark = pytest.mark.live
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,7 +17,6 @@ from shuiyuan_auto_reply.features.mention.mention_deepseek_model import (
     DEEPSEEK_DEFAULT_MODEL,
 )
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -22,11 +25,14 @@ _MODEL = (
     os.getenv("DEEPSEEK_MENTION_MODEL", DEEPSEEK_DEFAULT_MODEL).strip()
     or DEEPSEEK_DEFAULT_MODEL
 )
-_PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(
-    base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-    )
-).decode()
+_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    + base64.b64encode(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+    ).decode()
+)
 
 
 @unittest.skipUnless(_API_KEY, "DEEPSEEK_API_KEY is not configured")

@@ -1,24 +1,23 @@
-from typing import Any, Iterable
-
 import logging
 from dataclasses import replace
+from typing import Any, Iterable
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatResult
 from langchain_openai import ChatOpenAI
 
-from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from shuiyuan_auto_reply.application.events import emit_event
-from shuiyuan_auto_reply.bootstrap.settings import DeepSeekApiFormat, ProviderSettings
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
+from shuiyuan_auto_reply.bootstrap.settings import DeepSeekApiFormat, ProviderSettings
+from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 from .deepseek_vision import (
     MAX_IMAGES_PER_TURN,
     DeepSeekVisionMediaManager,
     build_deepseek_content,
 )
-from .mention_multimodal import extract_image_urls
 from .mention_chat_model import MentionChatModel, MentionGraphState
+from .mention_multimodal import extract_image_urls
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash-vision-exp"
@@ -114,7 +113,9 @@ class DeepSeekChatOpenAI(ChatOpenAI):
                 payload_message["content"] = source_message.content
             if not isinstance(source_message, AIMessage):
                 continue
-            reasoning_content = source_message.additional_kwargs.get("reasoning_content")
+            reasoning_content = source_message.additional_kwargs.get(
+                "reasoning_content"
+            )
             if reasoning_content and "reasoning_content" not in payload_message:
                 payload_message["reasoning_content"] = reasoning_content
 
@@ -125,7 +126,9 @@ class DeepSeekChatOpenAI(ChatOpenAI):
         response: Any,
         generation_info: dict | None = None,
     ) -> ChatResult:
-        response_dict = response if isinstance(response, dict) else response.model_dump()
+        response_dict = (
+            response if isinstance(response, dict) else response.model_dump()
+        )
         reasoning_by_index = [
             (choice.get("message") or {}).get("reasoning_content")
             for choice in response_dict.get("choices", [])
@@ -213,7 +216,15 @@ class MentionDeepSeekModel(MentionChatModel):
         state_store=None,
         system_prompt_override: str | None = None,
     ):
-        super().__init__(model, username=username, prompt_scope=prompt_scope, enabled_tools=enabled_tools, disabled_mcp_tools=disabled_mcp_tools, state_store=state_store, system_prompt_override=system_prompt_override)
+        super().__init__(
+            model,
+            username=username,
+            prompt_scope=prompt_scope,
+            enabled_tools=enabled_tools,
+            disabled_mcp_tools=disabled_mcp_tools,
+            state_store=state_store,
+            system_prompt_override=system_prompt_override,
+        )
 
         current = provider_settings or ProviderSettings()
         current.validate_deepseek_options()
@@ -240,9 +251,7 @@ class MentionDeepSeekModel(MentionChatModel):
             api_key=api_key,
         )
 
-    async def _load_current_images(
-        self, state: MentionGraphState
-    ) -> MentionGraphState:
+    async def _load_current_images(self, state: MentionGraphState) -> MentionGraphState:
         images = list(state.get("image_inputs", []) or [])
         seen = {image.source_url for image in images}
         for attachment in state.get("request_attachments", ()) or ():
@@ -268,7 +277,9 @@ class MentionDeepSeekModel(MentionChatModel):
                     description="当前论坛帖子图片",
                 )
             except Exception as exc:
-                logging.warning("Failed to prepare current forum image %s: %s", url, exc)
+                logging.warning(
+                    "Failed to prepare current forum image %s: %s", url, exc
+                )
                 continue
             if image:
                 seen.add(url)
@@ -279,9 +290,7 @@ class MentionDeepSeekModel(MentionChatModel):
             "input_visual_artifacts": [image.artifact for image in images],
         }
 
-    async def _load_topic_context(
-        self, state: MentionGraphState
-    ) -> MentionGraphState:
+    async def _load_topic_context(self, state: MentionGraphState) -> MentionGraphState:
         result = await super()._load_topic_context(state)
         external_history = state.get("external_history") or ()
         historical_images = []
@@ -494,7 +503,9 @@ class MentionDeepSeekModel(MentionChatModel):
     async def _emit_native_web_search_events(self, response: Any) -> None:
         for item in getattr(response, "content", []) or []:
             item_type = (
-                item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+                item.get("type")
+                if isinstance(item, dict)
+                else getattr(item, "type", None)
             )
             if item_type != "web_search_call":
                 continue
@@ -504,7 +515,9 @@ class MentionDeepSeekModel(MentionChatModel):
                     "provider": "deepseek",
                     "name": "web_search",
                     "call_id": (
-                        item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+                        item.get("id")
+                        if isinstance(item, dict)
+                        else getattr(item, "id", None)
                     ),
                     "status": (
                         item.get("status")
@@ -535,9 +548,8 @@ class MentionDeepSeekModel(MentionChatModel):
                     and "text" in item
                 ):
                     res += item["text"]
-                if (
-                    getattr(item, "type", None) in {"text", "output_text"}
-                    and hasattr(item, "text")
+                if getattr(item, "type", None) in {"text", "output_text"} and hasattr(
+                    item, "text"
                 ):
                     res += item.text
                 if isinstance(item, str):

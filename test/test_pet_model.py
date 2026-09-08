@@ -1,22 +1,20 @@
 import json
+import logging
 import os
 import sys
 import tempfile
 import unittest
-import logging
 from pathlib import Path
 from unittest.mock import patch
 
 import dotenv
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from shuiyuan_auto_reply.features.mention.mention_pet_model import MentionPetModel
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,9 +70,17 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        self.responses_path.write_text(json.dumps(responses, ensure_ascii=False), encoding="utf-8")
-        self.endings_path.write_text(json.dumps(endings, ensure_ascii=False), encoding="utf-8")
-        logging.info("[SETUP] 测试资产写入完成: responses=%s, endings=%s", self.responses_path, self.endings_path)
+        self.responses_path.write_text(
+            json.dumps(responses, ensure_ascii=False), encoding="utf-8"
+        )
+        self.endings_path.write_text(
+            json.dumps(endings, ensure_ascii=False), encoding="utf-8"
+        )
+        logging.info(
+            "[SETUP] 测试资产写入完成: responses=%s, endings=%s",
+            self.responses_path,
+            self.endings_path,
+        )
 
     def tearDown(self):
         logging.info("[TEARDOWN] 清理临时目录")
@@ -95,7 +101,9 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
             )
         model.retriever = None
         self.model = model
-        logging.info("[BUILD] 模型构建完成，retriever_enabled=%s", bool(model.retriever))
+        logging.info(
+            "[BUILD] 模型构建完成，retriever_enabled=%s", bool(model.retriever)
+        )
         return model
 
     async def asyncTearDown(self):
@@ -107,8 +115,13 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         model = self._build_model()
 
         logging.info("[STEP] 调用 get_rua_response(user_text='')")
-        with patch("shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint", return_value=0):
-            reply = await model.get_rua_response(username="normal_user", name="normal_name", user_text="")
+        with patch(
+            "shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint",
+            return_value=0,
+        ):
+            reply = await model.get_rua_response(
+                username="normal_user", name="normal_name", user_text=""
+            )
         logging.info("[STEP] 模型回复: %s", reply)
 
         self.assertIsNotNone(reply)
@@ -129,8 +142,13 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         logging.info("[CASE] 开始: 有 user_text 时真实调用大模型生成文案")
         model = self._build_model(live=True)
 
-        logging.info("[STEP] 调用 get_rua_response(user_text='今天有点累，但还是想被摸摸头')")
-        with patch("shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint", return_value=0):
+        logging.info(
+            "[STEP] 调用 get_rua_response(user_text='今天有点累，但还是想被摸摸头')"
+        )
+        with patch(
+            "shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint",
+            return_value=0,
+        ):
             reply = await model.get_rua_response(
                 username="normal_user",
                 name="normal_name",
@@ -145,7 +163,9 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
 
     @pytest.mark.live
     async def test_generate_personalized_text_direct_real_call(self):
-        logging.info("[CASE] 开始: 直接调用 _generate_personalized_text 进行真实模型验证")
+        logging.info(
+            "[CASE] 开始: 直接调用 _generate_personalized_text 进行真实模型验证"
+        )
         model = self._build_model(live=True)
 
         logging.info("[STEP] 调用 _generate_personalized_text")
@@ -167,8 +187,13 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         model = self._build_model()
 
         logging.info("[STEP] 调用 get_rua_response(username='special_user')")
-        with patch("shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint", return_value=0):
-            reply = await model.get_rua_response(username="special_user", name="special_user", user_text="")
+        with patch(
+            "shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint",
+            return_value=0,
+        ):
+            reply = await model.get_rua_response(
+                username="special_user", name="special_user", user_text=""
+            )
         logging.info("[STEP] 模型回复: %s", reply)
 
         self.assertIsNotNone(reply)
@@ -191,8 +216,13 @@ class TestMentionPetModel(unittest.IsolatedAsyncioTestCase):
         )
 
         logging.info("[STEP] 调用 get_rua_response 触发结局")
-        with patch("shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint", return_value=0):
-            reply = await model.get_rua_response(username="normal_user", name="normal_name", user_text="")
+        with patch(
+            "shuiyuan_auto_reply.features.mention.mention_pet_model.random.randint",
+            return_value=0,
+        ):
+            reply = await model.get_rua_response(
+                username="normal_user", name="normal_name", user_text=""
+            )
         logging.info("[STEP] 模型回复: %s", reply)
 
         self.assertIsNotNone(reply)

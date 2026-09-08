@@ -70,9 +70,7 @@ class DeepSeekRequestContractTests(unittest.TestCase):
             AIMessage(
                 content="",
                 additional_kwargs={"reasoning_content": "provider reasoning"},
-                tool_calls=[
-                    {"name": "lookup", "args": {"q": "x"}, "id": "call_1"}
-                ],
+                tool_calls=[{"name": "lookup", "args": {"q": "x"}, "id": "call_1"}],
             ),
         ]
 
@@ -201,9 +199,7 @@ class DeepSeekRequestContractTests(unittest.TestCase):
             item for item in payload["input"] if item["type"] == "function_call"
         )
         function_output = next(
-            item
-            for item in payload["input"]
-            if item["type"] == "function_call_output"
+            item for item in payload["input"] if item["type"] == "function_call_output"
         )
         self.assertEqual(function_call["call_id"], "call_1")
         self.assertEqual(function_output["call_id"], "call_1")
@@ -296,4 +292,6 @@ class DeepSeekToolImageContractTests(unittest.IsolatedAsyncioTestCase):
             replacement.content[-1],
             {"type": "input_image", "file_id": "file_tool_1"},
         )
-        self.assertFalse(any(isinstance(item, HumanMessage) for item in result["messages"]))
+        self.assertFalse(
+            any(isinstance(item, HumanMessage) for item in result["messages"])
+        )

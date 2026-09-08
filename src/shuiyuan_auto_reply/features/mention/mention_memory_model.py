@@ -9,9 +9,9 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.store.base import BaseStore, SearchItem
 from pydantic import BaseModel, Field
 
-from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.application.events import current_memory_scope
 from shuiyuan_auto_reply.bootstrap.settings import MemorySettings
+from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.database.postgres_memory_mgr import (
     AsyncPostgresMemoryDatabaseManager,
     create_global_async_postgres_memory_manager,
@@ -121,7 +121,17 @@ class MentionMemoryModel:
             return
 
         try:
-            await self.postgres.initialize_schema()
+            from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+            from shuiyuan_auto_reply.infrastructure.retrieval.postgres import (
+                check_vector_space,
+            )
+
+            auto_migrate = get_deployment().section("database")["auto_migrate"]
+            if auto_migrate:
+                await self.postgres.initialize_schema()
+            else:
+                async with self.postgres.engine.connect() as connection:
+                    await check_vector_space(connection)
 
             self._store_context = self.postgres.create_langgraph_store(
                 embedding=self.embedding,
@@ -129,7 +139,8 @@ class MentionMemoryModel:
                 fields=["content"],
             )
             self.store = await self._store_context.__aenter__()
-            await self.store.setup()
+            if auto_migrate:
+                await self.store.setup()
 
             self.tools = self._create_tools()
             logging.info(
@@ -137,6 +148,7 @@ class MentionMemoryModel:
                 self.namespace_template,
             )
         except Exception as exc:
+            self._initialized = False
             await self._close_store_context()
             self.store = None
             self.tools = []

@@ -1,10 +1,11 @@
-import os
 import json
-import random
 import logging
-from typing import Optional, Dict, Any
+import os
+import random
+from typing import Any, Dict, Optional
 
 from openai import AsyncOpenAI
+
 from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 
 
@@ -23,9 +24,20 @@ class MentionPetModel:
     ):
         from shuiyuan_auto_reply.constants import settings
 
-        self.filepath = filepath or os.path.join(settings.assets_directory, "pet_responses.json")
-        self.state_path = state_path or os.path.join(settings.assets_directory, "pet_state.json")
-        self.endings_path = endings_path or os.path.join(settings.assets_directory, "pet_endings.json")
+        self.filepath = filepath or os.path.join(
+            settings.assets_directory, "pet_responses.json"
+        )
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+        from shuiyuan_auto_reply.infrastructure.persistence.state import state_directory
+
+        self.state_path = state_path or (
+            str(state_directory() / "pet_state.json")
+            if get_deployment().profile == "remote"
+            else os.path.join(settings.assets_directory, "pet_state.json")
+        )
+        self.endings_path = endings_path or os.path.join(
+            settings.assets_directory, "pet_endings.json"
+        )
         self.persona = persona
 
         current = provider_settings or ProviderSettings()
@@ -41,21 +53,22 @@ class MentionPetModel:
             return ""
 
         try:
-            from shuiyuan_auto_reply.database.neo4j_mgr import create_global_async_neo4j_manager
-
-            neo4j_manager = await create_global_async_neo4j_manager()
-            if neo4j_manager is None:
-                return ""
-
-            style_items = await neo4j_manager.search_similar(
-                user_text,
-                top_k=8,
-                userid=self.persona,
+            from shuiyuan_auto_reply.infrastructure.retrieval import (
+                create_style_retriever,
             )
+
+            retriever = create_style_retriever()
+            try:
+                style_items = await retriever.search(self.persona, user_text, 8)
+            finally:
+                if hasattr(retriever, "aclose"):
+                    await retriever.aclose()
             context = "\n".join(item.text for item in style_items)
             return context.strip()
         except Exception as e:
-            logging.warning(f"==> [MentionPetModel] Failed to fetch style context: {str(e)}")
+            logging.warning(
+                f"==> [MentionPetModel] Failed to fetch style context: {str(e)}"
+            )
             return ""
 
     def _build_pet_prompt(
@@ -70,7 +83,7 @@ class MentionPetModel:
     ) -> list[dict[str, str]]:
         """构造宠物个性化短回复提示词。"""
         style_block = style_context if style_context else "（无可用历史语料）"
-        
+
         user_identity = "用户"
         if name:
             user_identity = f"昵称为'{name}'的用户"
@@ -179,7 +192,7 @@ class MentionPetModel:
         # 防止越界
         filled = max(0, min(length, filled))
         bar = "■" * filled + "□" * (length - filled)
-        
+
         delta_str = f"+{delta}" if delta >= 0 else f"{delta}"
         return f"{label} [{bar}] {value:>4} ({delta_str})"
 
@@ -207,11 +220,11 @@ class MentionPetModel:
             # 准备概率抽签
             states = list(data.keys())
             weights = [info.get("weight", 10) for info in data.values()]
-            
+
             # 使用权重选择当前心情
             selected_state = random.choices(states, weights=weights, k=1)[0]
             action_data = data[selected_state]
-            
+
             # 检查是否有对当前特定用户的覆盖逻辑 (special_overrides)
             overrides = action_data.get("special_overrides", {})
             user_override = None
@@ -228,13 +241,13 @@ class MentionPetModel:
                 texts = action_data.get("texts", [])
                 asciis = action_data.get("ascii", [""])
                 deltas = action_data.get("deltas", {})
-            
+
             selected_text = random.choice(texts) if texts else "（发呆中）"
             selected_ascii = random.choice(asciis) if asciis else ""
 
             # 加载并变更状态
             state = self._load_state()
-            
+
             def _apply_random_offset(val: int) -> int:
                 if val == 0:
                     return 0
@@ -258,9 +271,12 @@ class MentionPetModel:
                 "chaos": state.get("chaos", 0) + chaos_delta,
             }
             overflow_flags = {
-                "patience": raw_next_state["patience"] > 100 or raw_next_state["patience"] < -100,
-                "wisdom": raw_next_state["wisdom"] > 100 or raw_next_state["wisdom"] < -100,
-                "chaos": raw_next_state["chaos"] > 100 or raw_next_state["chaos"] < -100,
+                "patience": raw_next_state["patience"] > 100
+                or raw_next_state["patience"] < -100,
+                "wisdom": raw_next_state["wisdom"] > 100
+                or raw_next_state["wisdom"] < -100,
+                "chaos": raw_next_state["chaos"] > 100
+                or raw_next_state["chaos"] < -100,
             }
 
             state["patience"] = self._clamp_stat(raw_next_state["patience"])
@@ -274,19 +290,20 @@ class MentionPetModel:
                     limits_hit.append(f"{stat}_max")
                 elif state[stat] <= -100:
                     limits_hit.append(f"{stat}_min")
-                    
+
             if limits_hit:
                 # 判定具体是单一触发还是多重触发彩蛋
                 ending_id = "multiple" if len(limits_hit) >= 2 else limits_hit[0]
-                
+
                 # 获取该结局信息
                 endings_data = {}
                 if os.path.exists(self.endings_path):
                     with open(self.endings_path, "r", encoding="utf-8") as fe:
                         endings_data = json.load(fe)
-                        
+
                 ending_info = endings_data.get(ending_id)
                 if ending_info:
+
                     def _format_ending_stat(label: str, key: str, value: int) -> str:
                         if overflow_flags.get(key, False):
                             return f"!! {label}: {value} [超限触发，原始值: {raw_next_state[key]}]"
@@ -300,7 +317,7 @@ class MentionPetModel:
 
                     # 触发结局后，将所有属性清零并保存
                     self._save_state({"patience": 0, "wisdom": 0, "chaos": 0})
-                    
+
                     response_lines = [
                         "```text",
                         ending_info.get("ascii", ""),
@@ -311,9 +328,11 @@ class MentionPetModel:
                         *ending_stat_lines,
                         "",
                         "（已达成以上结局，所有属性重新归零）",
-                        "```"
+                        "```",
                     ]
-                    return "\n".join([line for line in response_lines if line is not None])
+                    return "\n".join(
+                        [line for line in response_lines if line is not None]
+                    )
 
             # 如果没有到达极限值，正常进行保存及回复构造
             self._save_state(state)
@@ -335,7 +354,9 @@ class MentionPetModel:
                 if personalized_text:
                     final_text = personalized_text
                 else:
-                    logging.info("==> [MentionPetModel] Fallback to local text due to empty LLM output.")
+                    logging.info(
+                        "==> [MentionPetModel] Fallback to local text due to empty LLM output."
+                    )
 
             # 构造最终 Markdown 回复块 (包含 ```)
             response_lines = [
@@ -344,14 +365,16 @@ class MentionPetModel:
                 "",
                 f"【{selected_state}】 {final_text}",
                 "",
-                self._generate_progress_bar("耐心", state['patience'], patience_delta),
-                self._generate_progress_bar("智慧", state['wisdom'], wisdom_delta),
-                self._generate_progress_bar("混沌", state['chaos'], chaos_delta),
-                "```"
+                self._generate_progress_bar("耐心", state["patience"], patience_delta),
+                self._generate_progress_bar("智慧", state["wisdom"], wisdom_delta),
+                self._generate_progress_bar("混沌", state["chaos"], chaos_delta),
+                "```",
             ]
 
             return "\n".join([line for line in response_lines if line is not None])
-            
+
         except Exception as e:
-            logging.error(f"==> [MentionPetModel] Error processing rua response: {str(e)}")
+            logging.error(
+                f"==> [MentionPetModel] Error processing rua response: {str(e)}"
+            )
             return "（被rua了一下，但是似乎出了点小错误）"

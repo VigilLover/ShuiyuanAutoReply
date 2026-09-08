@@ -7,24 +7,26 @@ from dataclasses import replace
 from dotenv import load_dotenv
 
 from shuiyuan_auto_reply.application.handlers import ChatHandler
+from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.bootstrap.container import ApplicationContainer
 from shuiyuan_auto_reply.bootstrap.providers import MentionProviderFactory
 from shuiyuan_auto_reply.bootstrap.settings import AppSettings, DeepSeekApiFormat
 from shuiyuan_auto_reply.features.mention import MentionModel
 from shuiyuan_auto_reply.infrastructure.llm import LegacyMentionChatBackend
-from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
-from shuiyuan_auto_reply.infrastructure.persistence import SQLiteStateStore
-from shuiyuan_auto_reply.infrastructure.persistence import LocalSecretVault
+from shuiyuan_auto_reply.infrastructure.persistence import (
+    LocalSecretVault,
+    SQLiteStateStore,
+)
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
-from shuiyuan_auto_reply.application.ports.prompt import PromptScope
+from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
 
 
 def _forum_profile_defaults(settings: AppSettings, persona: str) -> dict:
-    prompt = FilePromptRepository().load(
-        persona, set(), PromptScope.FORUM
-    ).system_prompt
+    prompt = (
+        FilePromptRepository().load(persona, set(), PromptScope.FORUM).system_prompt
+    )
     return {
         "provider": "deepseek",
         "model": DEEPSEEK_VISION_MODEL,
@@ -45,9 +47,7 @@ async def _forum_provider_settings(
         mention_provider=provider,
         deepseek_model=DEEPSEEK_VISION_MODEL,
         deepseek_api_format=DeepSeekApiFormat(
-            profile.get(
-                "api_format", settings.providers.deepseek_api_format.value
-            )
+            profile.get("api_format", settings.providers.deepseek_api_format.value)
         ),
     )
     secret = await vault.get(f"forum:{provider}")
@@ -69,6 +69,25 @@ async def run_worker(persona: str = "wolf_lumine") -> None:
     await state_store.initialize()
     secret_vault = LocalSecretVault(state_store)
     model = await ShuiyuanModel.create(settings.forum.cookie_file)
+    from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
+    if get_deployment().profile == "remote":
+        try:
+            await model.verify_identity(settings.forum.bot_username)
+            from shuiyuan_auto_reply.infrastructure.retrieval.postgres import (
+                check_vector_space,
+                engine_for,
+            )
+
+            engine = engine_for("memory_url")
+            try:
+                async with engine.connect() as connection:
+                    await check_vector_space(connection)
+            finally:
+                await engine.dispose()
+        except BaseException:
+            await model.close()
+            raise
     chat_model = None
     mention = None
     container = None
@@ -89,9 +108,7 @@ async def run_worker(persona: str = "wolf_lumine") -> None:
                 if profile["active"].get("enabled_tools") is not None
                 else None
             ),
-            disabled_mcp_tools=set(
-                profile["active"].get("disabled_mcp_tools", [])
-            ),
+            disabled_mcp_tools=set(profile["active"].get("disabled_mcp_tools", [])),
             state_store=state_store,
             system_prompt_override=profile["active"].get("system_prompt"),
         )

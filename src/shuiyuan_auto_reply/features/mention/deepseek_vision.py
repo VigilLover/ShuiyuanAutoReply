@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import ipaddress
 import io
+import ipaddress
 import logging
 import mimetypes
 import re
@@ -27,7 +27,6 @@ from shuiyuan_auto_reply.domain import AttachmentRef, VisualMediaArtifact
 from shuiyuan_auto_reply.infrastructure.persistence.state import state_directory
 
 from .mention_multimodal import extract_image_urls, normalize_shuiyuan_image_url
-
 
 SUPPORTED_MIME_TYPES = {
     "image/jpeg": ".jpg",
@@ -90,6 +89,10 @@ def sniff_image(data: bytes) -> tuple[str, int, int]:
     mime_type = Image.MIME.get(image_format)
     if mime_type not in SUPPORTED_MIME_TYPES:
         raise VisionMediaError("仅支持 JPEG、PNG、GIF 和 WebP 图片")
+    from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
+    if width * height > get_deployment().section("media")["max_pixels"]:
+        raise VisionMediaError("图片像素数超过部署限制")
     if width <= 0 or height <= 0 or max(width, height) > 8192:
         raise VisionMediaError("图片尺寸无效或长边超过 8192 像素")
     return mime_type, width, height
@@ -127,10 +130,7 @@ def extract_public_image_urls(value: Any) -> list[str]:
                 match.group("url")
                 for match in _MARKDOWN_IMAGE_RE.finditer(normalized_text)
             ),
-            *(
-                match.group("url")
-                for match in _HTML_IMAGE_RE.finditer(normalized_text)
-            ),
+            *(match.group("url") for match in _HTML_IMAGE_RE.finditer(normalized_text)),
         ]
         raw_candidates = [
             match.group(0) for match in _PUBLIC_IMAGE_RE.finditer(normalized_text)
@@ -195,7 +195,9 @@ def extract_inline_images(value: Any) -> list[tuple[bytes, str, str]]:
         if not isinstance(encoded, str):
             continue
         try:
-            result.append((base64.b64decode(encoded, validate=True), str(mime_type), "mcp-image"))
+            result.append(
+                (base64.b64decode(encoded, validate=True), str(mime_type), "mcp-image")
+            )
         except (ValueError, TypeError):
             continue
     return result
@@ -215,7 +217,9 @@ async def _assert_public_host(host: str) -> None:
 
 
 class DeepSeekFilesClient:
-    def __init__(self, api_key: str, base_url: str = "https://api.deepseek.com") -> None:
+    def __init__(
+        self, api_key: str, base_url: str = "https://api.deepseek.com"
+    ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
 
@@ -243,6 +247,9 @@ class DeepSeekFilesClient:
             await client.files.delete(file_id, timeout=30)
 
 
+from shuiyuan_auto_reply.infrastructure.persistence.resources import bounded_media
+
+
 class DeepSeekVisionMediaManager:
     def __init__(self, *, state_store, forum_model, api_key: str) -> None:
         self.state_store = state_store
@@ -250,6 +257,7 @@ class DeepSeekVisionMediaManager:
         self.files = DeepSeekFilesClient(api_key)
         self.credential_fingerprint = hashlib.sha256(api_key.encode()).hexdigest()[:16]
 
+    @bounded_media
     async def _register_bytes(
         self,
         data: bytes,
@@ -339,7 +347,9 @@ class DeepSeekVisionMediaManager:
         )
         return file_id
 
-    async def prepare_attachment(self, attachment: AttachmentRef) -> DeepSeekVisionInput:
+    async def prepare_attachment(
+        self, attachment: AttachmentRef
+    ) -> DeepSeekVisionInput:
         if not attachment.url.startswith("artifact://"):
             raise VisionMediaError("用户附件必须引用本地 Artifact")
         artifact_id = attachment.url.removeprefix("artifact://")
@@ -433,7 +443,9 @@ class DeepSeekVisionMediaManager:
                 if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                     raise VisionMediaError("图片 URL 无效")
                 await _assert_public_host(parsed.hostname)
-                async with client.stream("GET", current, follow_redirects=False) as response:
+                async with client.stream(
+                    "GET", current, follow_redirects=False
+                ) as response:
                     if response.status_code in {301, 302, 303, 307, 308}:
                         location = response.headers.get("location")
                         if not location:
@@ -441,7 +453,9 @@ class DeepSeekVisionMediaManager:
                         current = urljoin(current, location)
                         continue
                     response.raise_for_status()
-                    declared_length = int(response.headers.get("content-length", "0") or 0)
+                    declared_length = int(
+                        response.headers.get("content-length", "0") or 0
+                    )
                     if declared_length > MAX_IMAGE_BYTES:
                         raise VisionMediaError("单张图片不能超过 20MB")
                     chunks: list[bytes] = []
@@ -461,7 +475,8 @@ class DeepSeekVisionMediaManager:
             conversation_id=conversation_id,
             source_kind=source_kind,
             source_url=url,
-            filename=Path(urlparse(url).path).name or mimetypes.guess_extension(
+            filename=Path(urlparse(url).path).name
+            or mimetypes.guess_extension(
                 response_headers.get("content-type", "").split(";", 1)[0]
             ),
         )
@@ -489,7 +504,8 @@ class DeepSeekVisionMediaManager:
             artifact_value = getattr(message, "artifact", None)
             source_kind = (
                 "forum_search"
-                if name in {"search_posts", "recent_posts", "search_posts_by_time", "get_post"}
+                if name
+                in {"search_posts", "recent_posts", "search_posts_by_time", "get_post"}
                 else "web_search"
             )
             for data, _claimed_mime, filename in extract_inline_images(content):
@@ -600,6 +616,7 @@ def build_deepseek_content(
     return content
 
 
+@bounded_media
 async def save_uploaded_image(
     state_store,
     *,

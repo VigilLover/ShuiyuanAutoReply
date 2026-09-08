@@ -2,20 +2,25 @@
 
 import asyncio
 import logging
-from dataclasses import replace
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from shuiyuan_auto_reply.application import BotService, HandlerRegistry
-from shuiyuan_auto_reply.application.handlers import ChatHandler, HelpHandler, PetHandler
-from shuiyuan_auto_reply.database.neo4j_mgr import close_global_async_neo4j_manager
+from shuiyuan_auto_reply.application.handlers import (
+    ChatHandler,
+    HelpHandler,
+    PetHandler,
+)
+from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.database.postgres_memory_mgr import (
     close_global_async_postgres_memory_manager,
 )
 from shuiyuan_auto_reply.database.postgres_record_mgr import (
     close_global_async_postgres_record_manager,
 )
+from shuiyuan_auto_reply.domain import ConversationRef, ReplyRequest, ReplyResult
 from shuiyuan_auto_reply.features.mention.image_generation import close_shared_session
+from shuiyuan_auto_reply.features.mention.mention_pet_model import MentionPetModel
 from shuiyuan_auto_reply.infrastructure.llm import LegacyMentionChatBackend
 from shuiyuan_auto_reply.infrastructure.persistence import (
     LocalSecretVault,
@@ -23,10 +28,10 @@ from shuiyuan_auto_reply.infrastructure.persistence import (
     SQLiteSessionRepository,
     SQLiteStateStore,
 )
-from shuiyuan_auto_reply.application.ports.prompt import PromptScope
-from shuiyuan_auto_reply.domain import ConversationRef, ReplyRequest, ReplyResult
-from shuiyuan_auto_reply.features.mention.mention_pet_model import MentionPetModel
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
+from shuiyuan_auto_reply.infrastructure.retrieval.neo4j import (
+    close_neo4j as close_global_async_neo4j_manager,
+)
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 from .providers import MentionProviderFactory
@@ -39,7 +44,9 @@ class _UnavailableChatBackend:
     """Keeps the management UI usable until a web Provider is configured."""
 
     async def reply(self, _request: ReplyRequest, _history=()) -> ReplyResult:
-        raise RuntimeError("网页对话 Provider 尚未配置，请先在设置页保存并应用 API Key。")
+        raise RuntimeError(
+            "网页对话 Provider 尚未配置，请先在设置页保存并应用 API Key。"
+        )
 
     async def clear(self, _conversation: ConversationRef) -> None:
         return None
@@ -196,9 +203,11 @@ class ApplicationContainer:
 
     @staticmethod
     def _profile_defaults(settings: AppSettings) -> dict[str, Any]:
-        prompt = FilePromptRepository().load(
-            "wolf_lumine", set(), PromptScope.WEB
-        ).system_prompt
+        prompt = (
+            FilePromptRepository()
+            .load("wolf_lumine", set(), PromptScope.WEB)
+            .system_prompt
+        )
         return {
             "provider": "deepseek",
             "model": DEEPSEEK_VISION_MODEL,
@@ -209,7 +218,9 @@ class ApplicationContainer:
             "disabled_mcp_tools": [],
         }
 
-    async def _settings_for_profile(self, scope: str, profile: dict) -> ProviderSettings:
+    async def _settings_for_profile(
+        self, scope: str, profile: dict
+    ) -> ProviderSettings:
         provider = "deepseek"
         settings = replace(
             self.settings.providers,
@@ -237,12 +248,22 @@ class ApplicationContainer:
         return settings
 
     @classmethod
-    async def for_api(cls, settings: AppSettings | None = None) -> "ApplicationContainer":
+    async def for_api(
+        cls, settings: AppSettings | None = None
+    ) -> "ApplicationContainer":
         current = settings or AppSettings()
         state_store = SQLiteStateStore()
         await state_store.initialize()
         secret_vault = LocalSecretVault(state_store)
-        forum_model = await ShuiyuanModel.create(current.forum.cookie_file)
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+        from shuiyuan_auto_reply.infrastructure.forum.lazy import LazyChat, LazyForum
+
+        remote = get_deployment().profile == "remote"
+        forum_model = (
+            LazyForum(current.forum.cookie_file)
+            if remote
+            else await ShuiyuanModel.create(current.forum.cookie_file)
+        )
         try:
             container = cls(
                 current,
@@ -274,22 +295,26 @@ class ApplicationContainer:
                     if effective.mention_provider == "openrouter"
                     else MentionProviderFactory.create
                 )
-                chat_model = factory_method(
-                    forum_model,
-                    "wolf_lumine",
-                    effective,
-                    prompt_scope=PromptScope.WEB,
-                    enabled_tools=(
-                        set(profile["active"]["enabled_tools"])
-                        if profile["active"].get("enabled_tools") is not None
-                        else None
-                    ),
-                    disabled_mcp_tools=set(
-                        profile["active"].get("disabled_mcp_tools", [])
-                    ),
-                    state_store=state_store,
-                    system_prompt_override=profile["active"].get("system_prompt"),
-                )
+
+                def build_chat():
+                    return factory_method(
+                        forum_model,
+                        "wolf_lumine",
+                        effective,
+                        prompt_scope=PromptScope.WEB,
+                        enabled_tools=(
+                            set(profile["active"]["enabled_tools"])
+                            if profile["active"].get("enabled_tools") is not None
+                            else None
+                        ),
+                        disabled_mcp_tools=set(
+                            profile["active"].get("disabled_mcp_tools", [])
+                        ),
+                        state_store=state_store,
+                        system_prompt_override=profile["active"].get("system_prompt"),
+                    )
+
+                chat_model = LazyChat(build_chat) if remote else build_chat()
             chat_handler, service = cls._build_web_service(
                 chat_model, effective, state_store
             )
@@ -315,7 +340,9 @@ class ApplicationContainer:
             state_store=self.state_store,
             system_prompt_override=profile.get("system_prompt"),
         )
-        new_handler, new_service = self._build_web_service(candidate, settings, self.state_store)
+        new_handler, new_service = self._build_web_service(
+            candidate, settings, self.state_store
+        )
         return new_handler, new_service
 
     async def prepare_forum_runtime_profile(self, profile: dict):
@@ -358,7 +385,9 @@ class ApplicationContainer:
                 if (close := getattr(resource, "aclose", None)) is not None:
                     closers.append(close)
             service_close = getattr(self.bot_service, "aclose", None)
-            if service_close is not None and getattr(self.bot_service, "owns_handlers", False):
+            if service_close is not None and getattr(
+                self.bot_service, "owns_handlers", False
+            ):
                 closers.append(service_close)
             else:
                 closers.append(self.chat_handler.aclose)

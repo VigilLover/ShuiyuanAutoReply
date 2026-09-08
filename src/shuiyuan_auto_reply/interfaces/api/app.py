@@ -1,8 +1,8 @@
 """Existing HTTP contract backed by the shared BotService."""
 
-import logging
 import asyncio
 import json
+import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -17,7 +17,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from shuiyuan_auto_reply.bootstrap import AppSettings, ApplicationContainer
+from shuiyuan_auto_reply.application.ports.prompt import PromptScope
+from shuiyuan_auto_reply.bootstrap import ApplicationContainer, AppSettings
 from shuiyuan_auto_reply.bootstrap.settings import DeepSeekApiFormat
 from shuiyuan_auto_reply.domain import (
     ActorRef,
@@ -27,9 +28,6 @@ from shuiyuan_auto_reply.domain import (
     DispatchMode,
     ReplyRequest,
 )
-from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
-from shuiyuan_auto_reply.application.ports.prompt import PromptScope
-from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
 from shuiyuan_auto_reply.features.mention.deepseek_vision import (
     MAX_IMAGE_BYTES,
     MAX_IMAGES_PER_TURN,
@@ -37,6 +35,8 @@ from shuiyuan_auto_reply.features.mention.deepseek_vision import (
     VisionMediaError,
     save_uploaded_image,
 )
+from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
+from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 
 logger = logging.getLogger(__name__)
 DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
@@ -141,6 +141,19 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             await container.aclose()
 
     api = FastAPI(title="ShuiyuanAutoReply 对话后端", lifespan=lifespan)
+    from fastapi.responses import JSONResponse
+
+    from shuiyuan_auto_reply.application.scheduling import BusyError
+
+    @api.exception_handler(BusyError)
+    async def busy_handler(request, exc):
+        return JSONResponse(
+            status_code=429, content={"detail": str(exc)}, headers={"Retry-After": "5"}
+        )
+
+    from .limits import RequestLimits
+
+    api.add_middleware(RequestLimits)
     api.add_middleware(
         CORSMiddleware,
         allow_origins=[],
@@ -164,14 +177,14 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         reply_request = ReplyRequest(
             request_id=str(uuid.uuid4()),
             conversation=_conversation(payload.session_id),
-            actor=ActorRef(
-                Channel.API, payload.session_id, "NULL", None
-            ),
+            actor=ActorRef(Channel.API, payload.session_id, "NULL", None),
             content=payload.message,
             dispatch_mode=DispatchMode.CHAT_ONLY,
         )
         try:
             result = await request.app.state.container.bot_service.reply(reply_request)
+        except BusyError:
+            raise
         except Exception as exc:
             logger.exception("处理消息时发生错误")
             raise HTTPException(
@@ -209,6 +222,16 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             "active_sessions_count": len(request.app.state.sessions),
         }
 
+    @api.get("/api/live")
+    async def liveness():
+        return {"status": "ok"}
+
+    @api.get("/api/runtime-health")
+    async def readiness(request: Request):
+        from .health import runtime_health
+
+        return await runtime_health(_store(request))
+
     @api.get("/api/bootstrap")
     async def bootstrap():
         return {
@@ -224,17 +247,34 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         return store
 
     @api.get("/api/conversations")
-    async def list_conversations(request: Request, channel: str | None = None, search: str | None = None, limit: int = 100, offset: int = 0):
-        records = await _store(request).list_conversations(channel=channel, search=search, limit=limit, offset=offset)
-        return [record.__dict__ if hasattr(record, "__dict__") else {
-            name: getattr(record, name) for name in record.__dataclass_fields__
-        } for record in records]
+    async def list_conversations(
+        request: Request,
+        channel: str | None = None,
+        search: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ):
+        records = await _store(request).list_conversations(
+            channel=channel, search=search, limit=limit, offset=offset
+        )
+        return [
+            (
+                record.__dict__
+                if hasattr(record, "__dict__")
+                else {
+                    name: getattr(record, name) for name in record.__dataclass_fields__
+                }
+            )
+            for record in records
+        ]
 
     @api.post("/api/conversations")
     async def create_conversation(payload: ConversationCreateRequest, request: Request):
         external_id = str(uuid.uuid4())
         ref = ConversationRef(Channel.WEB, external_id, "wolf_lumine", "wolf_lumine")
-        record = await _store(request).ensure_conversation(ref, title=payload.title or "新对话")
+        record = await _store(request).ensure_conversation(
+            ref, title=payload.title or "新对话"
+        )
         return {name: getattr(record, name) for name in record.__dataclass_fields__}
 
     async def _conversation_record(request: Request, conversation_id: str):
@@ -244,7 +284,12 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         return record
 
     def _ref_from_record(record) -> ConversationRef:
-        return ConversationRef(Channel(record.channel), record.external_id, record.bot_id, record.persona_id)
+        return ConversationRef(
+            Channel(record.channel),
+            record.external_id,
+            record.bot_id,
+            record.persona_id,
+        )
 
     @api.get("/api/conversations/{conversation_id}")
     async def get_conversation(conversation_id: str, request: Request):
@@ -267,37 +312,51 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                         display_content = display_content.replace(
                             artifact.forum_short_path, artifact_url
                         )
-                    attachments.append({
-                        "artifact_id": artifact.id,
-                        "url": f"/api/artifacts/{artifact.id}",
-                        "mime_type": artifact.mime_type,
-                        "filename": artifact.filename,
-                        "width": artifact.width,
-                        "height": artifact.height,
-                        "source_kind": artifact.source_kind,
-                        "source_url": artifact.source_url,
-                    })
-            serialized_messages.append({
-                "id": message.id,
-                "role": message.role,
-                "content": display_content,
-                "status": message.status,
-                "run_id": message.run_id,
-                "attachments": attachments,
-                "created_at": message.created_at,
-                "epoch": message.epoch,
-            })
+                    attachments.append(
+                        {
+                            "artifact_id": artifact.id,
+                            "url": f"/api/artifacts/{artifact.id}",
+                            "mime_type": artifact.mime_type,
+                            "filename": artifact.filename,
+                            "width": artifact.width,
+                            "height": artifact.height,
+                            "source_kind": artifact.source_kind,
+                            "source_url": artifact.source_url,
+                        }
+                    )
+            serialized_messages.append(
+                {
+                    "id": message.id,
+                    "role": message.role,
+                    "content": display_content,
+                    "status": message.status,
+                    "run_id": message.run_id,
+                    "attachments": attachments,
+                    "created_at": message.created_at,
+                    "epoch": message.epoch,
+                }
+            )
         return {
-            "conversation": {name: getattr(record, name) for name in record.__dataclass_fields__},
+            "conversation": {
+                name: getattr(record, name) for name in record.__dataclass_fields__
+            },
             "messages": serialized_messages,
-            "events": [{
-                "id": event.id, "run_id": event.run_id, "type": event.event_type,
-                "payload": event.payload, "created_at": event.created_at,
-            } for event in events],
+            "events": [
+                {
+                    "id": event.id,
+                    "run_id": event.run_id,
+                    "type": event.event_type,
+                    "payload": event.payload,
+                    "created_at": event.created_at,
+                }
+                for event in events
+            ],
         }
 
     @api.patch("/api/conversations/{conversation_id}")
-    async def rename_conversation(conversation_id: str, payload: ConversationRenameRequest, request: Request):
+    async def rename_conversation(
+        conversation_id: str, payload: ConversationRenameRequest, request: Request
+    ):
         record = await _conversation_record(request, conversation_id)
         if record.channel != Channel.WEB.value:
             raise HTTPException(status_code=403, detail="论坛会话标题不可修改")
@@ -315,30 +374,42 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         content_type = request.headers.get("content-type", "").lower()
         uploads = []
         if content_type.startswith("multipart/form-data"):
-            form = await request.form()
+            form = await request.form(
+                max_files=20, max_fields=10, max_part_size=1024 * 1024
+            )
             message = str(form.get("message") or "")
             uploads = [item for item in form.getlist("images") if hasattr(item, "read")]
         else:
             try:
-                payload = ConversationMessageRequest.model_validate(await request.json())
+                payload = ConversationMessageRequest.model_validate(
+                    await request.json()
+                )
             except Exception as exc:
                 raise HTTPException(status_code=422, detail="消息请求格式无效") from exc
             message = payload.message
 
         if len(uploads) > MAX_IMAGES_PER_TURN:
             raise HTTPException(status_code=400, detail="每条消息最多上传 20 张图片")
-        pending_uploads: list[tuple[bytes, str | None]] = []
-        for upload in uploads:
-            data = await upload.read(MAX_IMAGE_BYTES + 1)
-            if len(data) > MAX_IMAGE_BYTES:
-                raise HTTPException(status_code=400, detail="单张图片不能超过 20MB")
-            pending_uploads.append((data, getattr(upload, "filename", None)))
-        if not message.strip() and not pending_uploads:
+        if not message.strip() and not uploads:
             raise HTTPException(status_code=400, detail="消息或图片不能为空")
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
+        limits = get_deployment().section("media")
+        total_bytes = 0
 
         input_attachments: list[AttachmentRef] = []
         try:
-            for data, filename in pending_uploads:
+            for upload in uploads:
+                data = await upload.read(limits["max_image_bytes"] + 1)
+                total_bytes += len(data)
+                if (
+                    len(data) > limits["max_image_bytes"]
+                    or total_bytes > limits["max_turn_bytes"]
+                ):
+                    raise HTTPException(
+                        status_code=413, detail="图片超过单张或整轮大小限制"
+                    )
+                filename = getattr(upload, "filename", None)
                 artifact = await save_uploaded_image(
                     _store(request),
                     conversation_id=conversation_id,
@@ -379,17 +450,22 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             last_event_id = 0
             try:
                 while not reply_task.done():
-                    run_events = await _store(request).list_events_for_request(request_id)
+                    run_events = await _store(request).list_events_for_request(
+                        request_id
+                    )
                     for event in run_events:
                         if event.id <= last_event_id:
                             continue
                         last_event_id = event.id
-                        yield encode(event.event_type, {
-                            "run_id": event.run_id,
-                            "event_id": event.id,
-                            "created_at": event.created_at,
-                            **event.payload,
-                        })
+                        yield encode(
+                            event.event_type,
+                            {
+                                "run_id": event.run_id,
+                                "event_id": event.id,
+                                "created_at": event.created_at,
+                                **event.payload,
+                            },
+                        )
                     await asyncio.sleep(0.1)
                 result = await reply_task
                 run_events = await _store(request).list_events_for_request(request_id)
@@ -397,28 +473,35 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                     if event.id <= last_event_id:
                         continue
                     last_event_id = event.id
-                    yield encode(event.event_type, {
-                        "run_id": event.run_id,
-                        "event_id": event.id,
-                        "created_at": event.created_at,
-                        **event.payload,
-                    })
-                yield encode("message.completed", {
-                    "text": result.text.replace("artifact://", "/api/artifacts/"),
-                    "attachments": [
+                    yield encode(
+                        event.event_type,
                         {
-                            "artifact_id": a.name,
-                            "url": f"/api/artifacts/{a.name}",
-                            "mime_type": a.media_type,
-                            "filename": a.filename,
-                            "width": a.width,
-                            "height": a.height,
-                            "source_kind": a.source_kind or "generated",
-                            "source_url": a.source_url,
-                        }
-                        for a in result.attachments if a.name
-                    ],
-                })
+                            "run_id": event.run_id,
+                            "event_id": event.id,
+                            "created_at": event.created_at,
+                            **event.payload,
+                        },
+                    )
+                yield encode(
+                    "message.completed",
+                    {
+                        "text": result.text.replace("artifact://", "/api/artifacts/"),
+                        "attachments": [
+                            {
+                                "artifact_id": a.name,
+                                "url": f"/api/artifacts/{a.name}",
+                                "mime_type": a.media_type,
+                                "filename": a.filename,
+                                "width": a.width,
+                                "height": a.height,
+                                "source_kind": a.source_kind or "generated",
+                                "source_url": a.source_url,
+                            }
+                            for a in result.attachments
+                            if a.name
+                        ],
+                    },
+                )
             except Exception as exc:
                 logger.exception("网页对话失败")
                 yield encode("stream.error", {"error": str(exc)})
@@ -427,12 +510,18 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                     reply_task.cancel()
                     await asyncio.gather(reply_task, return_exceptions=True)
 
-        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @api.post("/api/conversations/{conversation_id}/clear")
     async def clear_managed_conversation(conversation_id: str, request: Request):
         record = await _conversation_record(request, conversation_id)
-        await request.app.state.container.bot_service.clear_conversation(_ref_from_record(record))
+        await request.app.state.container.bot_service.clear_conversation(
+            _ref_from_record(record)
+        )
         return {"status": "ok"}
 
     @api.delete("/api/conversations/{conversation_id}")
@@ -469,14 +558,26 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
     @api.get("/api/artifacts/{artifact_id}")
     async def get_artifact(artifact_id: str, request: Request):
         artifact = await _store(request).get_artifact(artifact_id)
-        if artifact is None or not artifact.available:
+        if (
+            artifact is None
+            or not artifact.available
+            or not Path(artifact.local_path).is_file()
+        ):
             raise HTTPException(status_code=404, detail="图片不存在")
-        return FileResponse(artifact.local_path, media_type=artifact.mime_type, filename=Path(artifact.local_path).name)
+        return FileResponse(
+            artifact.local_path,
+            media_type=artifact.mime_type,
+            filename=Path(artifact.local_path).name,
+        )
 
     def _profile_defaults(scope: str) -> dict[str, Any]:
         settings = AppSettings().providers
         prompt_scope = PromptScope.WEB if scope == "web" else PromptScope.FORUM
-        prompt = FilePromptRepository().load("wolf_lumine", set(), prompt_scope).system_prompt
+        prompt = (
+            FilePromptRepository()
+            .load("wolf_lumine", set(), prompt_scope)
+            .system_prompt
+        )
         return {
             "provider": "deepseek",
             "model": DEEPSEEK_VISION_MODEL,
@@ -490,9 +591,17 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
     @api.get("/api/settings/profiles")
     async def get_profiles(request: Request):
         store = _store(request)
-        profiles = [await store.get_profile(scope, _profile_defaults(scope)) for scope in ("forum", "web")]
+        profiles = [
+            await store.get_profile(scope, _profile_defaults(scope))
+            for scope in ("forum", "web")
+        ]
         vault = request.app.state.container.secret_vault
-        env_names = {"openrouter": "OPENROUTER_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "tongyi": "DASHSCOPE_API_KEY", "mimo": "MIMO_API_KEY"}
+        env_names = {
+            "openrouter": "OPENROUTER_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+            "tongyi": "DASHSCOPE_API_KEY",
+            "mimo": "MIMO_API_KEY",
+        }
         for profile in profiles:
             for value in (profile["draft"], profile["active"]):
                 value["provider"] = "deepseek"
@@ -502,16 +611,24 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 )
                 value["fallback_model"] = None
             provider = "deepseek"
-            metadata = await vault.metadata(f"{profile['scope']}:{provider}") if vault else {"configured": False}
+            metadata = (
+                await vault.metadata(f"{profile['scope']}:{provider}")
+                if vault
+                else {"configured": False}
+            )
             if metadata.get("configured"):
                 metadata["source"] = "ui"
             else:
                 environment_value = os.getenv(env_names[provider])
-                metadata.update({
-                    "configured": bool(environment_value),
-                    "source": "environment" if environment_value else None,
-                    "last_four": environment_value[-4:] if environment_value else None,
-                })
+                metadata.update(
+                    {
+                        "configured": bool(environment_value),
+                        "source": "environment" if environment_value else None,
+                        "last_four": (
+                            environment_value[-4:] if environment_value else None
+                        ),
+                    }
+                )
             profile["secret"] = metadata
         return profiles
 
@@ -522,14 +639,18 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         if payload.provider != "deepseek":
             raise HTTPException(status_code=400, detail="视觉流程固定使用 DeepSeek")
         if payload.model not in {None, DEEPSEEK_VISION_MODEL}:
-            raise HTTPException(status_code=400, detail="模型固定为 deepseek-v4-flash-vision-exp")
+            raise HTTPException(
+                status_code=400, detail="模型固定为 deepseek-v4-flash-vision-exp"
+            )
         value = payload.model_dump(mode="json", exclude={"api_key"})
         value["model"] = DEEPSEEK_VISION_MODEL
         value["fallback_model"] = None
         await _store(request).get_profile(scope, _profile_defaults(scope))
         await _store(request).save_profile_draft(scope, value)
         if payload.api_key:
-            await request.app.state.container.secret_vault.set(f"{scope}:{payload.provider}", payload.api_key)
+            await request.app.state.container.secret_vault.set(
+                f"{scope}:{payload.provider}", payload.api_key
+            )
         return {"status": "saved"}
 
     @api.post("/api/settings/profiles/{scope}/validate")
@@ -558,14 +679,18 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 prepared = await prepare_runtime(scope, profile["draft"])
             except Exception as exc:
                 logger.exception("候选 Web Runtime 构建失败")
-                raise HTTPException(status_code=400, detail=f"Runtime 构建失败: {exc}") from exc
+                raise HTTPException(
+                    status_code=400, detail=f"Runtime 构建失败: {exc}"
+                ) from exc
         prepare_forum = getattr(container, "prepare_forum_runtime_profile", None)
         if scope == "forum" and prepare_forum is not None:
             try:
                 forum_candidate = await prepare_forum(profile["draft"])
             except Exception as exc:
                 logger.exception("候选 Forum Runtime 构建失败")
-                raise HTTPException(status_code=400, detail=f"Runtime 构建失败: {exc}") from exc
+                raise HTTPException(
+                    status_code=400, detail=f"Runtime 构建失败: {exc}"
+                ) from exc
         try:
             revision = await _store(request).apply_profile(scope)
         except Exception:
@@ -589,8 +714,15 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
     async def provider_test(scope: str, request: Request):
         profile = await _store(request).get_profile(scope, _profile_defaults(scope))
         provider = profile["draft"].get("provider", "deepseek")
-        secret = await request.app.state.container.secret_vault.get(f"{scope}:{provider}")
-        env_names = {"openrouter": "OPENROUTER_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "tongyi": "DASHSCOPE_API_KEY", "mimo": "MIMO_API_KEY"}
+        secret = await request.app.state.container.secret_vault.get(
+            f"{scope}:{provider}"
+        )
+        env_names = {
+            "openrouter": "OPENROUTER_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+            "tongyi": "DASHSCOPE_API_KEY",
+            "mimo": "MIMO_API_KEY",
+        }
         if not (secret or os.getenv(env_names[provider])):
             return {"ok": False, "message": "缺少 API Key"}
         candidate = None
@@ -602,8 +734,12 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                     scope, profile["draft"]
                 )
                 candidate = getattr(getattr(handler, "_backend", None), "model", None)
-            elif scope == "forum" and hasattr(container, "prepare_forum_runtime_profile"):
-                candidate = await container.prepare_forum_runtime_profile(profile["draft"])
+            elif scope == "forum" and hasattr(
+                container, "prepare_forum_runtime_profile"
+            ):
+                candidate = await container.prepare_forum_runtime_profile(
+                    profile["draft"]
+                )
             if candidate is not None:
                 await asyncio.wait_for(
                     candidate.llm.ainvoke("Reply with exactly: OK"), timeout=45
@@ -641,11 +777,24 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 for item in catalog:
                     item["enabled"] = item["name"] in selected
             return catalog
-        names = ["search_user", "search_user_by_id", "search_posts", "recent_posts", "search_posts_by_time", "get_post", "generate_image", "search_mention_memory", "manage_mention_memory"]
+        names = [
+            "search_user",
+            "search_user_by_id",
+            "search_posts",
+            "recent_posts",
+            "search_posts_by_time",
+            "get_post",
+            "generate_image",
+            "search_mention_memory",
+            "manage_mention_memory",
+        ]
         profile = await _store(request).get_profile(scope, _profile_defaults(scope))
         configured = profile["draft"].get("enabled_tools")
         enabled = set(configured) if configured is not None else set(names)
-        return [{"name": name, "enabled": name in enabled, "source": "runtime"} for name in names]
+        return [
+            {"name": name, "enabled": name in enabled, "source": "runtime"}
+            for name in names
+        ]
 
     @api.get("/api/settings/mcp/{scope}")
     async def get_mcp_status(scope: str, request: Request):
@@ -695,7 +844,9 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
     if static_dir.is_dir():
         assets_dir = static_dir / "assets"
         if assets_dir.is_dir():
-            api.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+            api.mount(
+                "/assets", StaticFiles(directory=assets_dir), name="frontend-assets"
+            )
 
         @api.get("/favicon.ico", include_in_schema=False)
         async def frontend_favicon():

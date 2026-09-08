@@ -1,0 +1,7 @@
+aiohttp==3.13.3
+beautifulsoup4==4.14.3
+ddgs==9.15.0
+httpx==0.28.1
+markdownify==1.2.0
+mcp==1.27.0
+requests==2.33.1

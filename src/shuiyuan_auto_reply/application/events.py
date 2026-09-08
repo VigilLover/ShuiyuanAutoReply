@@ -10,11 +10,17 @@ from shuiyuan_auto_reply.domain import ReplyRequest, ReplyResult
 
 class ExecutionObserver(Protocol):
     async def start(self, request: ReplyRequest) -> str | None: ...
-    async def emit(self, event_type: str, payload: dict[str, Any] | None = None) -> None: ...
-    async def finish(self, result: ReplyResult | None, error: Exception | None = None) -> None: ...
+    async def emit(
+        self, event_type: str, payload: dict[str, Any] | None = None
+    ) -> None: ...
+    async def finish(
+        self, result: ReplyResult | None, error: Exception | None = None
+    ) -> None: ...
 
 
-_observer: ContextVar[ExecutionObserver | None] = ContextVar("execution_observer", default=None)
+_observer: ContextVar[ExecutionObserver | None] = ContextVar(
+    "execution_observer", default=None
+)
 _run_id: ContextVar[str | None] = ContextVar("execution_run_id", default=None)
 _memory_scope: ContextVar[str | None] = ContextVar("memory_scope", default=None)
 

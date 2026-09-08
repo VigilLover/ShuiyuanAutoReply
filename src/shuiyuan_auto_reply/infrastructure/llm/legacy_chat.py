@@ -2,9 +2,15 @@
 
 import re
 
-from shuiyuan_auto_reply.domain import AttachmentRef, Channel, ChatMessage, ConversationRef, ReplyRequest, ReplyResult
+from shuiyuan_auto_reply.domain import (
+    AttachmentRef,
+    Channel,
+    ChatMessage,
+    ConversationRef,
+    ReplyRequest,
+    ReplyResult,
+)
 from shuiyuan_auto_reply.shuiyuan.objects import User
-
 
 _MARKDOWN_IMAGE_RE = re.compile(
     r"!\[(?P<alt>[^\]]*)\]\(\s*(?P<open><)?(?P<target>[^\s)>]+)(?(open)>)(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)",
@@ -39,9 +45,7 @@ def canonicalize_web_artifact_images(text: str, artifacts) -> str:
             return match.group(0)
         return f"![图片]({replacement})"
 
-    return _HTML_IMAGE_RE.sub(
-        html_image, _MARKDOWN_IMAGE_RE.sub(markdown_image, text)
-    )
+    return _HTML_IMAGE_RE.sub(html_image, _MARKDOWN_IMAGE_RE.sub(markdown_image, text))
 
 
 class LegacyMentionChatBackend:
@@ -54,7 +58,10 @@ class LegacyMentionChatBackend:
     ) -> ReplyResult:
         forum = request.forum_context
         user_id: int | str
-        if request.actor.channel is Channel.FORUM and request.actor.external_id.isdigit():
+        if (
+            request.actor.channel is Channel.FORUM
+            and request.actor.external_id.isdigit()
+        ):
             user_id = int(request.actor.external_id)
         else:
             user_id = request.actor.memory_id
@@ -95,10 +102,13 @@ class LegacyMentionChatBackend:
                 getattr(artifact, "width", None),
                 getattr(artifact, "height", None),
             )
+
         return ReplyResult(
             text=text or "",
             attachments=tuple(attachment(artifact) for artifact in artifacts),
-            input_attachments=tuple(attachment(artifact) for artifact in input_artifacts),
+            input_attachments=tuple(
+                attachment(artifact) for artifact in input_artifacts
+            ),
         )
 
     async def clear(self, conversation: ConversationRef) -> None:

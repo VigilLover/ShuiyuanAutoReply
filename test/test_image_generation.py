@@ -84,6 +84,7 @@ class _MockModel:
 
     async def upload_image(self, image_bytes):
         from shuiyuan_auto_reply.shuiyuan.objects import ImageUploadResponse
+
         self.uploaded_images.append(image_bytes)
         logging.info("==> [Mock] upload_image: %.1fKB", len(image_bytes) / 1024)
         idx = len(self.uploaded_images)
@@ -149,20 +150,12 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     def _images_response_url():
-        return {
-            "data": [
-                {"url": _png_data_url()}
-            ]
-        }
+        return {"data": [{"url": _png_data_url()}]}
 
     @staticmethod
     def _images_response_b64():
         raw = base64.b64decode(_png_data_url().split(",", 1)[1])
-        return {
-            "data": [
-                {"b64_json": base64.b64encode(raw).decode("ascii")}
-            ]
-        }
+        return {"data": [{"b64_json": base64.b64encode(raw).decode("ascii")}]}
 
     async def test_generation_endpoint_uses_openai_images_contract(self):
         async def handler(request):
@@ -171,7 +164,11 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
-        result = await tool("测试原生图片生成接口调用", aspect_ratio="3:4", output_dir=self.output_dir.name)
+        result = await tool(
+            "测试原生图片生成接口调用",
+            aspect_ratio="3:4",
+            output_dir=self.output_dir.name,
+        )
 
         self.assertEqual(result, "upload://mockShortPath1.jpeg")
         self.assertEqual(
@@ -249,7 +246,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
-        result = await tool("测试URL响应图片的下载和上传", output_dir=self.output_dir.name)
+        result = await tool(
+            "测试URL响应图片的下载和上传", output_dir=self.output_dir.name
+        )
 
         self.assertEqual(result, "upload://mockShortPath1.jpeg")
         self.assertEqual(len(self.model.uploaded_images), 1)
@@ -264,7 +263,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
-        result = await tool("测试服务端错误信息回传给机器人", output_dir=self.output_dir.name)
+        result = await tool(
+            "测试服务端错误信息回传给机器人", output_dir=self.output_dir.name
+        )
 
         self.assertIn("图片生成失败: API 返回 HTTP 400", result)
         self.assertIn("bad image prompt", result)
@@ -281,7 +282,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
-        result = await tool("测试图片代理请求编号错误回传", output_dir=self.output_dir.name)
+        result = await tool(
+            "测试图片代理请求编号错误回传", output_dir=self.output_dir.name
+        )
 
         self.assertIn("HTTP 502", result)
         self.assertIn("4Router request_id=request-abc123", result)
@@ -316,7 +319,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first, "upload://mockShortPath1.jpeg")
         self.assertEqual(second, "upload://mockShortPath2.jpeg")
         self.assertEqual(len(self.requests), 2)
-        self.assertEqual([request["prompt"] for request in self.requests], [prompt, prompt])
+        self.assertEqual(
+            [request["prompt"] for request in self.requests], [prompt, prompt]
+        )
 
     async def test_runtime_model_config_is_read_for_each_call(self):
         async def handler(request):
@@ -327,7 +332,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         tool = create_image_generation_tool(self.model)
         os.environ["IMAGE_GEN_MODEL"] = "runtime-model-after-import"
 
-        result = await tool("测试运行时模型配置读取功能", output_dir=self.output_dir.name)
+        result = await tool(
+            "测试运行时模型配置读取功能", output_dir=self.output_dir.name
+        )
 
         self.assertEqual(result, "upload://mockShortPath1.jpeg")
         self.assertEqual(self.requests[0]["model"], "runtime-model-after-import")
@@ -352,7 +359,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, 1)
         self.assertEqual(self.model.uploaded_images, [])
 
-    async def test_explicit_multiple_attempts_repeat_submissions_with_exponential_backoff(self):
+    async def test_explicit_multiple_attempts_repeat_submissions_with_exponential_backoff(
+        self,
+    ):
         os.environ["IMAGE_GEN_MAX_ATTEMPTS"] = "4"
         attempts = 0
 
@@ -369,7 +378,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             "shuiyuan_auto_reply.features.mention.image_generation.asyncio.sleep",
             new=AsyncMock(),
         ) as mocked_sleep:
-            result = await tool("测试连续断连重试提交功能", output_dir=self.output_dir.name)
+            result = await tool(
+                "测试连续断连重试提交功能", output_dir=self.output_dir.name
+            )
 
         self.assertIn("已执行的重试均为独立请求", result)
         self.assertEqual(attempts, 4)
@@ -397,7 +408,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             "shuiyuan_auto_reply.features.mention.image_generation.asyncio.sleep",
             new=AsyncMock(),
         ) as mocked_sleep:
-            result = await tool("测试配置重连次数和延迟参数", output_dir=self.output_dir.name)
+            result = await tool(
+                "测试配置重连次数和延迟参数", output_dir=self.output_dir.name
+            )
 
         self.assertIn("API 连接异常", result)
         self.assertIn("无法接收该次 response", result)
@@ -421,7 +434,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             "shuiyuan_auto_reply.features.mention.image_generation.asyncio.sleep",
             new=AsyncMock(),
         ):
-            result = await tool("测试HTTP状态码重试处理逻辑", output_dir=self.output_dir.name)
+            result = await tool(
+                "测试HTTP状态码重试处理逻辑", output_dir=self.output_dir.name
+            )
 
         self.assertEqual(result, "upload://mockShortPath1.jpeg")
         self.assertEqual(attempts, 2)
@@ -445,9 +460,13 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_images_server(handler)
         tool = create_image_generation_tool(self.model)
-        first = asyncio.create_task(tool("第一个并发生图测试请求任务", output_dir=self.output_dir.name))
+        first = asyncio.create_task(
+            tool("第一个并发生图测试请求任务", output_dir=self.output_dir.name)
+        )
         await asyncio.wait_for(first_started.wait(), timeout=1)
-        second = asyncio.create_task(tool("第二个并发生图测试请求任务", output_dir=self.output_dir.name))
+        second = asyncio.create_task(
+            tool("第二个并发生图测试请求任务", output_dir=self.output_dir.name)
+        )
         await asyncio.sleep(0.05)
 
         self.assertEqual(submissions, 1)
@@ -461,6 +480,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
 
 # ── 基础文生图 ────────────────────────────────────────────────────────
+
 
 class TestImageGenerationBasic(unittest.IsolatedAsyncioTestCase):
     """纯文本文生图（无参考图）"""
@@ -477,7 +497,9 @@ class TestImageGenerationBasic(unittest.IsolatedAsyncioTestCase):
             "一幅简单的二次元风格插画，1:1。一只白色的卡通小猫坐在木地板上，"
             "背景为纯浅蓝色，阳光从左侧窗户照入。简洁干净，无多余细节。"
         )
-        result = await gen_img(prompt, aspect_ratio="1:1", image_size="1K", output_dir=str(_OUTPUT_DIR))
+        result = await gen_img(
+            prompt, aspect_ratio="1:1", image_size="1K", output_dir=str(_OUTPUT_DIR)
+        )
         logging.info("Result: %s", str(result)[:200])
         self.assertTrue(result)
         self.assertFalse(result.startswith("图片生成失败"))
@@ -485,6 +507,7 @@ class TestImageGenerationBasic(unittest.IsolatedAsyncioTestCase):
 
 
 # ── 参考图生图 ────────────────────────────────────────────────────────
+
 
 class TestImageGenerationWithReference(unittest.IsolatedAsyncioTestCase):
     """使用参考图进行文生图"""
@@ -509,8 +532,11 @@ class TestImageGenerationWithReference(unittest.IsolatedAsyncioTestCase):
             "保持相似的风格和角色特征，可适当加入新的姿态或场景元素。"
         )
         result = await gen_img(
-            prompt, aspect_ratio="1:1", image_size="1K",
-            reference_images=[ref_path], output_dir=str(_OUTPUT_DIR),
+            prompt,
+            aspect_ratio="1:1",
+            image_size="1K",
+            reference_images=[ref_path],
+            output_dir=str(_OUTPUT_DIR),
         )
         logging.info("Result: %s", str(result)[:200])
         self.assertTrue(result)
@@ -537,8 +563,11 @@ class TestImageGenerationWithReference(unittest.IsolatedAsyncioTestCase):
             "保持相似的风格和角色特征，可适当加入新的姿态或场景元素。"
         )
         result = await gen_img(
-            prompt, aspect_ratio="1:1", image_size="1K",
-            reference_images=[ref_path], output_dir=str(_OUTPUT_DIR),
+            prompt,
+            aspect_ratio="1:1",
+            image_size="1K",
+            reference_images=[ref_path],
+            output_dir=str(_OUTPUT_DIR),
         )
         logging.info("Result: %s", str(result)[:200])
         self.assertTrue(result)
@@ -563,8 +592,11 @@ class TestImageGenerationWithReference(unittest.IsolatedAsyncioTestCase):
         gen_img = create_image_generation_tool(mock)
         prompt = "参考提供的两张图片风格，生成一张新的图片。"
         result = await gen_img(
-            prompt, aspect_ratio="1:1", image_size="1K",
-            reference_images=refs, output_dir=str(_OUTPUT_DIR),
+            prompt,
+            aspect_ratio="1:1",
+            image_size="1K",
+            reference_images=refs,
+            output_dir=str(_OUTPUT_DIR),
         )
         logging.info("Result: %s", str(result)[:200])
         self.assertTrue(result)
@@ -574,6 +606,7 @@ class TestImageGenerationWithReference(unittest.IsolatedAsyncioTestCase):
 
 # ── Shuiyuan download_image ────────────────────────────────────────────
 
+
 class TestShuiyuanDownloadImage(unittest.IsolatedAsyncioTestCase):
     """测试 upload:// 格式图片通过 download_image 下载（需要有效的 Shuiyuan cookies）"""
 
@@ -581,6 +614,7 @@ class TestShuiyuanDownloadImage(unittest.IsolatedAsyncioTestCase):
         """upload:// 应通过 Shuiyuan 认证下载为图片 bytes"""
         _require_live_image_api(self)
         from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
+
         cookies_path = os.path.join(PROJECT_ROOT, "cookies")
         if not os.path.exists(cookies_path):
             self.skipTest("Cookies file not found, cannot auth with Shuiyuan")
@@ -597,6 +631,7 @@ class TestShuiyuanDownloadImage(unittest.IsolatedAsyncioTestCase):
 
 
 # ── 图片下载/编码工具 ─────────────────────────────────────────────────
+
 
 class TestDownloadAndEncode(unittest.IsolatedAsyncioTestCase):
     async def test_shuiyuan_avatar_uses_authenticated_raw_image_download(self):
@@ -642,7 +677,9 @@ class TestDownloadAndEncode(unittest.IsolatedAsyncioTestCase):
         """HTTP URL 应正确下载并编码"""
         _require_live_image_api(self)
         async with aiohttp.ClientSession() as session:
-            data_url = await _download_and_encode(session, "https://www.python.org/static/img/python-logo.png")
+            data_url = await _download_and_encode(
+                session, "https://www.python.org/static/img/python-logo.png"
+            )
         self.assertIsNotNone(data_url)
         self.assertTrue(data_url.startswith("data:image/png;base64,"))
 
@@ -662,7 +699,9 @@ class TestDownloadAndEncode(unittest.IsolatedAsyncioTestCase):
         buffer = io.BytesIO()
         Image.new("RGB", (1300, 20), (200, 40, 40)).save(buffer, format="PNG")
 
-        result = _encode_bytes(buffer.getvalue(), "reference.png", max_bytes=1024 * 1024)
+        result = _encode_bytes(
+            buffer.getvalue(), "reference.png", max_bytes=1024 * 1024
+        )
 
         self.assertIsNotNone(result)
         self.assertTrue(result.startswith("data:image/jpeg;base64,"))

@@ -10,23 +10,40 @@ from urllib.parse import urlparse
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-
 logger = logging.getLogger(__name__)
 
 SHUIYUAN_HOSTS = {"shuiyuan.sjtu.edu.cn"}
 UPLOAD_SHORT_PATH_PREFIX = "/uploads/short-url/"
 USER_AVATAR_PATH_PREFIX = "/user_avatar/"
-IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif")
+IMAGE_EXTENSIONS = (
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".heic",
+    ".heif",
+)
 
 DEFAULT_MAX_LONG_EDGE = 1024
 DEFAULT_JPEG_QUALITY = 82
 DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 DEFAULT_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 
-_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*]\(\s*(?P<url>[^)\s]+)(?:\s+['\"][^'\"]*['\"])?\s*\)")
-_HTML_IMG_RE = re.compile(r"<img\b[^>]*?\bsrc\s*=\s*(?P<quote>['\"]?)(?P<url>[^'\"\s>]+)(?P=quote)", re.IGNORECASE)
+_MARKDOWN_IMAGE_RE = re.compile(
+    r"!\[[^\]]*]\(\s*(?P<url>[^)\s]+)(?:\s+['\"][^'\"]*['\"])?\s*\)"
+)
+_HTML_IMG_RE = re.compile(
+    r"<img\b[^>]*?\bsrc\s*=\s*(?P<quote>['\"]?)(?P<url>[^'\"\s>]+)(?P=quote)",
+    re.IGNORECASE,
+)
 _RAW_UPLOAD_RE = re.compile(r"(?<![\w/])upload://[^\s<>)\"']+", re.IGNORECASE)
-_RAW_SHORT_PATH_RE = re.compile(r"(?<![\w-])/uploads/short-url/[^\s<>)\"']+", re.IGNORECASE)
+_RAW_SHORT_PATH_RE = re.compile(
+    r"(?<![\w-])/uploads/short-url/[^\s<>)\"']+", re.IGNORECASE
+)
 _RAW_SHUIYUAN_URL_RE = re.compile(
     r"https?://shuiyuan\.sjtu\.edu\.cn/uploads/short-url/[^\s<>)\"']+",
     re.IGNORECASE,
@@ -87,7 +104,7 @@ def normalize_shuiyuan_image_url(url: str) -> str | None:
         return candidate if _is_probable_image_url(candidate) else None
 
     if candidate.startswith(UPLOAD_SHORT_PATH_PREFIX):
-        normalized = "upload://" + candidate[len(UPLOAD_SHORT_PATH_PREFIX):]
+        normalized = "upload://" + candidate[len(UPLOAD_SHORT_PATH_PREFIX) :]
         return normalized if _is_probable_image_url(normalized) else None
 
     if candidate.startswith(USER_AVATAR_PATH_PREFIX):
@@ -98,7 +115,7 @@ def normalize_shuiyuan_image_url(url: str) -> str | None:
         if parsed.netloc.lower() not in SHUIYUAN_HOSTS:
             return None
         if parsed.path.startswith(UPLOAD_SHORT_PATH_PREFIX):
-            filename = parsed.path[len(UPLOAD_SHORT_PATH_PREFIX):]
+            filename = parsed.path[len(UPLOAD_SHORT_PATH_PREFIX) :]
             normalized = "upload://" + filename
             return normalized if _is_probable_image_url(normalized) else None
         if parsed.path.startswith(USER_AVATAR_PATH_PREFIX):
@@ -112,9 +129,17 @@ def extract_image_urls(text: str | None) -> list[str]:
         return []
 
     candidates: list[str] = []
-    for pattern in (_MARKDOWN_IMAGE_RE, _HTML_IMG_RE, _RAW_SHUIYUAN_URL_RE, _RAW_SHORT_PATH_RE, _RAW_UPLOAD_RE):
+    for pattern in (
+        _MARKDOWN_IMAGE_RE,
+        _HTML_IMG_RE,
+        _RAW_SHUIYUAN_URL_RE,
+        _RAW_SHORT_PATH_RE,
+        _RAW_UPLOAD_RE,
+    ):
         for match in pattern.finditer(text):
-            candidates.append(match.group("url") if "url" in match.groupdict() else match.group(0))
+            candidates.append(
+                match.group("url") if "url" in match.groupdict() else match.group(0)
+            )
 
     seen: set[str] = set()
     normalized_urls: list[str] = []
@@ -127,7 +152,9 @@ def extract_image_urls(text: str | None) -> list[str]:
     return normalized_urls
 
 
-def _compress_to_jpeg_data_url(image_bytes: bytes, *, max_long_edge: int, jpeg_quality: int) -> tuple[str, str, int]:
+def _compress_to_jpeg_data_url(
+    image_bytes: bytes, *, max_long_edge: int, jpeg_quality: int
+) -> tuple[str, str, int]:
     with Image.open(io.BytesIO(image_bytes)) as image:
         image = ImageOps.exif_transpose(image)
         if image.mode not in ("RGB", "L"):
@@ -167,23 +194,37 @@ async def prepare_image_input(
         return None
 
     if shuiyuan_model is None:
-        logger.warning("No ShuiyuanModel available, cannot download image: %s", normalized)
+        logger.warning(
+            "No ShuiyuanModel available, cannot download image: %s", normalized
+        )
         return None
 
-    max_bytes = max_image_bytes if max_image_bytes is not None else _env_int_with_fallback(
-        "MIMO_MULTIMODAL_MAX_IMAGE_BYTES",
-        "MIMO_MAX_IMAGE_BYTES",
-        DEFAULT_MAX_IMAGE_BYTES,
+    max_bytes = (
+        max_image_bytes
+        if max_image_bytes is not None
+        else _env_int_with_fallback(
+            "MIMO_MULTIMODAL_MAX_IMAGE_BYTES",
+            "MIMO_MAX_IMAGE_BYTES",
+            DEFAULT_MAX_IMAGE_BYTES,
+        )
     )
-    long_edge = max_long_edge if max_long_edge is not None else _env_int_with_fallback(
-        "MIMO_MULTIMODAL_MAX_LONG_EDGE",
-        "MIMO_IMAGE_MAX_LONG_EDGE",
-        DEFAULT_MAX_LONG_EDGE,
+    long_edge = (
+        max_long_edge
+        if max_long_edge is not None
+        else _env_int_with_fallback(
+            "MIMO_MULTIMODAL_MAX_LONG_EDGE",
+            "MIMO_IMAGE_MAX_LONG_EDGE",
+            DEFAULT_MAX_LONG_EDGE,
+        )
     )
-    quality = jpeg_quality if jpeg_quality is not None else _env_int_with_fallback(
-        "MIMO_MULTIMODAL_JPEG_QUALITY",
-        "MIMO_IMAGE_JPEG_QUALITY",
-        DEFAULT_JPEG_QUALITY,
+    quality = (
+        jpeg_quality
+        if jpeg_quality is not None
+        else _env_int_with_fallback(
+            "MIMO_MULTIMODAL_JPEG_QUALITY",
+            "MIMO_IMAGE_JPEG_QUALITY",
+            DEFAULT_JPEG_QUALITY,
+        )
     )
     quality = max(1, min(95, quality))
 
@@ -197,7 +238,11 @@ async def prepare_image_input(
         return None
 
     if len(image_bytes) > max_bytes:
-        logger.warning("Downloaded image too large for MiMo input: %s bytes from %s", len(image_bytes), normalized)
+        logger.warning(
+            "Downloaded image too large for MiMo input: %s bytes from %s",
+            len(image_bytes),
+            normalized,
+        )
         return None
 
     try:
@@ -211,7 +256,11 @@ async def prepare_image_input(
         return None
 
     if byte_count > max_bytes:
-        logger.warning("Compressed image too large for MiMo input: %s bytes from %s", byte_count, normalized)
+        logger.warning(
+            "Compressed image too large for MiMo input: %s bytes from %s",
+            byte_count,
+            normalized,
+        )
         return None
 
     return MentionImageInput(
@@ -234,10 +283,14 @@ async def collect_post_image_inputs(
     existing_urls: Sequence[str] = (),
     existing_byte_count: int = 0,
 ) -> list[MentionImageInput]:
-    total_limit = max_total_bytes if max_total_bytes is not None else _env_int_with_fallback(
-        "MIMO_MULTIMODAL_MAX_TOTAL_BYTES",
-        "MIMO_MAX_TOTAL_IMAGE_BYTES",
-        DEFAULT_MAX_TOTAL_BYTES,
+    total_limit = (
+        max_total_bytes
+        if max_total_bytes is not None
+        else _env_int_with_fallback(
+            "MIMO_MULTIMODAL_MAX_TOTAL_BYTES",
+            "MIMO_MAX_TOTAL_IMAGE_BYTES",
+            DEFAULT_MAX_TOTAL_BYTES,
+        )
     )
     images: list[MentionImageInput] = []
     seen: set[str] = {
@@ -247,7 +300,9 @@ async def collect_post_image_inputs(
     }
     total_bytes = max(0, existing_byte_count)
     if total_bytes >= total_limit:
-        logger.warning("Skipping MiMo image input because total image bytes cap is already reached")
+        logger.warning(
+            "Skipping MiMo image input because total image bytes cap is already reached"
+        )
         return images
 
     for post in posts:
@@ -256,11 +311,16 @@ async def collect_post_image_inputs(
         else:
             post_image_urls = list(getattr(post, "image_urls", []) or [])
         post_description = (
-            post.get("description", "") if isinstance(post, dict)
+            post.get("description", "")
+            if isinstance(post, dict)
             else getattr(post, "description", "")
         )
         for field_name in ("raw", "cooked"):
-            field_value = post.get(field_name) if isinstance(post, dict) else getattr(post, field_name, None)
+            field_value = (
+                post.get(field_name)
+                if isinstance(post, dict)
+                else getattr(post, field_name, None)
+            )
             if isinstance(field_value, str):
                 post_image_urls.extend(extract_image_urls(field_value))
 
@@ -281,7 +341,9 @@ async def collect_post_image_inputs(
             if image is None:
                 continue
             if total_bytes + image.byte_count > total_limit:
-                logger.warning("Skipping MiMo image input because total image bytes cap would be exceeded")
+                logger.warning(
+                    "Skipping MiMo image input because total image bytes cap would be exceeded"
+                )
                 return images
 
             images.append(image)

@@ -66,3 +66,12 @@ pytest -q --run-live            # 显式启用真实模型、MCP 等外部调用
 npm --prefix web run build
 ```
 
+
+## 本地与远程部署
+
+同一配置文件支持本地 m3e-base/Neo4j 与远程 OpenAI 兼容 Embedding/pgvector。
+完整步骤、Cookie/Key 管理、重新向量化、备份恢复及 2GB 验证见 [部署指南](docs/deployment.md)。
+本地完整安装请使用 `uv sync --extra dev --extra server --extra local-embedding --extra neo4j`。
+远程 Compose 清单位于 `deploy/compose.yaml`，默认包括 SimpleMCP，管理端仅通过 SSH 隧道访问。
+
+CI/CD 工作流、GHCR 镜像发布及受限 SSH 部署设置见 [CI/CD 运维指南](docs/cicd.md)。

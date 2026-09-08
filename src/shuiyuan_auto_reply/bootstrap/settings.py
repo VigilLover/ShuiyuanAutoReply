@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .deployment import get_deployment
+
 
 def _value(name: str, default: str | None = None) -> str | None:
     return os.getenv(name, default)
@@ -30,8 +32,12 @@ def _flag(name: str, default: bool = False) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class ForumSettings:
-    cookie_file: str = "cookies"
-    bot_username: str = "wolf_lumine"
+    cookie_file: str = field(
+        default_factory=lambda: get_deployment().section("forum")["cookie_file"]
+    )
+    bot_username: str = field(
+        default_factory=lambda: get_deployment().section("forum")["bot_username"]
+    )
 
 
 class DeepSeekApiFormat(str, Enum):
@@ -42,11 +48,19 @@ class DeepSeekApiFormat(str, Enum):
 @dataclass(frozen=True, slots=True)
 class ProviderSettings:
     mention_provider: str = field(
-        default_factory=lambda: _text("MENTION_CHAT_PROVIDER", "deepseek").strip().lower()
+        default_factory=lambda: _text("MENTION_CHAT_PROVIDER", "deepseek")
+        .strip()
+        .lower()
     )
-    deepseek_api_key: str | None = field(default_factory=lambda: _value("DEEPSEEK_API_KEY"))
-    dashscope_api_key: str | None = field(default_factory=lambda: _value("DASHSCOPE_API_KEY"))
-    openrouter_api_key: str | None = field(default_factory=lambda: _value("OPENROUTER_API_KEY"))
+    deepseek_api_key: str | None = field(
+        default_factory=lambda: _value("DEEPSEEK_API_KEY")
+    )
+    dashscope_api_key: str | None = field(
+        default_factory=lambda: _value("DASHSCOPE_API_KEY")
+    )
+    openrouter_api_key: str | None = field(
+        default_factory=lambda: _value("OPENROUTER_API_KEY")
+    )
     mimo_api_key: str | None = field(default_factory=lambda: _value("MIMO_API_KEY"))
     deepseek_model: str = field(
         default_factory=lambda: _text(
@@ -66,19 +80,27 @@ class ProviderSettings:
     # Retained only for loading older saved profiles; DeepSeek Vision never uses it.
     deepseek_fallback_model: str = "deepseek-v4-flash"
     deepseek_thinking: str = field(
-        default_factory=lambda: _text("DEEPSEEK_MENTION_THINKING", "enabled").strip().lower()
+        default_factory=lambda: _text("DEEPSEEK_MENTION_THINKING", "enabled")
+        .strip()
+        .lower()
     )
     deepseek_reasoning_effort: str = field(
-        default_factory=lambda: _text("DEEPSEEK_MENTION_REASONING_EFFORT", "max").strip().lower()
+        default_factory=lambda: _text("DEEPSEEK_MENTION_REASONING_EFFORT", "max")
+        .strip()
+        .lower()
     )
     _deepseek_max_tokens: str | None = field(
         default_factory=lambda: _value("DEEPSEEK_MENTION_MAX_TOKENS"), repr=False
     )
     dashscope_model: str = field(
-        default_factory=lambda: _text("DASHSCOPE_MENTION_MODEL", "qwen3.5-plus-2026-02-15")
+        default_factory=lambda: _text(
+            "DASHSCOPE_MENTION_MODEL", "qwen3.5-plus-2026-02-15"
+        )
     )
     dashscope_fallback_model: str = field(
-        default_factory=lambda: _text("DASHSCOPE_MENTION_FALLBACK_MODEL", "qwen3.5-plus")
+        default_factory=lambda: _text(
+            "DASHSCOPE_MENTION_FALLBACK_MODEL", "qwen3.5-plus"
+        )
     )
     openrouter_mention_model: str = field(
         default_factory=lambda: _cascading_text(
@@ -87,12 +109,16 @@ class ProviderSettings:
             "google/gemini-3.1-flash-lite-preview",
         )
     )
-    openrouter_proxy: str | None = field(default_factory=lambda: _value("OPENROUTER_PROXY"))
+    openrouter_proxy: str | None = field(
+        default_factory=lambda: _value("OPENROUTER_PROXY")
+    )
     mimo_model: str = field(
         default_factory=lambda: _text("MIMO_MENTION_MODEL", "mimo-v2.5")
     )
     mimo_thinking: str = field(
-        default_factory=lambda: _text("MIMO_MENTION_THINKING", "enabled").strip().lower()
+        default_factory=lambda: _text("MIMO_MENTION_THINKING", "enabled")
+        .strip()
+        .lower()
     )
     _mimo_max_tokens: str | None = field(
         default_factory=lambda: _value("MIMO_MENTION_MAX_TOKENS"), repr=False
@@ -177,22 +203,32 @@ class ProviderSettings:
 
     @property
     def mimo_max_retries(self) -> int:
-        return self._parse_optional_positive(
-            "MIMO_MENTION_MAX_RETRIES", self._mimo_max_retries
-        ) or 3
+        return (
+            self._parse_optional_positive(
+                "MIMO_MENTION_MAX_RETRIES", self._mimo_max_retries
+            )
+            or 3
+        )
 
     @property
     def mimo_multimodal_search_images(self) -> int:
-        return self._parse_optional_positive(
-            "MIMO_MULTIMODAL_MAX_SEARCH_IMAGES",
-            self._mimo_multimodal_search_images,
-        ) or 2
+        return (
+            self._parse_optional_positive(
+                "MIMO_MULTIMODAL_MAX_SEARCH_IMAGES",
+                self._mimo_multimodal_search_images,
+            )
+            or 2
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class MemorySettings:
-    search_limit: int = field(default_factory=lambda: int(_text("LANGMEM_SEARCH_LIMIT", "5")))
-    max_context_chars: int = field(default_factory=lambda: int(_text("LANGMEM_CONTEXT_MAX_CHARS", "1600")))
+    search_limit: int = field(
+        default_factory=lambda: int(_text("LANGMEM_SEARCH_LIMIT", "5"))
+    )
+    max_context_chars: int = field(
+        default_factory=lambda: int(_text("LANGMEM_CONTEXT_MAX_CHARS", "1600"))
+    )
     strict: bool = field(
         default_factory=lambda: _flag("POSTGRES_MEMORY_STRICT")
         or _flag("POSTGRES_STRICT")

@@ -1,7 +1,7 @@
-import unittest
-import os
 import asyncio
+import os
 import tempfile
+import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -29,26 +29,35 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(background())
         watcher._bg_tasks.add(task)
         await asyncio.sleep(0)
-        await watcher.aclose()
+        with patch(
+            "shuiyuan_auto_reply.bootstrap.deployment.get_deployment",
+            return_value=SimpleNamespace(section=lambda _: {"shutdown_timeout": 0.01}),
+        ):
+            await watcher.aclose()
         self.assertTrue(task.cancelled())
         self.assertTrue(finished.is_set())
         self.assertEqual(watcher._bg_tasks, set())
 
     async def test_failed_api_startup_closes_forum_session(self):
         forum = SimpleNamespace(close=AsyncMock())
-        with tempfile.TemporaryDirectory() as temp, patch.dict(
-            os.environ,
-            {
-                "SHUIYUAN_STATE_DIR": temp,
-                "MENTION_CHAT_PROVIDER": "deepseek",
-                "DEEPSEEK_API_KEY": "test-key",
-            },
-        ), patch(
-            "shuiyuan_auto_reply.bootstrap.container.ShuiyuanModel.create",
-            new=AsyncMock(return_value=forum),
-        ), patch(
-            "shuiyuan_auto_reply.bootstrap.container.MentionProviderFactory.create",
-            side_effect=RuntimeError("startup failed"),
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.dict(
+                os.environ,
+                {
+                    "SHUIYUAN_STATE_DIR": temp,
+                    "MENTION_CHAT_PROVIDER": "deepseek",
+                    "DEEPSEEK_API_KEY": "test-key",
+                },
+            ),
+            patch(
+                "shuiyuan_auto_reply.bootstrap.container.ShuiyuanModel.create",
+                new=AsyncMock(return_value=forum),
+            ),
+            patch(
+                "shuiyuan_auto_reply.bootstrap.container.MentionProviderFactory.create",
+                side_effect=RuntimeError("startup failed"),
+            ),
         ):
             with self.assertRaisesRegex(RuntimeError, "startup failed"):
                 await ApplicationContainer.for_api()
@@ -62,19 +71,24 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             AppSettings(), forum, SimpleNamespace(), chat, managed=[managed]
         )
 
-        with patch(
-            "shuiyuan_auto_reply.bootstrap.container.close_global_async_postgres_memory_manager",
-            new_callable=AsyncMock,
-        ) as memory_close, patch(
-            "shuiyuan_auto_reply.bootstrap.container.close_global_async_postgres_record_manager",
-            new_callable=AsyncMock,
-        ) as record_close, patch(
-            "shuiyuan_auto_reply.bootstrap.container.close_global_async_neo4j_manager",
-            new_callable=AsyncMock,
-        ) as neo4j_close, patch(
-            "shuiyuan_auto_reply.bootstrap.container.close_shared_session",
-            new_callable=AsyncMock,
-        ) as image_close:
+        with (
+            patch(
+                "shuiyuan_auto_reply.bootstrap.container.close_global_async_postgres_memory_manager",
+                new_callable=AsyncMock,
+            ) as memory_close,
+            patch(
+                "shuiyuan_auto_reply.bootstrap.container.close_global_async_postgres_record_manager",
+                new_callable=AsyncMock,
+            ) as record_close,
+            patch(
+                "shuiyuan_auto_reply.bootstrap.container.close_global_async_neo4j_manager",
+                new_callable=AsyncMock,
+            ) as neo4j_close,
+            patch(
+                "shuiyuan_auto_reply.bootstrap.container.close_shared_session",
+                new_callable=AsyncMock,
+            ) as image_close,
+        ):
             await container.aclose()
             await container.aclose()
 
@@ -93,18 +107,23 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         container = ApplicationContainer(
             AppSettings(), forum, SimpleNamespace(), chat, managed=[managed]
         )
-        with patch(
-            "shuiyuan_auto_reply.bootstrap.container.close_global_async_postgres_memory_manager",
-            new_callable=AsyncMock,
-        ), patch(
-            "shuiyuan_auto_reply.bootstrap.container.close_global_async_postgres_record_manager",
-            new_callable=AsyncMock,
-        ), patch(
-            "shuiyuan_auto_reply.bootstrap.container.close_global_async_neo4j_manager",
-            new_callable=AsyncMock,
-        ), patch(
-            "shuiyuan_auto_reply.bootstrap.container.close_shared_session",
-            new_callable=AsyncMock,
+        with (
+            patch(
+                "shuiyuan_auto_reply.bootstrap.container.close_global_async_postgres_memory_manager",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "shuiyuan_auto_reply.bootstrap.container.close_global_async_postgres_record_manager",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "shuiyuan_auto_reply.bootstrap.container.close_global_async_neo4j_manager",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "shuiyuan_auto_reply.bootstrap.container.close_shared_session",
+                new_callable=AsyncMock,
+            ),
         ):
             await container.aclose()
         chat.aclose.assert_awaited_once()

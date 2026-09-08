@@ -67,19 +67,27 @@ class _KeepaliveConnector(aiohttp.TCPConnector):
                 opt_id = getattr(_socket, option, None)
                 if opt_id is not None:
                     try:
-                        sock.setsockopt(_socket.IPPROTO_TCP, opt_id, _TCP_KEEPALIVE_IDLE_SECONDS)
+                        sock.setsockopt(
+                            _socket.IPPROTO_TCP, opt_id, _TCP_KEEPALIVE_IDLE_SECONDS
+                        )
                     except OSError:
                         pass
                     break
             # Set keepalive interval and count on platforms that support them
             if hasattr(_socket, "TCP_KEEPINTVL"):
                 try:
-                    sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, _TCP_KEEPALIVE_INTERVAL_SECONDS)
+                    sock.setsockopt(
+                        _socket.IPPROTO_TCP,
+                        _socket.TCP_KEEPINTVL,
+                        _TCP_KEEPALIVE_INTERVAL_SECONDS,
+                    )
                 except OSError:
                     pass
             if hasattr(_socket, "TCP_KEEPCNT"):
                 try:
-                    sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, _TCP_KEEPALIVE_COUNT)
+                    sock.setsockopt(
+                        _socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, _TCP_KEEPALIVE_COUNT
+                    )
                 except OSError:
                     pass
         return transport, protocol
@@ -124,9 +132,22 @@ async def close_shared_session() -> None:
     _shared_session = None
     _shared_session_loop = None
 
+
 _SUPPORTED_ASPECT_RATIOS = {
-    "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
-    "1:4", "4:1", "1:8", "8:1",
+    "1:1",
+    "2:3",
+    "3:2",
+    "3:4",
+    "4:3",
+    "4:5",
+    "5:4",
+    "9:16",
+    "16:9",
+    "21:9",
+    "1:4",
+    "4:1",
+    "1:8",
+    "8:1",
 }
 _DATA_URL_RE = re.compile(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", re.DOTALL)
 
@@ -137,7 +158,9 @@ class _ImageAPIError(Exception):
         self.retryable = retryable
 
 
-def _image_api_http_error(response: aiohttp.ClientResponse, body: str) -> _ImageAPIError:
+def _image_api_http_error(
+    response: aiohttp.ClientResponse, body: str
+) -> _ImageAPIError:
     """Create a support-actionable error for an Images API HTTP response."""
     request_id = response.headers.get("x-oneapi-request-id")
     message = f"API 返回 HTTP {response.status}, {body[:200]}"
@@ -315,7 +338,9 @@ async def _request_image_bytes(
 
     request_started_at = time.monotonic()
     session = await _get_shared_session()
-    async with session.post(api_url, headers=headers, data=payload_bytes, timeout=timeout) as response:
+    async with session.post(
+        api_url, headers=headers, data=payload_bytes, timeout=timeout
+    ) as response:
         if response.status != 200:
             raise _image_api_http_error(response, await response.text())
 
@@ -341,7 +366,9 @@ async def _request_image_bytes_multipart(
 
     request_started_at = time.monotonic()
     session = await _get_shared_session()
-    async with session.post(api_url, headers=headers, data=form_data, timeout=timeout) as response:
+    async with session.post(
+        api_url, headers=headers, data=form_data, timeout=timeout
+    ) as response:
         if response.status != 200:
             raise _image_api_http_error(response, await response.text())
 
@@ -368,7 +395,11 @@ async def _download_and_encode(
         if match:
             mime = match.group("mime").lower()
             if strict_remote and mime not in {
-                "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"
+                "image/jpeg",
+                "image/jpg",
+                "image/png",
+                "image/webp",
+                "image/gif",
             }:
                 logger.warning("Blocked unsupported data URL MIME: %s", mime)
                 return None
@@ -395,9 +426,13 @@ async def _download_and_encode(
         if shuiyuan_model is not None:
             try:
                 if shuiyuan_image_url.startswith("upload://"):
-                    image_bytes = await shuiyuan_model.download_image(shuiyuan_image_url)
+                    image_bytes = await shuiyuan_model.download_image(
+                        shuiyuan_image_url
+                    )
                 else:
-                    image_bytes = await shuiyuan_model.download_raw_image(shuiyuan_image_url)
+                    image_bytes = await shuiyuan_model.download_raw_image(
+                        shuiyuan_image_url
+                    )
             except Exception as exc:
                 logger.warning(
                     "Shuiyuan reference image download failed for %s: %s",
@@ -462,16 +497,27 @@ async def _download_and_encode(
                     _redirects_remaining=_redirects_remaining - 1,
                 )
             if response.status != 200:
-                logger.warning("Download reference image failed: %s HTTP %s", url[:80], response.status)
+                logger.warning(
+                    "Download reference image failed: %s HTTP %s",
+                    url[:80],
+                    response.status,
+                )
                 return None
             if strict_remote:
-                content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+                content_type = (
+                    response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+                )
                 if not content_type.startswith("image/"):
-                    logger.warning("Reference URL did not return an image MIME type: %s", content_type)
+                    logger.warning(
+                        "Reference URL did not return an image MIME type: %s",
+                        content_type,
+                    )
                     return None
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > max_bytes:
-                logger.warning("Reference image too large: %s bytes, skipping", content_length)
+                logger.warning(
+                    "Reference image too large: %s bytes, skipping", content_length
+                )
                 return None
             image_bytes = await response.read()
             if len(image_bytes) > max_bytes:
@@ -539,9 +585,12 @@ def _compress_reference_image(image_bytes: bytes) -> bytes:
             logger.info(
                 "Compressed reference: %dx%d → %dx%d, %d→%d bytes (%.0f%%), "
                 "mode %s→RGB",
-                width, height,
-                img.size[0], img.size[1],
-                original_size, len(compressed),
+                width,
+                height,
+                img.size[0],
+                img.size[1],
+                original_size,
+                len(compressed),
                 len(compressed) / original_size * 100 if original_size else 0,
                 original_mode,
             )
@@ -569,14 +618,20 @@ def _encode_bytes(image_bytes: bytes, source_hint: str, max_bytes: int) -> str |
     image_bytes = _compress_reference_image(image_bytes)
 
     if len(image_bytes) > max_bytes:
-        logger.warning("Reference image exceeds max size: %d > %d, skipping", len(image_bytes), max_bytes)
+        logger.warning(
+            "Reference image exceeds max size: %d > %d, skipping",
+            len(image_bytes),
+            max_bytes,
+        )
         return None
 
     ext = os.path.splitext(source_hint.split("?")[0])[1].lower()
     fallback_mime = "image/png" if ext == ".png" else "image/jpeg"
     mime = _image_mime_from_bytes(image_bytes, fallback=fallback_mime)
     encoded = base64.b64encode(image_bytes).decode("ascii")
-    logger.info("Encoded reference image: %s (%d bytes)", source_hint[:80], len(image_bytes))
+    logger.info(
+        "Encoded reference image: %s (%d bytes)", source_hint[:80], len(image_bytes)
+    )
     return f"data:{mime};base64,{encoded}"
 
 
@@ -705,14 +760,20 @@ def create_image_generation_tool(model, *, state_store=None):
         if reference_images is None:
             pass
         elif isinstance(reference_images, list):
-            reference_images = [item for item in reference_images if isinstance(item, str) and item]
+            reference_images = [
+                item for item in reference_images if isinstance(item, str) and item
+            ]
         elif isinstance(reference_images, str):
             text = reference_images.strip()
             if text.startswith("["):
                 try:
                     parsed_references = json.loads(text)
                     reference_images = (
-                        [item for item in parsed_references if isinstance(item, str) and item]
+                        [
+                            item
+                            for item in parsed_references
+                            if isinstance(item, str) and item
+                        ]
                         if isinstance(parsed_references, list)
                         else [text]
                     )
@@ -729,8 +790,17 @@ def create_image_generation_tool(model, *, state_store=None):
         if reference_images:
             if state_store is not None:
                 unsafe = [
-                    url for url in reference_images
-                    if not url.startswith(("data:", "upload://", "/uploads/short-url/", "http://", "https://"))
+                    url
+                    for url in reference_images
+                    if not url.startswith(
+                        (
+                            "data:",
+                            "upload://",
+                            "/uploads/short-url/",
+                            "http://",
+                            "https://",
+                        )
+                    )
                 ]
                 if unsafe:
                     return "图片生成失败: 网页运行时不允许读取本地参考图路径."
@@ -744,7 +814,11 @@ def create_image_generation_tool(model, *, state_store=None):
                     )
                     if not data_url:
                         continue
-                    encoded_length = len(data_url.split(",", 1)[1]) if "," in data_url else len(data_url)
+                    encoded_length = (
+                        len(data_url.split(",", 1)[1])
+                        if "," in data_url
+                        else len(data_url)
+                    )
                     estimated_bytes = int(encoded_length * 3 / 4)
                     if total_ref_bytes + estimated_bytes > _MAX_TOTAL_REFERENCE_BYTES:
                         logger.warning(
@@ -767,7 +841,9 @@ def create_image_generation_tool(model, *, state_store=None):
             edit_images: list[tuple[bytes, str, str]] = []
             for index, data_url in enumerate(reference_data_urls):
                 reference_bytes, mime_type, extension = _decode_data_url(data_url)
-                edit_images.append((reference_bytes, mime_type, f"reference_{index}{extension}"))
+                edit_images.append(
+                    (reference_bytes, mime_type, f"reference_{index}{extension}")
+                )
             payload_bytes_len = total_ref_bytes
         else:
             payload = {
@@ -913,7 +989,9 @@ def create_image_generation_tool(model, *, state_store=None):
             os.makedirs(backup_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             safe_prompt = prompt[:20].replace(" ", "_").replace("/", "_")
-            backup_path = os.path.join(backup_dir, f"{timestamp}_{safe_prompt}{extension}")
+            backup_path = os.path.join(
+                backup_dir, f"{timestamp}_{safe_prompt}{extension}"
+            )
             with open(backup_path, "wb") as file:
                 file.write(image_bytes)
             logger.info("Saved backup to: %s", backup_path)

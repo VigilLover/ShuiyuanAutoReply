@@ -57,9 +57,7 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(second_a.json()["reply"], "history=2:two")
             self.assertEqual(first_b.json()["reply"], "history=0:one")
 
-            cleared = client.post(
-                "/api/clear", json={"session_id": "a", "token": "ta"}
-            )
+            cleared = client.post("/api/clear", json={"session_id": "a", "token": "ta"})
             self.assertEqual(cleared.status_code, 200)
             after_clear = client.post(
                 "/api/chat",
@@ -71,7 +69,9 @@ class ApiIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(after_clear.json()["reply"], "history=0:again")
             self.assertEqual(continued_b.json()["reply"], "history=2:two")
-            self.assertEqual(client.get("/api/health").json()["active_sessions_count"], 2)
+            self.assertEqual(
+                client.get("/api/health").json()["active_sessions_count"], 2
+            )
 
         self.assertEqual(container.close_count, 1)
 

@@ -76,8 +76,12 @@ class BotServiceTests(unittest.IsolatedAsyncioTestCase):
         await self.service.reply(second)
         first_history = await self.sessions.load(first.conversation)
         second_history = await self.sessions.load(second.conversation)
-        self.assertEqual([m.content for m in first_history], ["message:a", "chat:message:a"])
-        self.assertEqual([m.content for m in second_history], ["message:b", "chat:message:b"])
+        self.assertEqual(
+            [m.content for m in first_history], ["message:a", "chat:message:a"]
+        )
+        self.assertEqual(
+            [m.content for m in second_history], ["message:b", "chat:message:b"]
+        )
 
     async def test_clear_a_does_not_clear_b(self):
         first = request("a")

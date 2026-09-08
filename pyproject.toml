@@ -25,14 +25,12 @@ dependencies = [
     "langgraph-prebuilt>=1.1,<1.2",
     "langgraph-checkpoint-postgres",
     "langmem",
-    "neomodel",
     "numpy",
     "openai>=3.3.1,<4",
     "pandas",
     "pillow",
     "python-dotenv",
     "requests",
-    "sentence-transformers",
     "skia-python",
     "sqlalchemy",
     "pytest>=9.0.3",
@@ -41,10 +39,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["black", "isort"]
+dev = ["black", "isort", "markdownify==1.2.0"]
+local-embedding = ["sentence-transformers"]
+neo4j = ["neomodel"]
 server = ["fastapi[all]"]
 
 [project.scripts]
+shuiyuan-ops = "shuiyuan_auto_reply.interfaces.cli.ops:main"
 shuiyuan-bot = "shuiyuan_auto_reply.interfaces.cli.main:bot_main"
 shuiyuan-api = "shuiyuan_auto_reply.interfaces.cli.main:api_main"
 
@@ -66,6 +67,8 @@ shuiyuan_auto_reply = [
     "prompts/capabilities/*.txt",
     "interfaces/api/static/**/*",
     "assets/tarot_data.json",
+    "assets/pet_responses.json",
+    "assets/pet_endings.json",
     "assets/tarot_img/*.jpg",
     "assets/fonts/Noto_Color_Emoji/*.ttf",
     "assets/fonts/Noto_Color_Emoji/*.txt",
@@ -76,3 +79,9 @@ shuiyuan_auto_reply = [
 
 [tool.isort]
 profile = "black"
+
+[tool.black]
+target-version = ["py312"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]

@@ -89,14 +89,10 @@ class MentionToolLoopTrimTests(unittest.TestCase):
         messages.append(
             AIMessage(
                 content="",
-                tool_calls=[
-                    {"name": "f", "args": {}, "id": "a0", "type": "tool_call"}
-                ],
+                tool_calls=[{"name": "f", "args": {}, "id": "a0", "type": "tool_call"}],
             )
         )
-        messages.append(
-            ToolMessage(content="res", tool_call_id="a0", name="f")
-        )
+        messages.append(ToolMessage(content="res", tool_call_id="a0", name="f"))
 
         trimmed = MentionChatModel._trim_tool_loop_messages(messages)
         self.assertEqual(trimmed, messages)

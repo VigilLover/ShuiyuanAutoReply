@@ -13,8 +13,10 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 
 from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegistry
-from shuiyuan_auto_reply.bootstrap.container import ApplicationContainer
-from shuiyuan_auto_reply.bootstrap.container import _SwappableBotService
+from shuiyuan_auto_reply.bootstrap.container import (
+    ApplicationContainer,
+    _SwappableBotService,
+)
 from shuiyuan_auto_reply.bootstrap.settings import (
     AppSettings,
     DeepSeekApiFormat,
@@ -104,7 +106,9 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_web_and_forum_namespaces_and_conversations_do_not_collide(self):
         web = web_request("42")
-        forum_ref = ConversationRef(Channel.FORUM, "topic:42", "wolf_lumine", "wolf_lumine")
+        forum_ref = ConversationRef(
+            Channel.FORUM, "topic:42", "wolf_lumine", "wolf_lumine"
+        )
         self.assertEqual(web.actor.memory_id, "web:42")
         self.assertNotEqual(web.conversation, forum_ref)
         web_record = await self.store.ensure_conversation(web.conversation)
@@ -130,7 +134,9 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("QUJDRA", encoded)
         self.assertNotIn("abc.def", encoded)
 
-    async def test_tool_instruction_keeps_structured_arguments_for_trace_expansion(self):
+    async def test_tool_instruction_keeps_structured_arguments_for_trace_expansion(
+        self,
+    ):
         request = web_request("tool-inspection")
         conversation = await self.store.ensure_conversation(request.conversation)
         run_id = await self.store.create_run(request.request_id, conversation.id)
@@ -150,7 +156,9 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.payload["arguments"]["command"], command)
         self.assertEqual(event.payload["arguments"]["api_key"], "[REDACTED]")
 
-    async def test_model_prompt_event_keeps_full_messages_and_redacts_embedded_data(self):
+    async def test_model_prompt_event_keeps_full_messages_and_redacts_embedded_data(
+        self,
+    ):
         request = web_request("prompt-inspection")
         conversation = await self.store.ensure_conversation(request.conversation)
         run_id = await self.store.create_run(request.request_id, conversation.id)
@@ -172,9 +180,7 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         )
         event = (await self.store.list_events_for_request(request.request_id))[0]
         self.assertEqual(event.payload["messages"][0]["content"], long_prompt)
-        self.assertEqual(
-            event.payload["messages"][1]["content"], "[DATA_URL_REDACTED]"
-        )
+        self.assertEqual(event.payload["messages"][1]["content"], "[DATA_URL_REDACTED]")
 
     async def test_secret_vault_encrypts_values_and_only_exposes_metadata(self):
         vault = LocalSecretVault(self.store, Path(self.temp.name) / "master.key")
@@ -183,7 +189,9 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         metadata = await vault.metadata("web:openrouter")
         self.assertEqual(metadata["last_four"], "1234")
         self.assertNotIn(b"sk-example-1234", self.path.read_bytes())
-        self.assertEqual((Path(self.temp.name) / "master.key").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(
+            (Path(self.temp.name) / "master.key").stat().st_mode & 0o777, 0o600
+        )
 
     async def test_web_profile_defaults_to_fixed_deepseek_vision_model(self):
         settings = AppSettings(
@@ -211,9 +219,7 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         )
         effective = await container._settings_for_profile("web", defaults)
         self.assertEqual(effective.deepseek_api_key, "same-key")
-        self.assertEqual(
-            effective.deepseek_api_format, DeepSeekApiFormat.RESPONSES
-        )
+        self.assertEqual(effective.deepseek_api_format, DeepSeekApiFormat.RESPONSES)
         response_effective = await container._settings_for_profile(
             "web", {**defaults, "api_format": "responses"}
         )
@@ -284,13 +290,16 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
 
 class ImageArtifactTests(unittest.IsolatedAsyncioTestCase):
     async def test_managed_generation_failure_obeys_content_and_artifact_contract(self):
-        with tempfile.TemporaryDirectory() as temp, patch.dict(
-            os.environ,
-            {
-                "IMAGE_GEN_API_KEY": "",
-                "IMAGE_GEN_API_URL": "https://images.example/v1",
-            },
-            clear=False,
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.dict(
+                os.environ,
+                {
+                    "IMAGE_GEN_API_KEY": "",
+                    "IMAGE_GEN_API_URL": "https://images.example/v1",
+                },
+                clear=False,
+            ),
         ):
             store = SQLiteStateStore(Path(temp) / "state.sqlite3")
             await store.initialize()
@@ -302,9 +311,7 @@ class ImageArtifactTests(unittest.IsolatedAsyncioTestCase):
                 response_format="content_and_artifact",
             )
 
-            result = await tool.ainvoke(
-                {"prompt": "一幅足够详细的测试图片描述"}
-            )
+            result = await tool.ainvoke({"prompt": "一幅足够详细的测试图片描述"})
 
             self.assertEqual(result, "图片生成失败: IMAGE_GEN_API_KEY 未配置.")
 
@@ -312,14 +319,17 @@ class ImageArtifactTests(unittest.IsolatedAsyncioTestCase):
         png = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
         )
-        with tempfile.TemporaryDirectory() as temp, patch.dict(
-            os.environ,
-            {
-                "SHUIYUAN_STATE_DIR": temp,
-                "IMAGE_GEN_API_KEY": "test-key",
-                "IMAGE_GEN_API_URL": "https://images.example/v1",
-            },
-            clear=False,
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.dict(
+                os.environ,
+                {
+                    "SHUIYUAN_STATE_DIR": temp,
+                    "IMAGE_GEN_API_KEY": "test-key",
+                    "IMAGE_GEN_API_URL": "https://images.example/v1",
+                },
+                clear=False,
+            ),
         ):
             store = SQLiteStateStore(Path(temp) / "state.sqlite3")
             await store.initialize()
@@ -329,9 +339,7 @@ class ImageArtifactTests(unittest.IsolatedAsyncioTestCase):
                 "shuiyuan_auto_reply.features.mention.image_generation._request_image_bytes",
                 new=AsyncMock(return_value=png),
             ):
-                content, artifact = await service.generate(
-                    "一幅足够详细的测试图片描述"
-                )
+                content, artifact = await service.generate("一幅足够详细的测试图片描述")
             self.assertIn("artifact://", content)
             self.assertTrue(Path(artifact.local_path).is_file())
             forum.upload_image.assert_not_awaited()
@@ -394,7 +402,9 @@ class McpConfigurationTests(unittest.IsolatedAsyncioTestCase):
         await model.initialize_agent()
 
         bound_tools = model.llm.bind_tools.call_args.args[0]
-        self.assertEqual([tool.name for tool in bound_tools], ["get_system_time", "builtin"])
+        self.assertEqual(
+            [tool.name for tool in bound_tools], ["get_system_time", "builtin"]
+        )
 
     async def test_disabled_mcp_tool_is_not_bound(self):
         model = MentionChatModel.__new__(MentionChatModel)
@@ -418,7 +428,9 @@ class McpConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PromptInspectionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_style_retrieval_failure_is_visible_and_degrades_to_empty_context(self):
+    async def test_style_retrieval_failure_is_visible_and_degrades_to_empty_context(
+        self,
+    ):
         model = MentionChatModel.__new__(MentionChatModel)
         model.style_retriever = SimpleNamespace(
             search=AsyncMock(side_effect=ConnectionError("neo4j unavailable"))
@@ -482,21 +494,22 @@ class PromptInspectionTests(unittest.IsolatedAsyncioTestCase):
 
 class ManagedApiTests(unittest.TestCase):
     def test_open_web_chat_clear_and_forum_read_only(self):
-        with tempfile.TemporaryDirectory() as temp, patch.dict(
-            os.environ,
-            {
-                "SHUIYUAN_STATE_DIR": temp,
-                "DEEPSEEK_MENTION_API_FORMAT": "chat_completions",
-            },
-            clear=False,
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.dict(
+                os.environ,
+                {
+                    "SHUIYUAN_STATE_DIR": temp,
+                    "DEEPSEEK_MENTION_API_FORMAT": "chat_completions",
+                },
+                clear=False,
+            ),
         ):
             store = SQLiteStateStore(Path(temp) / "state.sqlite3")
             asyncio.run(store.initialize())
 
             app_settings = AppSettings(
-                providers=ProviderSettings(
-                    mcp_server_url="http://localhost:58000/sse"
-                )
+                providers=ProviderSettings(mcp_server_url="http://localhost:58000/sse")
             )
 
             class Container:
@@ -560,19 +573,11 @@ class ManagedApiTests(unittest.TestCase):
                     os.environ,
                     {"DEEPSEEK_MENTION_API_FORMAT": "responses"},
                 ):
-                    restored = client.post(
-                        "/api/settings/profiles/web/restore-default"
-                    )
+                    restored = client.post("/api/settings/profiles/web/restore-default")
                     self.assertEqual(restored.status_code, 200)
-                    restored_profiles = client.get(
-                        "/api/settings/profiles"
-                    ).json()
-                restored_web = next(
-                    p for p in restored_profiles if p["scope"] == "web"
-                )
-                self.assertEqual(
-                    restored_web["draft"]["api_format"], "responses"
-                )
+                    restored_profiles = client.get("/api/settings/profiles").json()
+                restored_web = next(p for p in restored_profiles if p["scope"] == "web")
+                self.assertEqual(restored_web["draft"]["api_format"], "responses")
                 self.assertEqual(
                     restored_web["active"]["api_format"], "chat_completions"
                 )
@@ -598,7 +603,9 @@ class ManagedApiTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("message.completed", response.text)
                 detail = client.get(f"/api/conversations/{created['id']}").json()
-                self.assertEqual([m["role"] for m in detail["messages"]], ["user", "assistant"])
+                self.assertEqual(
+                    [m["role"] for m in detail["messages"]], ["user", "assistant"]
+                )
                 client.post(f"/api/conversations/{created['id']}/clear")
                 detail = client.get(f"/api/conversations/{created['id']}").json()
                 self.assertEqual(detail["messages"][-1]["content"], "上下文已清除")

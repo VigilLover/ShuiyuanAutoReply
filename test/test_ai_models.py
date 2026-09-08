@@ -16,12 +16,12 @@ Coverage:
     - MentionTongyiModel internal fallback wired correctly
 """
 
+import logging
 import os
 import sys
 import unittest
-import logging
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import dotenv
 import pytest
@@ -30,9 +30,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from openai import AsyncOpenAI
-from langchain_openai import ChatOpenAI
 from langchain_community.chat_models.tongyi import ChatTongyi
+from langchain_openai import ChatOpenAI
+from openai import AsyncOpenAI
+
 from shuiyuan_auto_reply.features.mention.mention_chat_model import FallbackLLM
 
 logging.basicConfig(
@@ -61,6 +62,7 @@ def _ty_model(key: str, default: str) -> str:
 
 # ── Direct API Tests ─────────────────────────────────────────────────────
 
+
 @pytest.mark.live
 class TestDeepSeekDirectAPI(unittest.IsolatedAsyncioTestCase):
     """Test direct connectivity to DeepSeek API."""
@@ -78,7 +80,9 @@ class TestDeepSeekDirectAPI(unittest.IsolatedAsyncioTestCase):
         try:
             response = await client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": "请回复'连通正常'。只输出这三个字。"}],
+                messages=[
+                    {"role": "user", "content": "请回复'连通正常'。只输出这三个字。"}
+                ],
             )
             text = response.choices[0].message.content
             logging.info("[DeepSeek %s] model=%s response=%s", label, model, text)
@@ -113,7 +117,9 @@ class TestTongyiDirectAPI(unittest.IsolatedAsyncioTestCase):
         try:
             response = await client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": "请回复'连通正常'。只输出这三个字。"}],
+                messages=[
+                    {"role": "user", "content": "请回复'连通正常'。只输出这三个字。"}
+                ],
             )
             text = response.choices[0].message.content
             logging.info("[Tongyi %s] model=%s response=%s", label, model, text)
@@ -132,6 +138,7 @@ class TestTongyiDirectAPI(unittest.IsolatedAsyncioTestCase):
 
 
 # ── FallbackLLM Tests ────────────────────────────────────────────────────
+
 
 class FailingLLM:
     """A mock LLM that always raises an exception (simulates a broken primary)."""
@@ -174,7 +181,9 @@ class TestFallbackLLM(unittest.IsolatedAsyncioTestCase):
         )
         fallback_llm = FallbackLLM(failing_primary, real_fallback)
 
-        result = await fallback_llm.ainvoke("回复'fallback成功'。只输出这三个字，不要多说。")
+        result = await fallback_llm.ainvoke(
+            "回复'fallback成功'。只输出这三个字，不要多说。"
+        )
         text = result.content if hasattr(result, "content") else str(result)
         logging.info("[FallbackLLM] result: %s", text)
         self.assertIsNotNone(text)
@@ -194,10 +203,12 @@ class TestFallbackLLM(unittest.IsolatedAsyncioTestCase):
 
         bound = llm.bind_tools([])
         from langchain_core.runnables import RunnableLambda
+
         self.assertIsInstance(bound, RunnableLambda)
 
 
 # ── MentionDeepSeekModel Fallback Test ───────────────────────────────────
+
 
 class TestMentionDeepSeekVisionModel(unittest.IsolatedAsyncioTestCase):
     """Test MentionDeepSeekModel internal fallback wiring."""
@@ -226,7 +237,9 @@ class TestMentionDeepSeekVisionModel(unittest.IsolatedAsyncioTestCase):
         if not api_key:
             self.skipTest("DEEPSEEK_API_KEY not set")
 
-        from shuiyuan_auto_reply.features.mention.mention_deepseek_model import MentionDeepSeekModel
+        from shuiyuan_auto_reply.features.mention.mention_deepseek_model import (
+            MentionDeepSeekModel,
+        )
         from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
         self._mock_agent()
@@ -241,6 +254,7 @@ class TestMentionDeepSeekVisionModel(unittest.IsolatedAsyncioTestCase):
 
 
 # ── MentionTongyiModel Fallback Test ────────────────────────────────────
+
 
 class TestMentionTongyiModelFallback(unittest.IsolatedAsyncioTestCase):
     """Test MentionTongyiModel internal fallback wiring."""
@@ -270,7 +284,9 @@ class TestMentionTongyiModelFallback(unittest.IsolatedAsyncioTestCase):
         if not api_key:
             self.skipTest("DASHSCOPE_API_KEY not set")
 
-        from shuiyuan_auto_reply.features.mention.mention_tongyi_model import MentionTongyiModel
+        from shuiyuan_auto_reply.features.mention.mention_tongyi_model import (
+            MentionTongyiModel,
+        )
         from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
         self._mock_agent()

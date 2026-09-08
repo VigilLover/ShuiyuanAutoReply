@@ -3,13 +3,30 @@
 from collections.abc import Awaitable, Callable
 
 from shuiyuan_auto_reply.application.ports.retrieval import StyleExample
-from shuiyuan_auto_reply.database.neo4j_mgr import create_global_async_neo4j_manager
+
+
+async def create_global_async_neo4j_manager():
+    from shuiyuan_auto_reply.database.neo4j_mgr import (
+        create_global_async_neo4j_manager as create,
+    )
+
+    return await create()
+
+
+async def close_neo4j():
+    import sys
+
+    module = sys.modules.get("shuiyuan_auto_reply.database.neo4j_mgr")
+    if module is not None:
+        await module.close_global_async_neo4j_manager()
 
 
 class Neo4jStyleRetriever:
     def __init__(
         self,
-        manager_factory: Callable[[], Awaitable[object | None]] = create_global_async_neo4j_manager,
+        manager_factory: Callable[
+            [], Awaitable[object | None]
+        ] = create_global_async_neo4j_manager,
     ) -> None:
         self._manager_factory = manager_factory
 

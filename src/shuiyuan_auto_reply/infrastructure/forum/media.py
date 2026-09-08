@@ -14,7 +14,6 @@ from PIL import Image
 
 from shuiyuan_auto_reply.shuiyuan.objects import normalize_upload_short_path
 
-
 _MIME_EXTENSIONS = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
@@ -165,8 +164,7 @@ class ForumMediaUploader:
         short_path = normalize_upload_short_path(unescape(str(value).strip()))
         if not _UPLOAD_URI_RE.fullmatch(short_path):
             raise ValueError(
-                "水源上传接口没有返回有效的 upload:// 短地址: "
-                f"{short_path!r}"
+                "水源上传接口没有返回有效的 upload:// 短地址: " f"{short_path!r}"
             )
         return short_path
 
@@ -244,21 +242,15 @@ class ForumReplyMediaPublisher:
                             )
                 else:
                     upload = await self.uploader.upload(artifact)
-                replacement = ForumMediaUploader._require_upload_uri(
-                    upload.short_path
-                )
+                replacement = ForumMediaUploader._require_upload_uri(upload.short_path)
                 current = self._rewrite_artifact(
                     current,
                     artifact,
                     replacement=replacement,
                     failed=False,
                 )
-                if source_url and str(source_url).startswith(
-                    ("http://", "https://")
-                ):
-                    current = self._remove_source_references(
-                        current, str(source_url)
-                    )
+                if source_url and str(source_url).startswith(("http://", "https://")):
+                    current = self._remove_source_references(current, str(source_url))
                 published.append(
                     PublishedForumMedia(
                         artifact, replacement, source_kind, upload.reused
@@ -308,7 +300,10 @@ class ForumReplyMediaPublisher:
         if not match:
             return "图片"
         return unescape(
-            match.group("double") or match.group("single") or match.group("bare") or "图片"
+            match.group("double")
+            or match.group("single")
+            or match.group("bare")
+            or "图片"
         )
 
     @classmethod
@@ -337,9 +332,7 @@ class ForumReplyMediaPublisher:
             if cls._normalized_target(match.group("target")) not in targets:
                 return match.group(0)
             if not failed and replacement:
-                return match.group(0).replace(
-                    match.group("target"), replacement, 1
-                )
+                return match.group(0).replace(match.group("target"), replacement, 1)
             return "（图片上传失败）"
 
         def html_image(match: re.Match[str]) -> str:
@@ -400,6 +393,4 @@ class ForumReplyMediaPublisher:
             alt = cls._html_alt(match.group(0))
             return f"![{alt or '图片'}]({target})"
 
-        return _HTML_IMAGE_RE.sub(
-            html_image, _MARKDOWN_IMAGE_RE.sub(markdown, text)
-        )
+        return _HTML_IMAGE_RE.sub(html_image, _MARKDOWN_IMAGE_RE.sub(markdown, text))

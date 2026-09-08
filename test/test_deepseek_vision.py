@@ -24,24 +24,24 @@ from shuiyuan_auto_reply.domain import (
     VisualMediaArtifact,
 )
 from shuiyuan_auto_reply.features.mention.deepseek_vision import (
-    DeepSeekVisionMediaManager,
     DeepSeekVisionInput,
+    DeepSeekVisionMediaManager,
     VisionMediaError,
     extract_public_image_urls,
     sniff_image,
 )
+from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
 from shuiyuan_auto_reply.features.mention.mention_deepseek_model import (
     DEEPSEEK_DEFAULT_MODEL,
-    _mk_deepseek_llm,
     MentionDeepSeekModel,
-)
-from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
-from shuiyuan_auto_reply.infrastructure.persistence import (
-    SQLiteSessionRepository,
-    SQLiteStateStore,
+    _mk_deepseek_llm,
 )
 from shuiyuan_auto_reply.infrastructure.llm.legacy_chat import (
     canonicalize_web_artifact_images,
+)
+from shuiyuan_auto_reply.infrastructure.persistence import (
+    SQLiteSessionRepository,
+    SQLiteStateStore,
 )
 from shuiyuan_auto_reply.interfaces.api.app import create_app
 
@@ -76,9 +76,7 @@ class VisionContractTests(unittest.TestCase):
         model = _mk_deepseek_llm(
             "test-key",
             DEEPSEEK_DEFAULT_MODEL,
-            ProviderSettings(
-                deepseek_api_format=DeepSeekApiFormat.CHAT_COMPLETIONS
-            ),
+            ProviderSettings(deepseek_api_format=DeepSeekApiFormat.CHAT_COMPLETIONS),
         )
         content = [
             {"type": "text", "text": "看图"},
@@ -168,12 +166,15 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-        with patch(
-            "shuiyuan_auto_reply.features.mention.deepseek_vision._assert_public_host",
-            new=AsyncMock(),
-        ), patch(
-            "shuiyuan_auto_reply.features.mention.deepseek_vision.httpx.AsyncClient",
-            return_value=client,
+        with (
+            patch(
+                "shuiyuan_auto_reply.features.mention.deepseek_vision._assert_public_host",
+                new=AsyncMock(),
+            ),
+            patch(
+                "shuiyuan_auto_reply.features.mention.deepseek_vision.httpx.AsyncClient",
+                return_value=client,
+            ),
         ):
             result = await manager.prepare_public_url(
                 "https://cdn.example/result.png",
@@ -306,7 +307,9 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
         )
         state = {
             "image_inputs": [],
-            "messages": [ToolMessage(content="result", tool_call_id="call-1", name="web_search")],
+            "messages": [
+                ToolMessage(content="result", tool_call_id="call-1", name="web_search")
+            ],
             "conversation_id": "conversation-1",
         }
 
@@ -335,8 +338,7 @@ class VisionUploadApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "state.sqlite3"
             with sqlite3.connect(path) as db:
-                db.executescript(
-                    """
+                db.executescript("""
                     CREATE TABLE schema_version (version INTEGER NOT NULL);
                     INSERT INTO schema_version(version) VALUES (1);
                     CREATE TABLE artifacts (
@@ -345,14 +347,11 @@ class VisionUploadApiTests(unittest.TestCase):
                       byte_count INTEGER NOT NULL, width INTEGER, height INTEGER,
                       forum_short_path TEXT, created_at TEXT NOT NULL
                     );
-                    """
-                )
+                    """)
             store = SQLiteStateStore(path)
             asyncio.run(store.initialize())
             with sqlite3.connect(path) as db:
-                columns = {
-                    row[1] for row in db.execute("PRAGMA table_info(artifacts)")
-                }
+                columns = {row[1] for row in db.execute("PRAGMA table_info(artifacts)")}
                 version = db.execute("SELECT version FROM schema_version").fetchone()[0]
             self.assertTrue(
                 {"source_kind", "source_url", "filename", "sha256", "last_accessed_at"}
@@ -361,8 +360,9 @@ class VisionUploadApiTests(unittest.TestCase):
             self.assertEqual(version, 2)
 
     def test_multipart_image_only_message_is_persisted_and_renderable(self):
-        with tempfile.TemporaryDirectory() as temp, patch.dict(
-            "os.environ", {"SHUIYUAN_STATE_DIR": temp}
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.dict("os.environ", {"SHUIYUAN_STATE_DIR": temp}),
         ):
             store = SQLiteStateStore(Path(temp) / "state.sqlite3")
             asyncio.run(store.initialize())
@@ -387,9 +387,7 @@ class VisionUploadApiTests(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("message.completed", response.text)
-                detail = client.get(
-                    f"/api/conversations/{conversation['id']}"
-                ).json()
+                detail = client.get(f"/api/conversations/{conversation['id']}").json()
                 self.assertEqual(detail["messages"][0]["role"], "user")
                 attachment = detail["messages"][0]["attachments"][0]
                 self.assertEqual(attachment["source_kind"], "user_upload")
@@ -400,8 +398,9 @@ class VisionUploadApiTests(unittest.TestCase):
                 self.assertEqual(image.content, png_bytes())
 
     def test_forum_reply_upload_markdown_maps_to_its_local_artifact(self):
-        with tempfile.TemporaryDirectory() as temp, patch.dict(
-            "os.environ", {"SHUIYUAN_STATE_DIR": temp}
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.dict("os.environ", {"SHUIYUAN_STATE_DIR": temp}),
         ):
             store = SQLiteStateStore(Path(temp) / "state.sqlite3")
             asyncio.run(store.initialize())
@@ -428,9 +427,7 @@ class VisionUploadApiTests(unittest.TestCase):
                 )
             )
             asyncio.run(
-                store.set_forum_short_path(
-                    "forum-image", "upload://forum-image.png"
-                )
+                store.set_forum_short_path("forum-image", "upload://forum-image.png")
             )
             asyncio.run(
                 store.append_message(
@@ -462,13 +459,12 @@ class VisionUploadApiTests(unittest.TestCase):
                     message["attachments"][0]["url"],
                     "/api/artifacts/forum-image",
                 )
-                self.assertEqual(
-                    message["attachments"][0]["source_kind"], "web_search"
-                )
+                self.assertEqual(message["attachments"][0]["source_kind"], "web_search")
 
     def test_upload_count_and_actual_image_validation(self):
-        with tempfile.TemporaryDirectory() as temp, patch.dict(
-            "os.environ", {"SHUIYUAN_STATE_DIR": temp}
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.dict("os.environ", {"SHUIYUAN_STATE_DIR": temp}),
         ):
             store = SQLiteStateStore(Path(temp) / "state.sqlite3")
             asyncio.run(store.initialize())
