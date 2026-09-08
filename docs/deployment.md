@@ -401,7 +401,7 @@ docker compose -f deploy/compose.test.yaml config --quiet
 构建完成后运行隔离集成栈，使用临时数据库和合成模型，不读取生产 secret，不发帖：
 
 ```bash
-docker compose -f deploy/compose.test.yaml up --abort-on-container-exit --exit-code-from checks
+python3 scripts/ci/integration.py
 # 清理的是 shuiyuan-validation 项目，不是生产项目：
 docker compose -f deploy/compose.test.yaml down -v
 ```
@@ -412,16 +412,16 @@ docker compose -f deploy/compose.test.yaml down -v
 在目标 2GB Linux 环境进行 24 小时合成持续运行：
 
 ```bash
-VALIDATION_SECONDS=86400 docker compose -f deploy/compose.test.yaml up --abort-on-container-exit --exit-code-from checks
+VALIDATION_SECONDS=86400 python3 scripts/ci/integration.py
 ```
 
 同时从宿主机采集 `docker stats`、MemAvailable、swap、磁盘与容器重启/OOM 记录。
 要求无 OOM、无持续内存增长、至少约 200MiB 可用余量；实际模型/社区的受控验收另行显式执行。
 生产网络验收应覆盖一条受控提及、长任务与短任务并发、Cookie 失效、数据库重启、停机补拉和备份恢复。
 
-当前开发环境没有运行 Docker daemon，无法声称已完成 Linux 镜像构建、真实 PostgreSQL 集成、
-2GB 容量测试或 24 小时持续运行。以上脚本用于在具备 Docker 的环境完成这些验收；
-通过本地单元测试不能替代这些检查。
+2026-09-08 已在 Docker Desktop 的 Linux/amd64 容器中完成三镜像构建、真实 PostgreSQL
+运行账号权限、迁移与备份恢复、模拟论坛的 Bot/Web 启动验收；没有完成目标 2GB 服务器容量
+测试或 24 小时持续运行。本机容器测试不能替代目标服务器验收。CI/CD 见 [cicd.md](cicd.md)。
 
 本次开发验证记录（2026-09-07）：离线 pytest 为 154 passed、20 skipped；本次涉及的
 52 个 Python 文件通过 Black/isort 检查，前端构建、两套 Compose 静态配置检查通过。
