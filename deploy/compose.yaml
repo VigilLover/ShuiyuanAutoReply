@@ -12,7 +12,7 @@ x-application: &application
   environment:
     TMPDIR: /var/tmp/shuiyuan
   volumes:
-    - ../config/deployment.toml:/etc/shuiyuan/deployment.toml:ro
+    - ${SHUIYUAN_CONFIG:-../config/deployment.toml}:/etc/shuiyuan/deployment.toml:ro
     - bot_state:/var/lib/shuiyuan
     - bot_temp:/var/tmp/shuiyuan
   networks: [database, tools, egress]
@@ -106,11 +106,11 @@ volumes:
   postgres_data: {}
   mcp_temp: {}
 secrets:
-  database_admin_password: {file: ../secrets/database_admin_password}
-  database_app_password: {file: ../secrets/database_app_password}
-  database_admin_url: {file: ../secrets/database_admin_url}
-  database_url: {file: ../secrets/database_url}
-  embedding_key: {file: ../secrets/embedding_key}
-  deepseek_key: {file: ../secrets/deepseek_key}
-  forum_cookie: {file: ../secrets/forum_cookie.json}
-  image_key: {file: ../secrets/image_key}
+  database_admin_password: {file: "${SHUIYUAN_SECRETS:-../secrets}/database_admin_password"}
+  database_app_password: {file: "${SHUIYUAN_SECRETS:-../secrets}/database_app_password"}
+  database_admin_url: {file: "${SHUIYUAN_SECRETS:-../secrets}/database_admin_url"}
+  database_url: {file: "${SHUIYUAN_SECRETS:-../secrets}/database_url"}
+  embedding_key: {file: "${SHUIYUAN_SECRETS:-../secrets}/embedding_key"}
+  deepseek_key: {file: "${SHUIYUAN_SECRETS:-../secrets}/deepseek_key"}
+  forum_cookie: {file: "${SHUIYUAN_SECRETS:-../secrets}/forum_cookie.json"}
+  image_key: {file: "${SHUIYUAN_SECRETS:-../secrets}/image_key"}
