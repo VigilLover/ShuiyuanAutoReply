@@ -163,15 +163,17 @@ port=11451
             deadline = time.monotonic() + 120
             while True:
                 health = json.loads(probe("/api/runtime-health"))
-                if (
-                    health.get("database") == "ok"
-                    and health.get("forum") == "ok"
-                    and health.get("state") == "ok"
-                ):
+                # Forum login must fail here by design: the validation network is
+                # internal-only and the cookie is synthetic, so the worker never
+                # polls and forum health stays "stale"/"unknown" forever.
+                if health.get("database") == "ok" and health.get("state") == "ok":
                     break
                 if time.monotonic() > deadline:
                     raise RuntimeError("Bot did not become ready")
                 time.sleep(3)
+            # The management interface must stay online despite the forum login
+            # failure (see docs: "login-failure-web").
+            assert health.get("forum") != "ok"
             assert "html" in probe("/").lower()
             request_script = "import json,urllib.request; req=urllib.request.Request('http://127.0.0.1:11451/api/conversations',data=b'{\"title\":\"synthetic-ci\"}',headers={'Content-Type':'application/json'}); result=json.load(urllib.request.urlopen(req)); assert result['title']=='synthetic-ci'; print(result['id'])"
             run(["exec", "-T", "bot", "python", "-c", request_script])
