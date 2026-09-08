@@ -47,6 +47,24 @@ class CSRFTokenNotFoundError(Exception):
     pass
 
 
+# Cookies written by get_cookies.ipynb are a flat session-cookie dict without
+# domain metadata, so they cannot keep their original scope. They are bound
+# to the forum and its SSO provider only: the auth flow
+# (auth/jaccount -> jaccount.sjtu.edu.cn -> callback) needs them at both,
+# and they must not be sent to any unrelated host.
+_FORUM_COOKIE_HOSTS: Tuple[str, ...] = (
+    "shuiyuan.sjtu.edu.cn",
+    "jaccount.sjtu.edu.cn",
+)
+
+
+def _apply_cookies(cookie_jar: aiohttp.CookieJar, cookies: dict) -> None:
+    for host in _FORUM_COOKIE_HOSTS:
+        # aiohttp pins domain-less cookies host-only to the response_url host,
+        # so one update_cookies call per allowed host.
+        cookie_jar.update_cookies(cookies, response_url=URL(f"https://{host}"))
+
+
 class ShuiyuanModel:
     """
     This class is used to interact with the Shuiyuan API.
@@ -153,9 +171,7 @@ class ShuiyuanModel:
             else:
                 cookies = pickle.loads(raw)
             session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
-            session.cookie_jar.update_cookies(
-                cookies, response_url=URL("https://shuiyuan.sjtu.edu.cn")
-            )
+            _apply_cookies(session.cookie_jar, cookies)
 
             # Update the shared session using Shuiyuan API
             cls._shared_session = session

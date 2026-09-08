@@ -116,7 +116,7 @@ uv run --no-sync shuiyuan-ops cookie convert cookies /tmp/forum-cookie.json --tr
 {"version":1,"domain":"shuiyuan.sjtu.edu.cn","cookies":{"COOKIE_NAME":"COOKIE_VALUE"}}
 ```
 
-不要将真实值贴入工单或提交。该格式将 Cookie 限定用于水源社区，不是通用浏览器 Cookie 导入格式。
+不要将真实值贴入工单或提交。该格式将 Cookie 绑定到水源社区域名及其 jAccount 登录域名，不是通用浏览器 Cookie 导入格式。
 
 ### 4.2 初始化部署凭据
 

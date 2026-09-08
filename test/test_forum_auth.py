@@ -2,11 +2,13 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from aiohttp import CookieJar
 from yarl import URL
 
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import (
     CSRFTokenNotFoundError,
     ShuiyuanModel,
+    _apply_cookies,
 )
 
 
@@ -58,3 +60,22 @@ class ForumAuthTests(unittest.IsolatedAsyncioTestCase):
                 await self.check_response(
                     "https://shuiyuan.sjtu.edu.cn/", status, "no token"
                 )
+
+
+class CookieJarDistributionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cookies_reach_forum_and_jaccount_during_sso(self):
+        # get_cookies.ipynb writes a flat jAccount cookie dict; the SSO bounce
+        # through jaccount.sjtu.edu.cn requires these cookies at both hosts.
+        jar = CookieJar()
+        _apply_cookies(jar, {"JSESSIONID": "s", "JAAuthCookie": "c"})
+        forum_sent = set(jar.filter_cookies(URL("https://shuiyuan.sjtu.edu.cn")))
+        sso_sent = set(jar.filter_cookies(URL("https://jaccount.sjtu.edu.cn")))
+        self.assertIn("JSESSIONID", forum_sent)
+        self.assertIn("JSESSIONID", sso_sent)
+        self.assertIn("JAAuthCookie", sso_sent)
+
+    async def test_cookies_stay_off_unrelated_hosts(self):
+        jar = CookieJar()
+        _apply_cookies(jar, {"JSESSIONID": "s"})
+        sent = set(jar.filter_cookies(URL("https://example.com")))
+        self.assertEqual(sent, set())
