@@ -20,6 +20,7 @@ from yarl import URL
 
 from shuiyuan_auto_reply.retry import async_retry
 
+from ..constants import settings
 from .constants import *
 from .objects import *
 
@@ -319,6 +320,24 @@ class ShuiyuanModel:
         """
         sig_re = r"<div data-signature>.*?</div>"
         return re.sub(sig_re, "", text, flags=re.DOTALL).strip()
+
+    @staticmethod
+    def strip_forum_signature(text: str) -> str:
+        """
+        Remove every forum decoration the bot appends to its own replies: the
+        signature block, the auto-reply tag and the unique reply marker. Apply
+        before feeding text back to the model, otherwise it imitates the format
+        and the reply ends up with a second signature.
+
+        :param text: The text to clean.
+        :return: The text without forum decorations.
+        """
+        if not text:
+            return text
+        text = ShuiyuanModel.remove_shuiyuan_signature(text)
+        text = settings.auto_reply_tag_pattern.sub("", text)
+        text = re.sub(r"<!--\s*[A-Za-z0-9]{20}\s*-->", "", text)
+        return text.strip()
 
     @async_retry(log_traceback=True)
     async def get_topic_details(self, topic_id: int) -> TopicDetails:

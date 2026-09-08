@@ -95,8 +95,11 @@ class BaseUserActionModel:
             token = _current_job.set((queue, post_id))
             try:
                 action = from_dict(UserActionDetails, json.loads(payload))
+                # Key by post, not topic: mentions that arrive while an earlier
+                # one is still unanswered are independent questions, so they may
+                # be handled concurrently instead of queueing behind each other.
                 async with get_scheduler().admission(
-                    ("forum", self.username, action.topic_id)
+                    ("forum", self.username, action.post_id)
                 ):
                     await queue.status(post_id, "running")
                     await self._new_action_routine(action)

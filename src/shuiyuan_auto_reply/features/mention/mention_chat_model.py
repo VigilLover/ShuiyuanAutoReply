@@ -766,10 +766,13 @@ class MentionChatModel:
         if external_history is not None:
             history_obj = ChatMessageHistory()
             for item in external_history:
+                # Stored replies carry the signature and auto-reply tag; strip
+                # them so the model cannot copy the format into its own output.
+                content = ShuiyuanModel.strip_forum_signature(item.content)
                 if item.role == "user":
-                    history_obj.add_user_message(item.content)
+                    history_obj.add_user_message(content)
                 elif item.role == "assistant":
-                    history_obj.add_ai_message(item.content)
+                    history_obj.add_ai_message(content)
         else:
             history_obj = self.get_session_history(state["session_id"])
         topic_id = state.get("topic_id")
@@ -1326,7 +1329,9 @@ class MentionChatModel:
                 getattr(last_message, "tool_calls", None),
                 list(additional.keys()),
             )
-        final_clean_text = self.parse_model_output(raw_output)
+        final_clean_text = ShuiyuanModel.strip_forum_signature(
+            self.parse_model_output(raw_output)
+        )
         return {
             "raw_output": raw_output,
             "final_text": final_clean_text,
