@@ -12,6 +12,30 @@ from pathlib import Path
 VERSION = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 ROOT = Path(__file__).resolve().parents[2]
 IMAGES = {"bot", "postgres", "mcp"}
+# Build inputs each image is built from, per its Dockerfile COPY lines. Base image
+# digests are pinned inside the Dockerfile, so hashing the file covers them.
+IMAGE_INPUTS = {
+    "bot": (
+        "deploy/Dockerfile",
+        "pyproject.toml",
+        "uv.lock",
+        "README.md",
+        "src",
+        "web",
+    ),
+    "postgres": ("deploy/postgres", "deploy/vendor/pgvector"),
+    "mcp": ("deploy/mcp", "deploy/vendor/simplemcp"),
+}
+IGNORED = {
+    ".git",
+    "__pycache__",
+    ".venv",
+    "node_modules",
+    ".pytest_cache",
+    "dist",
+    ".mypy_cache",
+    ".ruff_cache",
+}
 
 
 def validate(manifest):
@@ -34,6 +58,13 @@ def validate(manifest):
             raise ValueError("Invalid image repository/digest")
     if not re.fullmatch(r"[0-9a-f]{64}", manifest["schema_id"]):
         raise ValueError("Invalid schema identity")
+    # Optional so manifests published before input identities remain readable.
+    inputs = manifest.get("image_inputs")
+    if inputs is not None and (
+        set(inputs) != IMAGES
+        or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in inputs.values())
+    ):
+        raise ValueError("Invalid image input identity")
     return manifest
 
 
@@ -53,6 +84,36 @@ def schema_id():
     return digest.hexdigest()
 
 
+def image_inputs(root=ROOT):
+    """Content identity of every image's build inputs, independent of build time.
+
+    Rebuilding an image yields a new digest even when nothing changed, so release
+    guards compare this identity instead of the published digest.
+    """
+    identities = {}
+    for name, entries in IMAGE_INPUTS.items():
+        candidates = set()
+        for entry in entries:
+            path = root / entry
+            if path.is_dir():
+                candidates.update(item for item in path.rglob("*") if item.is_file())
+            elif path.is_file():
+                candidates.add(path)
+        digest = hashlib.sha256()
+        for path in sorted(
+            (
+                item
+                for item in candidates
+                if not IGNORED & set(item.relative_to(root).parts)
+            ),
+            key=lambda item: str(item.relative_to(root)),
+        ):
+            digest.update(str(path.relative_to(root)).encode())
+            digest.update(path.read_bytes())
+        identities[name] = digest.hexdigest()
+    return identities
+
+
 def bundle(version, images, output):
     policy = json.loads((ROOT / "deploy/release-policy.json").read_text())
     manifest = validate(
@@ -65,6 +126,7 @@ def bundle(version, images, output):
             ).strip(),
             architecture="linux/amd64",
             images=images,
+            image_inputs=image_inputs(),
             migration=policy["migration"],
             compatible_from=policy.get("compatible_from", []),
             schema_id=schema_id(),

@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import io
 import json
+import logging
 import os
 import platform
 import re
@@ -153,8 +154,20 @@ def receive(root, version, checksum, stream):
 
 
 def transition(previous, target, rollback=False):
-    if previous["images"]["postgres"] != target["images"]["postgres"]:
-        raise ValueError("Database image changes require maintenance")
+    previous_inputs = previous.get("image_inputs", {})
+    target_inputs = target.get("image_inputs", {})
+    if "postgres" in previous_inputs and "postgres" in target_inputs:
+        # Compare build inputs, not digests: rebuilding an unchanged image yields
+        # a new digest and must not be treated as a database image change.
+        if previous_inputs["postgres"] != target_inputs["postgres"]:
+            raise ValueError("Database image changes require maintenance")
+    else:
+        logging.warning(
+            "Release manifests lack image input identity; skipping the database "
+            "image guard for %s -> %s",
+            previous.get("version"),
+            target.get("version"),
+        )
     newer = previous if rollback else target
     older = target if rollback else previous
     if newer["migration"] == "manual" or target["migration"] == "manual":
