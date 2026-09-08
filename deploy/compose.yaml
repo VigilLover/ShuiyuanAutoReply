@@ -11,6 +11,8 @@ x-application: &application
   security_opt: [no-new-privileges:true]
   environment:
     TMPDIR: /var/tmp/shuiyuan
+    # 让容器内 datetime.now() / time.localtime() 返回上海时间而非 UTC
+    TZ: Asia/Shanghai
   volumes:
     - ${SHUIYUAN_CONFIG:-../config/deployment.toml}:/etc/shuiyuan/deployment.toml:ro
     - bot_state:/var/lib/shuiyuan
@@ -82,6 +84,9 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    environment:
+      # system_time.py 用 datetime.now() 取本地时间，需与上海时区一致
+      TZ: Asia/Shanghai
     networks: [tools, egress]
     volumes: [mcp_temp:/var/tmp/mcp]
     mem_limit: 256m
