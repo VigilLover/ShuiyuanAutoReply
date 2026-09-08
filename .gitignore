@@ -261,3 +261,9 @@ deploy/runtime.env
 *.checkpoint.json
 *.failures.json
 !docs/deployment.md
+
+# Reproducible frontend inputs and generated CI evidence
+!web/public/assets/
+!web/public/assets/**
+reports/
+dist-release/

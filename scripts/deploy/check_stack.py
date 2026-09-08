@@ -53,10 +53,11 @@ async def main():
 backend="openai"
 model="synthetic-qwen3.7"
 dims=1024
-base_url="https://model.invalid/v1"
+base_url="http://fake:8080/v1"
 api_key="synthetic"
 [profiles.remote.database]
 url={env="VALIDATION_DB_URL"}
+migration_url={env="VALIDATION_ADMIN_URL"}
 auto_migrate=false
 [profiles.remote.paths]
 state_dir="/tmp/validation-state"
@@ -65,6 +66,23 @@ state_dir="/tmp/validation-state"
     embedding._instance = DeterministicEmbeddings()
     embedding._fingerprint = config.fingerprint
     await migrate_database()
+    from sqlalchemy import text
+
+    from shuiyuan_auto_reply.infrastructure.retrieval.postgres import engine_for
+
+    engine = engine_for()
+    try:
+        async with engine.begin() as connection:
+            try:
+                await connection.execute(
+                    text("CREATE TABLE forbidden_runtime_ddl (id int)")
+                )
+            except Exception as error:
+                assert "permission denied" in str(error).lower()
+            else:
+                raise AssertionError("Runtime role can execute DDL")
+    finally:
+        await engine.dispose()
     source = Path("/tmp/corpus.jsonl")
     source.write_text(
         json.dumps({"persona_id": "wolf", "text": "hello wolf"})

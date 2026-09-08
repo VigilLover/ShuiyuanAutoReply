@@ -8,7 +8,13 @@ from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
 
 
 async def runtime_health(store):
-    result = {"process": "ok", "database": "unknown", "forum": "unknown", "jobs": {}}
+    result = {
+        "process": "ok",
+        "database": "unknown",
+        "forum": "unknown",
+        "state": "ok",
+        "jobs": {},
+    }
     try:
         db = await store._connect()
         try:
