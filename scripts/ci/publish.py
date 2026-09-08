@@ -49,7 +49,7 @@ def main():
             "--title",
             version,
             "--notes",
-            f"Verified linux/amd64 release from dev commit {sha}.",
+            f"Verified linux/amd64 release from main commit {sha}.",
         ],
         check=True,
     )

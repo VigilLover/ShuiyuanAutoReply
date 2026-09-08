@@ -83,6 +83,8 @@ def bundle(version, images, output):
         "config/deployment.example.toml",
         "docs/deployment.md",
         "docs/cicd.md",
+        "docs/first-deployment.md",
+        "docs/branch-strategy.md",
     }
     files.update(
         str(p.relative_to(ROOT)) for p in (ROOT / "scripts/deploy").glob("*.py")

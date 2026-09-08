@@ -15,12 +15,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate dev ancestry and version
+      - name: Validate main ancestry and version
         env:
           VERSION: ${{ github.ref_name }}
         run: |
           python -c 'import os,re; assert re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)",os.environ["VERSION"])'
-          git merge-base --is-ancestor HEAD origin/dev
+          git merge-base --is-ancestor HEAD origin/main
   checks:
     needs: validate
     uses: ./.github/workflows/ci.yml

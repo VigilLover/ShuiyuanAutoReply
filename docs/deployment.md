@@ -1,5 +1,7 @@
 # 本地兼容与低资源远程部署
 
+首次部署顺序见 [逐步部署指南](first-deployment.md)。正式版本从 main 发布，分支规则见 [分支策略](branch-strategy.md)。
+
 本方案使用同一分支和同一 TOML 格式。本地保留 m3e-base/Neo4j；远程使用
 `qwen3.7-text-embedding` 1024 维、PostgreSQL/pgvector，以及独立的 SimpleMCP。
 远程 Bot 和 Web 同进程，默认最多执行 3 个任务。同一会话串行，图片及网页抓取各串行。

@@ -75,3 +75,5 @@ npm --prefix web run build
 远程 Compose 清单位于 `deploy/compose.yaml`，默认包括 SimpleMCP，管理端仅通过 SSH 隧道访问。
 
 CI/CD 工作流、GHCR 镜像发布及受限 SSH 部署设置见 [CI/CD 运维指南](docs/cicd.md)。
+
+正式版本统一从 `main` 发布，`dev` 保留为开发集成分支。首次操作见 [逐步部署指南](docs/first-deployment.md)，主线切换与上游同步见 [分支策略](docs/branch-strategy.md)。

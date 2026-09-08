@@ -1,31 +1,32 @@
 # CI/CD 设置、发布和恢复
 
-本项目采用 GitHub Actions → GHCR → 手动触发 SSH 部署。发布代码来自 `dev`；部署工作流只能从默认分支 `main` 手动运行。日常 CI 不访问真实论坛或付费模型，测试容器只有内部网络。
+首次操作从 [逐步部署指南](first-deployment.md) 开始；Fork 的主线切换与上游同步见 [分支策略](branch-strategy.md)。
+
+本项目采用 GitHub Actions → GHCR → 手动触发 SSH 部署。发布代码来自 `main`；部署工作流只能从默认分支 `main` 手动运行。日常 CI 不访问真实论坛或付费模型，测试容器只有内部网络。
 
 ## 1. 工作流与首次启用
 
 - CI：PR 到 dev/main，以及 dev/main/remote-deploy 推送；Python 3.12 的 remote/local 两套依赖组合、全量 Black/isort、离线 pytest、Node 22 前端构建和 Compose 静态检查。
-- Release：`vX.Y.Z` 标签；验证 dev 历史归属，重新执行 CI，构建 linux/amd64 三个镜像，集成通过后推送同一镜像并发布部署包。
+- Release：`vX.Y.Z` 标签；验证 main 历史归属，重新执行 CI，构建 linux/amd64 三个镜像，集成通过后推送同一镜像并发布部署包。
 - Deploy production：手动输入正式版本与 deploy/rollback，使用 production Environment，经固定 SSH 入口更新服务器。
 
-工作流和脚本必须先经审阅合入 dev。将工作流及其调用的 scripts/ci、scripts/deploy 定义同步到 main，才能从默认分支展示并执行 workflow_dispatch；不要只复制单个 YAML 而遗漏它依赖的脚本。该同步不会把 main 变成发布代码来源。本次实现不替你执行合并、推送或仓库设置。
+产品代码、工作流和依赖脚本统一通过 PR 合入 main，main 同时作为默认分支、正式发布来源和手动部署入口。dev 保留为开发集成分支，可继续通过 PR 向 main 提交变更；不再单独向 main 复制工作流。首次切换时先合并 dev → main，等待 CI 成功后再打正式标签。本文说明不会自动执行合并、推送或仓库设置。
 
-在 GitHub Settings → Rules → Rulesets 为 dev 设置 PR 合并规则，首次运行后选择 CI 的 `Python (remote)`、`Python (local)`、`frontend` 为必需检查。为正式版本标签设置创建/更新权限限制，禁止移动已发布标签。
+在 GitHub Settings → Rules → Rulesets 为 main 设置 PR 合并规则（dev 可同时保留检查），首次运行后选择 CI 的 `Python (remote)`、`Python (local)`、`frontend` 为必需检查。为正式版本标签设置创建/更新权限限制，禁止移动已发布标签。
 
 在 Settings → Actions 设置允许工作流使用官方 Actions；固定 SHA 已在实施时核验，基础镜像使用 registry digest。定期通过独立 PR 更新，而不是运行时自动升级。启用 GHCR package 发布权限，Release job 仅获得所需 contents/packages 写权限；PR 只有 contents 读权限。
 
-uv 使用 `--locked`，锁文件不匹配即失败。不要在 CI 自动更新锁文件。当前用户工作区已有未提交的 uv.lock 修改，需由维护者决定是否另行提交；CI 只使用仓库提交内容。
+uv 使用 `--locked`，锁文件不匹配即失败。不要在 CI 自动更新锁文件。依赖调整应连同经过审阅的锁文件变更一起提交；CI 只使用仓库提交内容。
 
 GitHub 参考：[镜像发布](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images)、[构建缓存](https://docs.docker.com/build/ci/github-actions/cache/)。uv 下载缓存目前依赖安装环境，Docker 构建和 npm 配置了缓存；首次运行耗时取决于下载，不承诺固定分钟数。
 
 ## 2. 发布版本
 
-先确认目标提交已经合入 dev 并通过 CI，然后由维护者执行：
+先确认目标提交已经合入 main 并通过 CI，然后由维护者执行：
 
 ```bash
-git switch dev
-git pull --ff-only origin dev
-git tag v1.0.0
+git fetch origin
+git tag v1.0.0 origin/main
 git push origin v1.0.0
 ```
 
