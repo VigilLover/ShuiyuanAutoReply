@@ -1,6 +1,17 @@
 from dataclasses import dataclass
 from typing import Dict, List, Literal, Optional
 
+UPLOAD_SHORT_PATH_PREFIX = "/uploads/short-url/"
+
+
+def normalize_upload_short_path(value: object) -> str:
+    """Return Discourse short upload paths in their canonical upload:// form."""
+
+    short_path = str(value).strip()
+    if short_path.startswith(UPLOAD_SHORT_PATH_PREFIX):
+        return f"upload://{short_path.removeprefix(UPLOAD_SHORT_PATH_PREFIX)}"
+    return short_path
+
 
 @dataclass
 class User:
@@ -205,7 +216,7 @@ class UserActionDetails:
     deleted: bool
     hidden: bool
     post_type: int
-    category_id: int
+    category_id: Optional[int]
     closed: bool
     archived: bool
 

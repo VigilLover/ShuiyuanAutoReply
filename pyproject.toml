@@ -10,30 +10,44 @@ authors = [{ name = "Hydroiodic_Acid", email = "liao_chengfan@sjtu.edu.cn" }]
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp",
+    "aiosqlite",
     "apscheduler",
     "dacite",
+    "dashscope",
     "ddgs",
     "httpx[socks]",
+    "langchain-classic",
     "langchain-community",
-    "langchain-openai",
-    "langchain-mcp-adapters",
-    "langgraph",
+    "langchain-core>=1.6,<1.7",
+    "langchain-openai>=1.6,<1.7",
+    "langchain-mcp-adapters>=0.3.2,<0.4",
+    "langgraph>=1.2.11,<1.3",
+    "langgraph-prebuilt>=1.1,<1.2",
     "langgraph-checkpoint-postgres",
     "langmem",
-    "neomodel",
     "numpy",
-    "openai",
+    "openai>=3.3.1,<4",
     "pandas",
     "pillow",
     "python-dotenv",
-    "sentence-transformers",
+    "requests",
     "skia-python",
     "sqlalchemy",
+    "pytest>=9.0.3",
+    "greenlet>=3.5.0",
+    "cryptography",
 ]
 
 [project.optional-dependencies]
-dev = ["black", "isort"]
+dev = ["black", "isort", "markdownify==1.2.0"]
+local-embedding = ["sentence-transformers"]
+neo4j = ["neomodel"]
 server = ["fastapi[all]"]
+
+[project.scripts]
+shuiyuan-ops = "shuiyuan_auto_reply.interfaces.cli.ops:main"
+shuiyuan-bot = "shuiyuan_auto_reply.interfaces.cli.main:bot_main"
+shuiyuan-api = "shuiyuan_auto_reply.interfaces.cli.main:api_main"
 
 [tool.setuptools]
 include-package-data = true
@@ -47,7 +61,14 @@ include = ["shuiyuan_auto_reply*"]
 
 [tool.setuptools.package-data]
 shuiyuan_auto_reply = [
+    "prompts/manifest.json",
+    "prompts/personas/*.txt",
+    "prompts/policies/*.txt",
+    "prompts/capabilities/*.txt",
+    "interfaces/api/static/**/*",
     "assets/tarot_data.json",
+    "assets/pet_responses.json",
+    "assets/pet_endings.json",
     "assets/tarot_img/*.jpg",
     "assets/fonts/Noto_Color_Emoji/*.ttf",
     "assets/fonts/Noto_Color_Emoji/*.txt",
@@ -58,3 +79,9 @@ shuiyuan_auto_reply = [
 
 [tool.isort]
 profile = "black"
+
+[tool.black]
+target-version = ["py312"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]

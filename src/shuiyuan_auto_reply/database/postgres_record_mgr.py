@@ -105,6 +105,8 @@ class AsyncPostgresRecordDatabaseManager:
             _to_sqlalchemy_async_url(self.db_url),
             echo=False,
             pool_pre_ping=True,
+            pool_size=1,
+            max_overflow=0,
         )
         self.async_session = async_sessionmaker(
             self.engine,
@@ -440,3 +442,13 @@ async def create_global_async_postgres_record_manager(
                 db_url
             )
         return _global_async_postgres_record_manager
+
+
+async def close_global_async_postgres_record_manager() -> None:
+    global _global_async_postgres_record_manager
+    manager, _global_async_postgres_record_manager = (
+        _global_async_postgres_record_manager,
+        None,
+    )
+    if manager is not None:
+        await manager.close()

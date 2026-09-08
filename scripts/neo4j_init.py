@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 
 import dotenv
 import pandas as pd
@@ -20,7 +21,7 @@ from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.database.neo4j_mgr import create_global_async_neo4j_manager
 
 
-async def init_database():
+async def init_database(username: str):
     """Initialize the Neo4j database"""
     try:
         logging.info("Initializing Neo4j database...")
@@ -28,13 +29,18 @@ async def init_database():
         if neo4j_manager is None:
             raise RuntimeError("NEO4J_DB_URL is not configured")
         # Initialize the Neo4j database
+        neo4j_manager.userid = username
         await neo4j_manager.initialize()
 
         # The signature has to be removed before storing the sentences
         sig_re = r"<div data-signature>.*?</div>"
 
         # Try to open the CSV file and import data
-        file_path = os.path.join(os.path.dirname(__file__), "user_archive.csv")
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        file_path = os.path.join(
+            project_root, "user_archive", username, "user_archive.csv"
+        )
+
         if os.path.exists(file_path):
             # Load the CSV data
             logging.info(f"Importing data from {file_path}...")
@@ -46,7 +52,7 @@ async def init_database():
                 if pd.isna(raw):
                     continue
                 # Auto-reply posts should not be imported
-                if settings.auto_reply_tag in str(raw):
+                if settings.contains_auto_reply_tag(str(raw)):
                     continue
                 # For other posts, import them into the database
                 # But signature needs to be removed from the post
@@ -57,8 +63,17 @@ async def init_database():
             data_to_import = list(set(data_to_import))
             # Log the number of records to be imported
             logging.info(f"Number of records to import: {len(data_to_import)}")
+            backfilled_count = await neo4j_manager.backfill_legacy_userid(
+                data_to_import,
+                username,
+            )
+            if backfilled_count:
+                logging.info(
+                    "Backfilled userid for %s legacy Sentence nodes.",
+                    backfilled_count,
+                )
             # Wait for all import routines to complete
-            await neo4j_manager.store_sentences(data_to_import)
+            await neo4j_manager.store_sentences(data_to_import, userid=username)
             logging.info("Data imported successfully!")
         else:
             logging.warning(f"CSV file {file_path} not found. Skipping data import.")
@@ -70,4 +85,8 @@ async def init_database():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(init_database())
+    username = input("请输入要初始化的用户名/角色名: ").strip()
+    if not username:
+        logging.error("用户名不能为空")
+        sys.exit(1)
+    asyncio.run(init_database(username))

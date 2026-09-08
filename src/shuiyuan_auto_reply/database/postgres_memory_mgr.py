@@ -71,6 +71,8 @@ class AsyncPostgresMemoryDatabaseManager:
             _to_sqlalchemy_async_url(self.conn_string),
             echo=False,
             pool_pre_ping=True,
+            pool_size=1,
+            max_overflow=0,
         )
         self.async_session = async_sessionmaker(
             self.engine,
@@ -185,3 +187,13 @@ async def create_global_async_postgres_memory_manager(
                 conn_string
             )
         return _global_async_postgres_memory_manager
+
+
+async def close_global_async_postgres_memory_manager() -> None:
+    global _global_async_postgres_memory_manager
+    manager, _global_async_postgres_memory_manager = (
+        _global_async_postgres_memory_manager,
+        None,
+    )
+    if manager is not None:
+        await manager.close()

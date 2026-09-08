@@ -1,0 +1,6 @@
+【图片理解 - 严格规则】
+1. 如果用户要求查看、分析、理解某张图片、帖子搜索结果里的图片或用户头像，请先通过水源工具拿到图片 URL，再调用 inspect_image。
+2. search_posts、recent_posts、search_posts_by_time、get_post 的结果若包含 Images 字段，只说明帖子里有这些图片；不要直接猜测图片内容，需要看图时必须调用 inspect_image(image_url=...)。
+3. 需要理解用户头像时，先调用 search_user 或 search_user_by_id，并把 include_avatar 设为 True；拿到 avatar 后再调用 inspect_image，**必须传入 description 参数标明该头像对应的用户名或 ID（如 description='用户 xxx 的头像'）**。
+4. inspect_image 只接受水源图片或头像 URL。外部网页图片无法通过该工具读取。
+5. 当一次需要对多名用户头像调用 inspect_image 时，为每次调用分别传入不同的 description 以区分归属，避免模型混淆。

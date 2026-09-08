@@ -1,0 +1,84 @@
+name: shuiyuan-validation
+x-app: &app
+  image: ${BOT_IMAGE:-shuiyuan-bot:remote-v1}
+  user: '10001:10001'
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 800m
+  networks: [validation]
+  volumes:
+    - ${VALIDATION_INPUT:-../reports/validation}:/validation:ro
+    - ../scripts/ci/fakes:/fakes:ro
+    - ../scripts/deploy/check_stack.py:/checks/check_stack.py:ro
+    - ../scripts/ci/backup_check.py:/checks/backup_check.py:ro
+    - bot_state:/var/lib/shuiyuan
+    - bot_temp:/var/tmp/shuiyuan
+    - checks_temp:/tmp
+  environment: &environment
+    VALIDATION_DB_URL: postgresql://shuiyuan_app:synthetic-app@postgres:5432/shuiyuan
+    VALIDATION_ADMIN_URL: postgresql://postgres:synthetic-only@postgres:5432/shuiyuan
+    VALIDATION_SECONDS: ${VALIDATION_SECONDS:-15}
+    PYTHONPATH: /fakes
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-shuiyuan-postgres:17.6-vector0.8.2}
+    environment:
+      POSTGRES_PASSWORD: synthetic-only
+      POSTGRES_DB: shuiyuan
+    volumes:
+      - ${VALIDATION_INPUT:-../reports/validation}/database_app_password:/run/secrets/database_app_password:ro
+    mem_limit: 384m
+    command: [postgres, -c, shared_buffers=96MB, -c, work_mem=2MB, -c, maintenance_work_mem=32MB, -c, max_connections=15]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres -d shuiyuan']
+      interval: 5s
+      retries: 15
+    networks: [validation]
+  mcp:
+    image: ${MCP_IMAGE:-shuiyuan-mcp:de42d48}
+    read_only: true
+    cap_drop: [ALL]
+    volumes: [mcp_temp:/var/tmp/mcp]
+    mem_limit: 256m
+    networks: [validation]
+    healthcheck:
+      test: [CMD, python, -c, "import socket; s=socket.create_connection(('127.0.0.1',58000),3); s.close()"]
+      interval: 5s
+      retries: 15
+  fake:
+    <<: *app
+    command: [python, /fakes/server.py]
+    volumes:
+      - ../scripts/ci/fakes:/fakes:ro
+      - ${VALIDATION_INPUT:-../reports/validation}:/control:ro
+    mem_limit: 96m
+  migrate:
+    <<: *app
+    profiles: [operations]
+    environment:
+      <<: *environment
+      VALIDATION_DB_URL: postgresql://postgres:synthetic-only@postgres:5432/shuiyuan
+    command: [shuiyuan-ops, --config, /validation/config.toml, --profile, remote, db, migrate]
+  bot:
+    <<: *app
+    command: [shuiyuan-bot, --config, /validation/config.toml, --profile, remote, --web]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11451/api/live',timeout=3)"]
+      interval: 5s
+      retries: 20
+  checks:
+    <<: *app
+    profiles: [operations]
+    command: [python, /checks/check_stack.py]
+  backup-check:
+    <<: *app
+    profiles: [operations]
+    command: [python, /checks/backup_check.py]
+networks:
+  validation: {internal: true}
+volumes:
+  bot_state: {}
+  bot_temp: {}
+  checks_temp: {}
+  mcp_temp: {}

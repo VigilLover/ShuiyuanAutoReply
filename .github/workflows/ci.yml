@@ -1,0 +1,73 @@
+name: CI
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main, remote-deploy]
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  python:
+    name: Python (${{ matrix.backend }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [remote, local]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y libgl1 libglib2.0-0 libpq5
+      - run: python -m pip install uv==0.8.15
+      - name: Install locked dependencies
+        env:
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          if [ "$BACKEND" = local ]; then
+            uv sync --locked --extra dev --extra server --extra local-embedding --extra neo4j
+          else
+            uv sync --locked --extra dev --extra server
+          fi
+      - name: Verify backend installation
+        env:
+          BACKEND: ${{ matrix.backend }}
+        run: uv run --no-sync python scripts/ci/check_dependencies.py "$BACKEND"
+      - run: uv run --no-sync black --check src test scripts deploy/mcp
+      - run: uv run --no-sync isort --check-only src test scripts deploy/mcp
+      - run: uv run --no-sync pytest -q --junitxml=reports/pytest.xml
+      - name: CLI and compose checks
+        run: |
+          uv run --no-sync shuiyuan-ops --help
+          uv run --no-sync shuiyuan-ops config check
+          docker compose -f deploy/compose.yaml config --quiet
+          docker compose -f deploy/compose.test.yaml config --quiet
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: pytest-${{ matrix.backend }}
+          path: reports/*.xml
+          retention-days: 7
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.18.0'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build

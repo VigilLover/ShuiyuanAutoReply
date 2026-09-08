@@ -64,6 +64,7 @@ db.sqlite3-journal
 # Flask stuff:
 instance/
 .webassets-cache
+web/node_modules/
 
 # Scrapy stuff:
 .scrapy
@@ -98,7 +99,8 @@ ipython_config.py
 #   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
-uv.lock
+# This application locks its runtime dependencies for reproducible deployments.
+# uv.lock
 
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
@@ -195,11 +197,8 @@ cython_debug/
 .abstra/
 
 # Visual Studio Code
-#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
-#   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#   and can be added to the global gitignore or merged into this file. However, if you prefer, 
-#   you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+.vscode/
+.idea/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
@@ -221,10 +220,50 @@ __marimo__/
 .vscode/
 
 # JAccount Cookies
-cookies
+cookies*
+
+# Shuiyuan Archive File
+user_archive*
+
+# m3e-base model
+moka-ai/m3e-base
+
+# user archive
+user_archive/
+
+# macOS
+.DS_Store
+
+# Pet Module Configs
+assets/pet_state.json
 
 # Env files
 .env
 
 # Generated images
 generated_images/
+docs/
+assets/
+design-qa/
+design-qa.md
+!src/shuiyuan_auto_reply/interfaces/api/static/assets/
+!src/shuiyuan_auto_reply/interfaces/api/static/assets/**
+
+.codex/
+.claude/
+
+# Deployment inputs and fetched pinned build contexts
+config/deployment.toml
+secrets/
+backups/
+deploy/vendor/
+deploy/runtime.env
+*.checkpoint.json
+*.failures.json
+!docs/deployment.md
+
+# Reproducible frontend inputs and generated CI evidence
+!web/public/assets/
+!web/public/assets/**
+reports/
+dist-release/

@@ -10,7 +10,7 @@ import re
 import time
 import traceback
 from typing import ClassVar, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from dacite import from_dict
@@ -72,6 +72,16 @@ class ShuiyuanModel:
         cls._active_instances += 1
         return instance
 
+    async def verify_identity(self, expected_username: str) -> None:
+        response = await self._rate_limited_request(
+            "get", "https://shuiyuan.sjtu.edu.cn/session/current.json"
+        )
+        if response.status != 200:
+            raise ValueError("Community session is not authenticated")
+        data = await response.json()
+        if data.get("current_user", {}).get("username") != expected_username:
+            raise ValueError("Community session username does not match configured bot")
+
     @classmethod
     def _ensure_locks(cls) -> None:
         # Initialize locks if they are not already initialized
@@ -100,14 +110,49 @@ class ShuiyuanModel:
                 )
 
             # Create a new aiohttp session and load cookies
-            session = aiohttp.ClientSession()
-            with open(file_path, "rb") as f:
-                cookies = pickle.load(f)
-                session.cookie_jar.update_cookies(cookies)
+            import json
+            from pathlib import Path
+
+            from yarl import URL
+
+            from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
+            config = get_deployment()
+            raw = Path(file_path).read_bytes()
+            if raw.lstrip().startswith(b"{"):
+                document = json.loads(raw)
+                if (
+                    document.get("version") != 1
+                    or document.get("domain") != "shuiyuan.sjtu.edu.cn"
+                ):
+                    raise ValueError("Invalid cookie document version or domain")
+                cookies = document.get("cookies")
+                if (
+                    not isinstance(cookies, dict)
+                    or not cookies
+                    or not all(
+                        isinstance(k, str) and isinstance(v, str)
+                        for k, v in cookies.items()
+                    )
+                ):
+                    raise ValueError("Cookie values must be nonempty string mapping")
+            elif config.profile == "remote":
+                raise ValueError("Remote deployment accepts JSON cookies only")
+            else:
+                cookies = pickle.loads(raw)
+            session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+            session.cookie_jar.update_cookies(
+                cookies, response_url=URL("https://shuiyuan.sjtu.edu.cn")
+            )
 
             # Update the shared session using Shuiyuan API
             cls._shared_session = session
-            await cls._update_cookies()
+            try:
+                await cls._update_cookies()
+            except BaseException:
+                await session.close()
+                cls._shared_session = None
+                raise
             return cls._shared_session
 
     @classmethod
@@ -196,17 +241,32 @@ class ShuiyuanModel:
         if reply_to_post_number is not None:
             form_data.add_field("reply_to_post_number", str(reply_to_post_number))
 
-        # OK, let's post it
+        from shuiyuan_auto_reply.infrastructure.persistence.work_queue import (
+            publication_status,
+        )
+
+        await publication_status("sending")
+        # A failed or cancelled publication stays uncertain until inspected.
+        attempts = 0
         while True:
             response = await self._rate_limited_request(
                 "post", reply_url, data=form_data
             )
             if response.status == 200:
+                payload = await response.json()
+                await publication_status("sent", payload.get("id"))
                 break
             elif response.status == 429:
                 logging.warning(f"Failed to reply to post: {await response.text()}")
-                await asyncio.sleep(1)
+                attempts += 1
+                if attempts >= 3:
+                    await publication_status("failed")
+                    raise RuntimeError("Forum publication rate limited")
+                await asyncio.sleep(
+                    min(60, float(response.headers.get("Retry-After", 2**attempts)))
+                )
             else:
+                await publication_status("failed")
                 raise Exception(f"Failed to reply to post: {await response.text()}")
 
     @staticmethod
@@ -351,19 +411,22 @@ class ShuiyuanModel:
         voter_data = await response.json()
         return from_dict(VoterDetails, voter_data)
 
-    async def get_actions(self, username: str, filter: List[int]) -> UserActions:
+    async def get_actions(
+        self, username: str, filter: List[int], offset: int = 0
+    ) -> UserActions:
         """
         Get the latest actions for a given username and filter.
 
         :param username: The username to check actions for.
         :param filter: The list of action types to filter.
+        :param offset: The pagination offset used by Discourse user actions.
         :return: An instance of UserActions containing the mention information.
         """
         response = await self._rate_limited_request(
             "get",
             action_url,
             params={
-                "offset": 0,
+                "offset": offset,
                 "username": username,
                 "filter": ",".join(map(str, filter)),
             },
@@ -374,25 +437,33 @@ class ShuiyuanModel:
         data = await response.json()
         return from_dict(UserActions, data)
 
-    async def upload_image(self, image_bytes: bytes) -> ImageUploadResponse:
+    async def upload_image(
+        self,
+        image_bytes: bytes,
+        *,
+        mime_type: str = "image/jpeg",
+        filename: str = "image.jpg",
+    ) -> ImageUploadResponse:
         """
         Upload an image to the Shuiyuan server.
 
         :param image_bytes: The bytes of the image to upload.
+        :param mime_type: The actual MIME type sent to Discourse.
+        :param filename: The filename reported to Discourse.
         :return: The URL of the uploaded image.
         """
         form_data = aiohttp.FormData()
         form_data.add_field("upload_type", "composer")
         form_data.add_field("relative_path", "null")
-        form_data.add_field("type", "image/jpeg")
+        form_data.add_field("type", mime_type)
         # Calculate the SHA1 checksum of the image
         sha1sum = hashlib.sha1(image_bytes).hexdigest()
         form_data.add_field("sha1sum", sha1sum)
         form_data.add_field(
             "file",
             image_bytes,
-            filename="image.jpg",
-            content_type="image/jpeg",
+            filename=filename,
+            content_type=mime_type,
         )
 
         response = await self._rate_limited_request(
@@ -402,6 +473,9 @@ class ShuiyuanModel:
             raise Exception(f"Failed to upload image: {await response.text()}")
 
         data = await response.json()
+        for key in ("short_url", "short_path"):
+            if key in data:
+                data[key] = normalize_upload_short_path(data[key])
         return from_dict(ImageUploadResponse, data)
 
     async def try_upload_image(
@@ -531,6 +605,35 @@ class ShuiyuanModel:
                 raise Exception(f"Failed to download image: {await response.text()}")
 
             return await response.read()
+
+    async def download_raw_image(self, image_url: str) -> bytes:
+        """
+        Download a Shuiyuan-hosted image path or URL with the authenticated session.
+
+        This is used for images that are not represented as upload:// short URLs,
+        such as user avatars.
+        """
+        parsed = urlparse(image_url)
+        if parsed.scheme in {"http", "https"}:
+            if parsed.netloc != urlparse(base_url).netloc:
+                raise ValueError("Invalid Shuiyuan image URL host.")
+            request_url = image_url
+        elif image_url.startswith("/"):
+            request_url = urljoin(base_url, image_url)
+        else:
+            raise ValueError("Invalid Shuiyuan image URL.")
+
+        response = await self._rate_limited_request(
+            "get",
+            URL(request_url, encoded=True),
+            allow_redirects=True,
+        )
+        if response.status != 200:
+            raise Exception(
+                f"Failed to download Shuiyuan image: {await response.text()}"
+            )
+
+        return await response.read()
 
     async def close(self) -> None:
         """
@@ -734,6 +837,76 @@ class ShuiyuanModel:
             post_details.extend(details)
 
         return topic_details.title, post_details[:limit]
+
+    async def _search_post_details_by_time_range_and_topic(
+        self,
+        topic_id: int,
+        after_date: Optional[str] = None,
+        before_date: Optional[str] = None,
+    ) -> Dict[str, List[PostDetails]]:
+        """
+        Search for posts within a specific topic and time range, and return detailed information.
+
+        :param topic_id: The ID of the topic to search in.
+        :param after_date: An optional start date (format: YYYY-MM-DD).
+        :param before_date: An optional end date (format: YYYY-MM-DD).
+        :return: A dictionary mapping topic titles to lists of detailed post information.
+        """
+        term = f"topic:{topic_id}"
+        if after_date:
+            term += f" after:{after_date}"
+        if before_date:
+            term += f" before:{before_date}"
+
+        params = {"term": term.strip()}
+        response = await self._rate_limited_request(
+            "get", f"{post_search_url}", params=params
+        )
+        if response.status != 200:
+            raise Exception(
+                f"Failed to search posts by time range: {await response.text()}"
+            )
+
+        data = await response.json()
+        post_list = [
+            from_dict(PostSearchResult, post) for post in data.get("posts", [])
+        ]
+        if not post_list:
+            return {}
+
+        # Get post details in batch (all posts share the same topic_id)
+        post_ids = [post.id for post in post_list]
+        details_list = await self.get_post_details_batch_by_topic_id(topic_id, post_ids)
+        topic_title = (
+            data.get("topics", [{}])[0].get("title", str(topic_id))
+            if data.get("topics")
+            else str(topic_id)
+        )
+        return {topic_title: details_list}
+
+    async def search_post_details_by_time_range_and_topic(
+        self,
+        topic_id: int,
+        after_date: Optional[str] = None,
+        before_date: Optional[str] = None,
+    ) -> Dict[str, List[PostDetails]]:
+        """
+        Search for posts within a specific topic and time range, and return detailed information.
+        Note for AI Agents: The search API is exclusive of the dates provided.
+        If you want to search for posts exactly ON a single day (e.g., todays posts on 2026-03-18),
+        you MUST set after_date to the start day (2026-03-18) AND set before_date to the NEXT day (2026-03-19).
+
+        :param topic_id: The ID of the topic to search in.
+        :param after_date: An optional start date (format: YYYY-MM-DD).
+        :param before_date: An optional end date (format: YYYY-MM-DD).
+        :return: A dictionary mapping topic titles to lists of detailed post information.
+        """
+        return await self._retry_wrapper(
+            self._search_post_details_by_time_range_and_topic,
+            topic_id,
+            after_date,
+            before_date,
+        )
 
 
 def _global_ignore_illegal_cookies() -> None:

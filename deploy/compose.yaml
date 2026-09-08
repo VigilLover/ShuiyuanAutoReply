@@ -1,0 +1,116 @@
+name: shuiyuan
+x-application: &application
+  image: ${BOT_IMAGE:-shuiyuan-bot:remote-v1}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  user: '10001:10001'
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  environment:
+    TMPDIR: /var/tmp/shuiyuan
+  volumes:
+    - ${SHUIYUAN_CONFIG:-../config/deployment.toml}:/etc/shuiyuan/deployment.toml:ro
+    - bot_state:/var/lib/shuiyuan
+    - bot_temp:/var/tmp/shuiyuan
+  networks: [database, tools, egress]
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '3'}
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-shuiyuan-postgres:17.6-vector0.8.2}
+    build: {context: .., dockerfile: deploy/postgres/Dockerfile}
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: shuiyuan
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_admin_password
+    secrets: [database_admin_password, database_app_password]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    networks: [database]
+    mem_limit: 384m
+    cpus: 0.5
+    shm_size: 96m
+    restart: unless-stopped
+    command: [postgres, -c, shared_buffers=96MB, -c, work_mem=2MB, -c, maintenance_work_mem=32MB, -c, max_connections=15, -c, max_parallel_workers_per_gather=0]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres -d shuiyuan']
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  migrate:
+    <<: *application
+    profiles: [operations]
+    command: [shuiyuan-ops, --config, /etc/shuiyuan/deployment.toml, --profile, remote, db, migrate]
+    secrets:
+      - source: database_admin_url
+        target: database_url
+      - embedding_key
+      - deepseek_key
+      - image_key
+      - forum_cookie
+    depends_on:
+      postgres: {condition: service_healthy}
+    mem_limit: 800m
+    restart: 'no'
+  bot:
+    <<: *application
+    secrets: [database_url, embedding_key, deepseek_key, image_key, forum_cookie]
+    depends_on:
+      postgres: {condition: service_healthy}
+    mem_limit: 800m
+    cpus: 1.5
+    pids_limit: 128
+    ports: ['127.0.0.1:11451:11451']
+    restart: unless-stopped
+    stop_grace_period: 75s
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11451/api/live',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  mcp:
+    image: ${MCP_IMAGE:-shuiyuan-mcp:de42d48}
+    build: {context: .., dockerfile: deploy/mcp/Dockerfile}
+    init: true
+    user: '10002:10002'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [tools, egress]
+    volumes: [mcp_temp:/var/tmp/mcp]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import socket; s=socket.create_connection(('127.0.0.1',58000),3); s.close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+networks:
+  database: {internal: true}
+  tools: {internal: true}
+  egress: {}
+volumes:
+  bot_state: {}
+  bot_temp: {}
+  postgres_data: {}
+  mcp_temp: {}
+secrets:
+  database_admin_password: {file: "${SHUIYUAN_SECRETS:-../secrets}/database_admin_password"}
+  database_app_password: {file: "${SHUIYUAN_SECRETS:-../secrets}/database_app_password"}
+  database_admin_url: {file: "${SHUIYUAN_SECRETS:-../secrets}/database_admin_url"}
+  database_url: {file: "${SHUIYUAN_SECRETS:-../secrets}/database_url"}
+  embedding_key: {file: "${SHUIYUAN_SECRETS:-../secrets}/embedding_key"}
+  deepseek_key: {file: "${SHUIYUAN_SECRETS:-../secrets}/deepseek_key"}
+  forum_cookie: {file: "${SHUIYUAN_SECRETS:-../secrets}/forum_cookie.json"}
+  image_key: {file: "${SHUIYUAN_SECRETS:-../secrets}/image_key"}
