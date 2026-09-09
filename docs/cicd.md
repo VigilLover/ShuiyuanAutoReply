@@ -143,6 +143,48 @@ sudo cat /opt/shuiyuan/shared/last-deployment.json
 
 记录仅包含版本、阶段、错误类型和备份路径，不写 Cookie 或模型错误原文。管理员可在服务器通过 Compose 查看详细日志，避免将生产日志上传公开 CI artifact。
 
+### 状态检查
+
+部署记录含版本、阶段和备份路径。判断是否真的成功只看 `phase`，Actions 的绿色对勾只代表 SSH 命令返回：
+
+```bash
+sudo shuiyuan-release status
+```
+
+受限入口同样只读可用，不需要 sudo：
+
+```bash
+ssh -i DEPLOY_KEY shuiyuan-deploy@SERVER_IP status
+```
+
+业务健康四项都应为 `ok`；`last_poll` 是查询当刻的值，与当前时间相差应在轮询间隔内：
+
+```bash
+curl -s http://127.0.0.1:11451/api/runtime-health
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:11451/api/live
+```
+
+容器、日志、磁盘与备份：
+
+```bash
+sudo docker ps
+sudo docker logs --tail 100 shuiyuan-bot-1
+df -h /
+ls -la /opt/shuiyuan/backups
+```
+
+管理界面只绑 `127.0.0.1`，需先建隧道再访问 `http://127.0.0.1:11451`：
+
+```bash
+ssh -N -L 11451:127.0.0.1:11451 SERVER_IP
+```
+
+### 常见失败
+
+- `failed_phase: pull` 且镜像拉取报 `denied: denied`：服务器上保存的 ghcr.io 凭据对该包没有读权限，GHCR 不会回退到匿名。公开包执行 `sudo docker logout ghcr.io` 后重试；若镜像改为私有，需重新 `docker login ghcr.io` 并只授予 `read:packages`。
+- `Release file integrity failure`：`/opt/shuiyuan/releases/<版本>/` 下的文件被手工改过，控制器会按 manifest 校验每个文件的 sha256。用发布包内的原始文件恢复，配置改动走新版本发布。
+- `No tested backward compatibility for this release`：新版本 `schema_id` 与已部署版本不同，且策略不是 `backward-compatible`。在 `deploy/release-policy.json` 的 `compatible_from` 里补上待升级来源并发布新版本，旧清单已发布、标签不能移动。
+
 回滚在同一工作流选择 rollback 和旧版本；必须通过当前版本向该旧版本的兼容判断，且仍先备份。数据库镜像、Embedding 指纹改变、manual 迁移一律拒绝普通回滚。需要恢复数据库时，停止所有写入者，按 deployment.md 在空数据库和空状态卷恢复匹配备份；明确核对备份后的新增记忆及发帖结果，禁止无条件覆盖。
 
 发布并发受 GitHub concurrency 与 Linux flock 双重约束，进行中的部署不被新任务取消。网络断开后先检查 status，不能假设服务器动作已经停止。
