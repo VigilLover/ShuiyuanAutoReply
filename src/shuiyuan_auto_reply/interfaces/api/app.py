@@ -619,6 +619,9 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             artifact.local_path,
             media_type=artifact.mime_type,
             filename=Path(artifact.local_path).name,
+            # Artifact ids are content-stable, so images can be cached without
+            # revalidation; the monitor re-renders them on every refresh.
+            headers={"Cache-Control": "private, max-age=31536000, immutable"},
         )
 
     def _profile_defaults(scope: str) -> dict[str, Any]:

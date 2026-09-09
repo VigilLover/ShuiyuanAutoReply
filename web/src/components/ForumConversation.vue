@@ -7,7 +7,12 @@ import RunProgress from './RunProgress.vue'
 const props = defineProps<{ runs: ForumRun[]; messages: Message[]; events: RunEvent[] }>()
 const emit = defineEmits<{ preview: [url: string] }>()
 const timeline = computed(() => forumTimeline(props.runs, props.messages))
-const eventsFor = (id?: string) => props.events.filter(e => e.run_id === id)
+const eventsByRun = computed(() => {
+  const grouped: Record<string, RunEvent[]> = {}
+  for (const event of props.events) (grouped[event.run_id] ||= []).push(event)
+  return grouped
+})
+const eventsFor = (id?: string) => (id ? eventsByRun.value[id] || [] : [])
 </script>
 
 <template>

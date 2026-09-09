@@ -23,7 +23,7 @@ import PromptEvent from '../components/PromptEvent.vue'
 import RunProgress from '../components/RunProgress.vue'
 import ForumConversation from '../components/ForumConversation.vue'
 import { useForumMonitor } from '../stores/forum'
-import { mergeRun, type ForumRun } from '../forum'
+import { activeRun, mergeRun, type ForumRun } from '../forum'
 import { useConversations } from '../stores/conversations'
 
 const store = useConversations()
@@ -56,6 +56,22 @@ const forumRuns = computed(() => {
     if (run.conversation_id === store.selected?.conversation.id) mergeRun(runs, run)
   }
   return Object.values(runs)
+})
+const runsById = computed(() => {
+  const map: Record<string, ForumRun> = {}
+  for (const run of forumRuns.value) map[run.id] = run
+  return map
+})
+// One pass over the live runs instead of forum.counts() per sidebar row.
+const forumCounts = computed(() => {
+  const map: Record<string, { queued: number; running: number }> = {}
+  for (const run of Object.values(forum.runs)) {
+    if (!activeRun(run)) continue
+    const entry = map[run.conversation_id] ||= { queued: 0, running: 0 }
+    if (run.status === 'queued') entry.queued += 1
+    else entry.running += 1
+  }
+  return map
 })
 const selectedEvents = computed(() => {
   const saved = store.selected?.events || []
@@ -322,8 +338,8 @@ function scrollToBottom() {
           @click="selectConversation(item.id)"
         >
           <span>{{ item.title }}</span>
-          <small v-if="store.channel === 'forum' && (forum.counts(item.id).queued || forum.counts(item.id).running)" class="forum-sidebar-count">
-            {{ forum.counts(item.id).running }} 执行 · {{ forum.counts(item.id).queued }} 排队
+          <small v-if="store.channel === 'forum' && (forumCounts[item.id]?.queued || forumCounts[item.id]?.running)" class="forum-sidebar-count">
+            {{ forumCounts[item.id]?.running || 0 }} 执行 · {{ forumCounts[item.id]?.queued || 0 }} 排队
           </small>
           <small v-else>{{ new Date(item.updated_at).toLocaleDateString() }}</small>
         </button>
@@ -355,7 +371,7 @@ function scrollToBottom() {
           <label v-if="store.channel === 'forum'" class="forum-topic-picker">
             <span>切换话题</span>
             <select :value="store.selected.conversation.id" @change="selectConversation(($event.target as HTMLSelectElement).value)">
-              <option v-for="item in store.conversations" :key="item.id" :value="item.id">{{ item.title }} · {{ forum.counts(item.id).running }} 执行 / {{ forum.counts(item.id).queued }} 排队</option>
+              <option v-for="item in store.conversations" :key="item.id" :value="item.id">{{ item.title }} · {{ forumCounts[item.id]?.running || 0 }} 执行 / {{ forumCounts[item.id]?.queued || 0 }} 排队</option>
             </select>
           </label>
           <div class="view-tabs">
@@ -421,7 +437,7 @@ function scrollToBottom() {
         <div v-if="selectedEvents.length" class="trace-table">
           <div v-for="event in selectedEvents" :key="event.id" class="trace-table-row">
             <time>{{ new Date(event.created_at).toLocaleTimeString() }}</time>
-            <span class="event-kind"><small v-if="store.channel === 'forum'">#{{ forumRuns.find(run => run.id === event.run_id)?.request.post_number || '历史' }} · </small>{{ event.type }}</span>
+            <span class="event-kind"><small v-if="store.channel === 'forum'">#{{ runsById[event.run_id]?.request.post_number || '历史' }} · </small>{{ event.type }}</span>
             <PromptEvent v-if="event.type === 'model.prompt_prepared'" :payload="event.payload" />
             <code v-else>{{ eventSummary(event.payload) }}</code>
           </div>

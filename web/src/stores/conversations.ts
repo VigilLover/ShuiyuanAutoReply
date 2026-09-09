@@ -36,6 +36,24 @@ export const useConversations = defineStore('conversations', {
       catch (error) { if (version === loadVersion && channel === this.channel) this.error = String(error) }
       finally { if (version === loadVersion) this.loading = false }
     },
+    // Live monitor refresh: merge the newest page into the loaded list instead of
+    // replacing it, so "加载更多" pages and the open topic survive.
+    async refresh() {
+      const version = ++loadVersion
+      const channel = this.channel
+      try {
+        const page = await api<Conversation[]>(`/api/conversations?channel=${this.channel}&search=${encodeURIComponent(this.search)}&limit=50&offset=0`)
+        if (version !== loadVersion || channel !== this.channel) return
+        const incoming = new Map(page.map(item => [item.id, item]))
+        const merged = this.conversations.map(item => incoming.get(item.id) || item)
+        for (const item of page) {
+          if (!this.conversations.some(existing => existing.id === item.id)) merged.unshift(item)
+        }
+        this.conversations = merged
+        if (page.length === 50) this.hasMore = true
+      }
+      catch (error) { if (version === loadVersion && channel === this.channel) this.error = String(error) }
+    },
     async select(id: string, background = false) {
       const version = background ? selectionVersion : ++selectionVersion
       const channel = this.channel

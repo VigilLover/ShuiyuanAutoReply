@@ -23,14 +23,14 @@ export function mergeRun(runs: Record<string, ForumRun>, incoming: ForumRun) {
   if (!old || incoming.last_event_id >= old.last_event_id) runs[incoming.id] = incoming
 }
 export function applyForumEvent(runs: Record<string, ForumRun>, events: Record<string, RunEvent[]>, event: ForumEvent) {
+  const old = runs[event.run_id]
+  if (old && old.last_event_id >= event.event_id) return
+  if (!old && event.type !== 'run.accepted') return
   const list = events[event.run_id] ||= []
   if (!list.some(item => item.id === event.event_id)) {
     list.push({ id: event.event_id, run_id: event.run_id, type: event.type, created_at: event.created_at, payload: event.payload })
     list.sort((a, b) => a.id - b.id)
   }
-  const old = runs[event.run_id]
-  if (old && old.last_event_id >= event.event_id) return
-  if (!old && event.type !== 'run.accepted') return
   runs[event.run_id] = {
     ...(old || { id: event.run_id, conversation_id: event.conversation_id, request_id: '', started_at: event.created_at, request: event.payload }),
     status: eventStatuses[event.type] || old?.status || 'queued',
@@ -41,6 +41,13 @@ export function applyForumEvent(runs: Record<string, ForumRun>, events: Record<s
 export function runEvents(saved: RunEvent[], live: RunEvent[], runId: string) {
   return [...new Map([...saved, ...live].filter(e => e.run_id === runId).map(e => [e.id, e])).values()].sort((a, b) => a.id - b.id)
 }
+// utc_now() omits the microsecond fraction when it is zero, and localeCompare is
+// not code-point order, so compare the strings directly.
+function compareTime(a: string, b: string) {
+  if (a === b) return 0
+  return a < b ? -1 : 1
+}
+
 export function forumTimeline(runs: ForumRun[], messages: Message[]) {
   // Only new runs have accepted metadata. Historical messages retain their layout.
   const managed = runs.filter(run => run.request.content !== undefined)
@@ -48,5 +55,5 @@ export function forumTimeline(runs: ForumRun[], messages: Message[]) {
   return [
     ...managed.map(run => ({ key: run.id, time: run.started_at, run, messages: messages.filter(m => m.run_id === run.id) })),
     ...messages.filter(m => !m.run_id || !ids.has(m.run_id)).map(message => ({ key: message.id, time: message.created_at, run: undefined, messages: [message] })),
-  ].sort((a, b) => a.time.localeCompare(b.time) || a.key.localeCompare(b.key))
+  ].sort((a, b) => compareTime(a.time, b.time) || a.key.localeCompare(b.key))
 }

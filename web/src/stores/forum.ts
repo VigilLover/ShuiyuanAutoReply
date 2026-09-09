@@ -8,8 +8,14 @@ let source: EventSource | undefined
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 let generation = 0
-let refreshPending = false
+let refreshList = false
+let refreshDetail = false
 let refreshing = false
+
+// Only these events change persisted history; everything else is patched live
+// from the event payload, so the conversation detail is not refetched per step.
+const REFRESH_LIST_EVENTS = new Set(['run.accepted'])
+const REFRESH_DETAIL_EVENTS = new Set(['run.completed', 'run.failed', 'run.interrupted', 'run.needs_review'])
 
 export const useForumMonitor = defineStore('forum', {
   state: () => ({ runs: {} as Record<string, ForumRun>, events: {} as Record<string, RunEvent[]>, connection: '' }),
@@ -40,7 +46,8 @@ export const useForumMonitor = defineStore('forum', {
             if (version !== generation) return
             const value: ForumEvent = JSON.parse((event as MessageEvent).data)
             applyForumEvent(this.runs, this.events, value)
-            if (['run.accepted', 'context.topic_loaded', 'run.started', 'run.generated', 'run.completed', 'run.failed', 'run.interrupted', 'run.needs_review', 'forum.reply_publishing'].includes(value.type)) this.scheduleRefresh()
+            if (REFRESH_LIST_EVENTS.has(value.type)) this.scheduleRefresh('list')
+            else if (REFRESH_DETAIL_EVENTS.has(value.type)) this.scheduleRefresh()
           })
           source.onerror = () => {
             if (version !== generation) return
@@ -49,7 +56,7 @@ export const useForumMonitor = defineStore('forum', {
             reconnectTimer = setTimeout(connect, 1500)
           }
           // Refresh history after opening the stream; live events survive older snapshots.
-          this.scheduleRefresh()
+          this.scheduleRefresh('list')
         } catch {
           if (version !== generation) return
           this.connection = '实时连接已断开，正在重连…'
@@ -58,18 +65,21 @@ export const useForumMonitor = defineStore('forum', {
       }
       await connect()
     },
-    scheduleRefresh() {
-      refreshPending = true
+    scheduleRefresh(kind: 'list' | 'detail' = 'detail') {
+      if (kind === 'list') refreshList = true
+      refreshDetail = true
       if (refreshTimer || refreshing) return
       const version = generation
       refreshTimer = setTimeout(async () => {
         refreshTimer = undefined
         if (version !== generation) return
+        const wantsList = refreshList
         refreshing = true
-        refreshPending = false
+        refreshList = false
+        refreshDetail = false
         const store = useConversations()
         try {
-          await store.load()
+          if (wantsList) await store.refresh()
           const id = store.selected?.conversation.id
           if (id && store.channel === 'forum') {
             await store.select(id, true)
@@ -83,15 +93,19 @@ export const useForumMonitor = defineStore('forum', {
           }
         } catch {
           if (version === generation) {
+            if (wantsList) refreshList = true
+            refreshDetail = true
             refreshTimer = setTimeout(() => {
               refreshTimer = undefined
-              this.scheduleRefresh()
+              this.scheduleRefresh(wantsList ? 'list' : 'detail')
             }, 1500)
           }
         }
         finally {
           refreshing = false
-          if (refreshPending && useConversations().channel === 'forum') this.scheduleRefresh()
+          if ((refreshList || refreshDetail) && useConversations().channel === 'forum') {
+            this.scheduleRefresh(refreshList ? 'list' : 'detail')
+          }
         }
       }, 100)
     },
@@ -99,12 +113,8 @@ export const useForumMonitor = defineStore('forum', {
       generation++
       source?.close(); source = undefined
       clearTimeout(reconnectTimer); clearTimeout(refreshTimer)
-      refreshTimer = undefined; refreshPending = false
+      refreshTimer = undefined; refreshList = false; refreshDetail = false
       this.connection = ''
-    },
-    counts(conversationId: string) {
-      const runs = Object.values(this.runs).filter(r => r.conversation_id === conversationId && activeRun(r))
-      return { queued: runs.filter(r => r.status === 'queued').length, running: runs.filter(r => r.status !== 'queued').length }
     },
   },
 })

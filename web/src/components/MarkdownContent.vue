@@ -37,6 +37,16 @@ function matchingAttachment(sourceUrl: string) {
   )
 }
 
+// Defer off-screen images and reserve their box so late loads cannot shift the page.
+function applyImageHints(image: HTMLImageElement, attachment?: Attachment) {
+  image.loading = 'lazy'
+  image.decoding = 'async'
+  if (attachment?.width && attachment?.height) {
+    image.width = attachment.width
+    image.height = attachment.height
+  }
+}
+
 function localizeInlineImages(document: Document, consumed: Set<string>) {
   for (const image of Array.from(document.querySelectorAll<HTMLImageElement>('img[src]'))) {
     const sourceUrl = image.getAttribute('src') || ''
@@ -45,10 +55,14 @@ function localizeInlineImages(document: Document, consumed: Set<string>) {
       image.src = attachment.url
       image.dataset.previewUrl = attachment.url
       image.dataset.artifactId = attachment.artifact_id
+      applyImageHints(image, attachment)
       consumed.add(attachment.artifact_id)
       continue
     }
-    if (!sourceUrl.startsWith('http://') && !sourceUrl.startsWith('https://')) continue
+    if (!sourceUrl.startsWith('http://') && !sourceUrl.startsWith('https://')) {
+      applyImageHints(image)
+      continue
+    }
     const link = document.createElement('a')
     link.href = sourceUrl
     link.target = '_blank'
@@ -74,6 +88,7 @@ function buildAttachmentGallery(document: Document, attachments: Attachment[], d
     image.className = 'message-image'
     image.alt = attachment.filename || sourceLabel(attachment.source_kind)
     image.loading = 'lazy'
+    image.decoding = 'async'
     image.dataset.artifactId = attachment.artifact_id
     preview.appendChild(image)
     figure.appendChild(preview)
@@ -110,7 +125,7 @@ function appendRemainingAttachments(document: Document, consumed: Set<string>) {
   }
 }
 
-const rendered = computed(() => {
+function renderMarkdown() {
   const source = props.content || ''
   const parsed = marked.parse(source, {
     async: false,
@@ -129,10 +144,27 @@ const rendered = computed(() => {
   return DOMPurify.sanitize(document.querySelector('#markdown-root')?.innerHTML || sanitized, {
     USE_PROFILES: { html: true },
     ADD_TAGS: ['details', 'summary'],
-    ADD_ATTR: ['target', 'rel', 'data-preview-url', 'data-deferred-src', 'data-artifact-id'],
+    ADD_ATTR: ['target', 'rel', 'width', 'height', 'loading', 'decoding', 'data-preview-url', 'data-deferred-src', 'data-artifact-id'],
     FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'form'],
     FORBID_ATTR: ['style'],
   })
+}
+
+// The monitor refreshes the conversation often; re-parsing long posts on every
+// refresh is the expensive part, so reuse the HTML while content and media match.
+let cacheKey = ''
+let cacheValue = ''
+const rendered = computed(() => {
+  const key = [
+    props.showUnreferencedAttachments ? '1' : '0',
+    props.content || '',
+    (props.attachments || []).map(item => `${item.artifact_id}:${item.url}:${item.width ?? ''}x${item.height ?? ''}`).join('|'),
+  ].join('\u0000')
+  if (key !== cacheKey) {
+    cacheKey = key
+    cacheValue = renderMarkdown()
+  }
+  return cacheValue
 })
 
 function previewImage(event: MouseEvent) {
