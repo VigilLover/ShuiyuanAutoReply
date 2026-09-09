@@ -26,11 +26,11 @@ GitHub 参考：[镜像发布](https://docs.github.com/en/actions/tutorials/publ
 
 ```bash
 git fetch origin
-git tag v1.0.0 origin/main
-git push origin v1.0.0
+git tag vX.Y.Z origin/main
+git push origin vX.Y.Z
 ```
 
-这里只是操作示例，不自动执行。标签必须是无前导零的三段数字正式版本，不接受 latest、分支或预发布字符串。
+这里只是操作示例，不自动执行（`vX.Y.Z` 为占位符，替换为实际版本号）。标签必须是无前导零的三段数字正式版本，不接受 latest、分支或预发布字符串。
 
 Release 在构建机生成三个镜像：`ghcr.io/vigillover/shuiyuan-bot`、`shuiyuan-postgres`、`shuiyuan-mcp`，附版本和完整 Git SHA 标签。部署使用 digest。固定 namespace 为本仓库所有者，fork 不应直接发布到该 namespace。
 
@@ -81,12 +81,12 @@ GitHub production Environment 添加：`DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_S
 
 ### 首个正式版本登记
 
-控制器不会自动初始化数据库。以下以首次发布 `v1.0.0` 为例，在服务器本地管理员终端执行。先从 GitHub 正式 Release 下载部署包和 SHA256SUMS，再核验并接收：
+控制器不会自动初始化数据库。以下以首次发布 `vX.Y.Z` 为例，在服务器本地管理员终端执行。先从 GitHub 正式 Release 下载部署包和 SHA256SUMS，再核验并接收：
 
 ```bash
 sha256sum -c SHA256SUMS
-bundle_sha=$(sha256sum shuiyuan-v1.0.0.tar.gz | cut -d ' ' -f 1)
-sudo env SSH_ORIGINAL_COMMAND="receive v1.0.0 $bundle_sha" /usr/local/sbin/shuiyuan-ssh < shuiyuan-v1.0.0.tar.gz
+bundle_sha=$(sha256sum shuiyuan-vX.Y.Z.tar.gz | cut -d ' ' -f 1)
+sudo env SSH_ORIGINAL_COMMAND="receive vX.Y.Z $bundle_sha" /usr/local/sbin/shuiyuan-ssh < shuiyuan-vX.Y.Z.tar.gz
 ```
 
 接收端还会独立检查 GitHub 记录的 asset digest。准备好 shared 下的配置和 secrets 后，生成首次启动用的镜像环境文件；这里没有明文应用密钥：
@@ -96,7 +96,7 @@ sudo python3 - <<'PYCODE'
 import json
 from pathlib import Path
 root = Path('/opt/shuiyuan')
-release = json.loads((root / 'releases/v1.0.0/release.json').read_text())
+release = json.loads((root / 'releases/vX.Y.Z/release.json').read_text())
 values = {
     'SHUIYUAN_CONFIG': str(root / 'shared/deployment.toml'),
     'SHUIYUAN_SECRETS': str(root / 'shared/secrets'),
@@ -106,14 +106,14 @@ path = root / 'shared/initial.env'
 path.write_text(''.join(f'{key}={value}\n' for key, value in values.items()))
 path.chmod(0o600)
 PYCODE
-sudo docker compose --env-file /opt/shuiyuan/shared/initial.env --project-name shuiyuan -f /opt/shuiyuan/releases/v1.0.0/deploy/compose.yaml up -d --wait postgres
-sudo docker compose --env-file /opt/shuiyuan/shared/initial.env --project-name shuiyuan -f /opt/shuiyuan/releases/v1.0.0/deploy/compose.yaml run --rm migrate
+sudo docker compose --env-file /opt/shuiyuan/shared/initial.env --project-name shuiyuan -f /opt/shuiyuan/releases/vX.Y.Z/deploy/compose.yaml up -d --wait postgres
+sudo docker compose --env-file /opt/shuiyuan/shared/initial.env --project-name shuiyuan -f /opt/shuiyuan/releases/vX.Y.Z/deploy/compose.yaml run --rm migrate
 ```
 
 在启动 Bot 前，按 deployment.md 执行语料和长期记忆的导入；导入命令同样使用上述 env-file、project-name 和该版本 Compose 路径。重新向量化会调用外部模型，应先 dry-run。不要把首次初始化流程用于绕过已有安装的发布保护。
 
 ```bash
-sudo docker compose --env-file /opt/shuiyuan/shared/initial.env --project-name shuiyuan -f /opt/shuiyuan/releases/v1.0.0/deploy/compose.yaml up -d --wait bot mcp
+sudo docker compose --env-file /opt/shuiyuan/shared/initial.env --project-name shuiyuan -f /opt/shuiyuan/releases/vX.Y.Z/deploy/compose.yaml up -d --wait bot mcp
 ```
 
 若配置关闭了 MCP，则启动命令只列 bot。后续控制器会根据配置处理 MCP。
@@ -121,7 +121,7 @@ sudo docker compose --env-file /opt/shuiyuan/shared/initial.env --project-name s
 管理员确认实际运行镜像 digest 与该 release.json 一致，`/api/runtime-health` 中 process/database/state/forum 均为 ok 后：
 
 ```bash
-sudo shuiyuan-release adopt --release v1.0.0
+sudo shuiyuan-release adopt --release vX.Y.Z
 ```
 
 登记保存版本与向量空间指纹，建立 current。已有 shared/current.json 时拒绝重复登记，防止跳过迁移兼容检查。首次安装使用的新健康接口要求明确的 SQLite state 字段，旧版本若没有该字段需先按维护流程升级。

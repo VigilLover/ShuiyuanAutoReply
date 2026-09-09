@@ -1,6 +1,6 @@
 # 首次部署与 GitHub 自动部署操作指南
 
-本文整理自首次部署说明，命令按执行位置排列。示例使用 Ubuntu 24.04 amd64、Bot 账号 `wolf_lumine`、首次版本 `v1.0.1`。将 `SERVER_IP` 和 `ADMIN_USER` 替换为实际服务器 IP、管理员账号。
+本文整理自首次部署说明，命令按执行位置排列。示例使用 Ubuntu 24.04 amd64、Bot 账号 `wolf_lumine`、首次版本 `vX.Y.Z`。将 `SERVER_IP` 和 `ADMIN_USER` 替换为实际服务器 IP、管理员账号；`vX.Y.Z` 是正式版本号的占位符，执行时替换为实际发布版本。
 
 **先完成一次人工初始化和版本登记，之后再使用 GitHub 手动触发的自动部署。** 当前配置统一从 main 发布并提供部署入口，dev 保留为开发分支。Fork 主线切换见 [分支策略](branch-strategy.md)；必须先把这些修改合入 main，再打正式标签，服务器初始化步骤不变。
 
@@ -29,13 +29,13 @@ GitHub 的 workflow_dispatch 入口要求工作流存在于默认分支，当前
 
 ```bash
 git fetch origin
-git tag v1.0.1 origin/main
-git push origin v1.0.1
+git tag vX.Y.Z origin/main
+git push origin vX.Y.Z
 ```
 
 若该标签已存在，使用新的版本号，不移动或覆盖正式标签。
 
-等待 Actions → Release 成功。应看到正式 Release v1.0.1，附件 `shuiyuan-v1.0.1.tar.gz`、`SHA256SUMS`、`release.json`，以及 GHCR 中 bot/postgres/mcp 三个镜像。任务失败时先查看日志，不继续生产初始化。
+等待 Actions → Release 成功。应看到正式 Release vX.Y.Z，附件 `shuiyuan-vX.Y.Z.tar.gz`、`SHA256SUMS`、`release.json`，以及 GHCR 中 bot/postgres/mcp 三个镜像。任务失败时先查看日志，不继续生产初始化。
 
 ## 2. 本机：准备 Cookie、Key 和迁移数据
 
@@ -124,7 +124,7 @@ df -h /
 
 ```bash
 ssh ADMIN_USER@SERVER_IP 'mkdir -p ~/shuiyuan-bootstrap'
-scp shuiyuan-v1.0.1.tar.gz SHA256SUMS ADMIN_USER@SERVER_IP:~/shuiyuan-bootstrap/
+scp shuiyuan-vX.Y.Z.tar.gz SHA256SUMS ADMIN_USER@SERVER_IP:~/shuiyuan-bootstrap/
 scp config/deployment.toml ADMIN_USER@SERVER_IP:~/shuiyuan-bootstrap/
 scp -r secrets transfer ADMIN_USER@SERVER_IP:~/shuiyuan-bootstrap/
 ```
@@ -136,7 +136,7 @@ ssh ADMIN_USER@SERVER_IP
 cd ~/shuiyuan-bootstrap
 sha256sum -c SHA256SUMS
 mkdir unpacked
-tar -xzf shuiyuan-v1.0.1.tar.gz -C unpacked
+tar -xzf shuiyuan-vX.Y.Z.tar.gz -C unpacked
 sudo python3 unpacked/scripts/deploy/install_controller.py
 sudo install -m 444 deployment.toml /opt/shuiyuan/shared/deployment.toml
 sudo cp secrets/* /opt/shuiyuan/shared/secrets/
@@ -170,12 +170,12 @@ sudo nano /opt/shuiyuan/shared/github_read_token
 
 ```bash
 cd ~/shuiyuan-bootstrap
-bundle_sha=$(sha256sum shuiyuan-v1.0.1.tar.gz | cut -d ' ' -f 1)
-sudo env SSH_ORIGINAL_COMMAND="receive v1.0.1 $bundle_sha" \
-  /usr/local/sbin/shuiyuan-ssh < shuiyuan-v1.0.1.tar.gz
+bundle_sha=$(sha256sum shuiyuan-vX.Y.Z.tar.gz | cut -d ' ' -f 1)
+sudo env SSH_ORIGINAL_COMMAND="receive vX.Y.Z $bundle_sha" \
+  /usr/local/sbin/shuiyuan-ssh < shuiyuan-vX.Y.Z.tar.gz
 ```
 
-成功会返回 received: v1.0.1。服务器会独立核对 GitHub 正式 Release 的附件摘要，API 不可用或摘要不匹配时停止。
+成功会返回 received: vX.Y.Z。服务器会独立核对 GitHub 正式 Release 的附件摘要，API 不可用或摘要不匹配时停止。
 
 ## 6. 服务器：初始化数据库
 
@@ -186,7 +186,7 @@ sudo python3 - <<'PY'
 import json
 from pathlib import Path
 root = Path('/opt/shuiyuan')
-release = json.loads((root / 'releases/v1.0.1/release.json').read_text())
+release = json.loads((root / 'releases/vX.Y.Z/release.json').read_text())
 values = {
     'SHUIYUAN_CONFIG': str(root / 'shared/deployment.toml'),
     'SHUIYUAN_SECRETS': str(root / 'shared/secrets'),
@@ -205,7 +205,7 @@ dc() {
   sudo docker compose \
     --env-file /opt/shuiyuan/shared/initial.env \
     --project-name shuiyuan \
-    -f /opt/shuiyuan/releases/v1.0.1/deploy/compose.yaml "$@"
+    -f /opt/shuiyuan/releases/vX.Y.Z/deploy/compose.yaml "$@"
 }
 dc config --quiet
 dc pull postgres bot mcp
@@ -213,7 +213,7 @@ dc up -d --wait postgres
 dc run --rm migrate
 ```
 
-dc 只对应首次版本 v1.0.1，重新登录需要重新定义。后续版本通过控制器管理，不能一直用该函数更新生产。现在只初始化数据库、SQLite 和队列，尚未启动 Bot。
+dc 只对应首次版本 vX.Y.Z，重新登录需要重新定义。后续版本通过控制器管理，不能一直用该函数更新生产。现在只初始化数据库、SQLite 和队列，尚未启动 Bot。
 
 ## 7. 服务器：导入语料和长期记忆
 
@@ -276,7 +276,7 @@ process、database、state、forum 四个字段均应为 ok；forum 暂未就绪
 正常后登记首个版本：
 
 ```bash
-sudo shuiyuan-release adopt --release v1.0.1
+sudo shuiyuan-release adopt --release vX.Y.Z
 sudo cat /opt/shuiyuan/shared/current.json
 ```
 
@@ -359,13 +359,13 @@ ssh -i ~/.ssh/shuiyuan-ci-deploy -o IdentitiesOnly=yes shuiyuan-deploy@SERVER_IP
 
 ```bash
 git fetch origin
-git tag v1.0.1 origin/main
-git push origin v1.0.1
+git tag vX.Y.Z origin/main
+git push origin vX.Y.Z
 ```
 
 Release 会检查标签对应的提交是否属于 origin/main 的历史；仅存在于 dev 的新提交不能直接发布。
 
-Release 成功后，Actions → Deploy production → Run workflow，选择 main，version 填 v1.0.1，operation 选 deploy。等待完成后：
+Release 成功后，Actions → Deploy production → Run workflow，选择 main，version 填 vX.Y.Z，operation 选 deploy。等待完成后：
 
 ```bash
 sudo shuiyuan-release status

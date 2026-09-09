@@ -40,11 +40,11 @@ git rev-list --left-right --count origin/main...origin/dev
 
 ```bash
 git fetch origin
-git tag v1.0.0 origin/main
-git push origin v1.0.0
+git tag vX.Y.Z origin/main
+git push origin vX.Y.Z
 ```
 
-标签已存在时使用新的版本号，不能移动已有正式标签。Release 成功后，在 Actions → Deploy production 中选择 main、输入版本号，显式触发部署。
+标签已存在时使用新的版本号，不能移动已有正式标签（`vX.Y.Z` 为占位符，替换为实际版本号）。Release 成功后，在 Actions → Deploy production 中选择 main、输入版本号，显式触发部署。
 
 可以继续在 dev 开发，再通过 dev → main PR 发布；也可以从 main 创建短期功能分支，经 PR 合入 main。不再需要“只向 main 同步工作流”的特殊流程。
 
