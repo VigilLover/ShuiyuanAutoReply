@@ -29,4 +29,8 @@ export interface Message {
   attachments: Attachment[]; created_at: string; epoch: number
 }
 export interface RunEvent { id: number; run_id: string; type: string; payload: Record<string, unknown>; created_at: string }
-export interface ConversationDetail { runs?: ForumRun[]; conversation: Conversation; messages: Message[]; events: RunEvent[] }
+export interface ConversationDetail {
+  runs?: ForumRun[]; conversation: Conversation; messages: Message[]; events: RunEvent[]
+  has_more?: boolean; next_cursor?: string | null; events_has_more?: boolean
+}
+export interface ConversationEvents { events: RunEvent[]; has_more: boolean; next_cursor: number | null }

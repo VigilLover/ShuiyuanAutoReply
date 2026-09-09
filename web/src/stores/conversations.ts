@@ -1,8 +1,14 @@
 import { defineStore } from 'pinia'
-import { api, type Attachment, type Conversation, type ConversationDetail, type Message, type RunEvent } from '../api'
+import { api, type Attachment, type Conversation, type ConversationDetail, type ConversationEvents, type Message, type RunEvent } from '../api'
 
+const TIMELINE_PAGE = 30
 let selectionVersion = 0
 let loadVersion = 0
+
+function mergeById<T extends { id: string | number }>(fresh: T[], existing: T[]): T[] {
+  const seen = new Set(fresh.map(item => item.id))
+  return [...fresh, ...existing.filter(item => !seen.has(item.id))]
+}
 
 function revokeLocalPreviews(messages: Message[] | undefined) {
   for (const message of messages || []) {
@@ -19,7 +25,7 @@ export const useConversations = defineStore('conversations', {
     channel: (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('shuiyuan.monitor.channel') === 'forum' ? 'forum' : 'web') as 'web' | 'forum', conversations: [] as Conversation[],
     selected: null as ConversationDetail | null, loading: false, running: false,
     error: '', liveEvents: [] as RunEvent[], search: '', hasMore: false, lastFailedMessage: '',
-    lastFailedFiles: [] as File[],
+    lastFailedFiles: [] as File[], loadingOlder: false, selectingId: null as string | null,
   }),
   actions: {
     async load(more = false) {
@@ -57,11 +63,72 @@ export const useConversations = defineStore('conversations', {
     async select(id: string, background = false) {
       const version = background ? selectionVersion : ++selectionVersion
       const channel = this.channel
-      const detail = await api<ConversationDetail>(`/api/conversations/${id}`)
-      if (version !== selectionVersion || channel !== this.channel || (background && this.selected?.conversation.id !== id)) return
-      revokeLocalPreviews(this.selected?.messages)
-      this.selected = detail; this.liveEvents = []
-      if (!background) sessionStorage.setItem('shuiyuan.monitor.selected', id)
+      // Foreground selection highlights the sidebar entry before the fetch lands.
+      if (!background) { this.selectingId = id; this.error = '' }
+      try {
+        const query = channel === 'forum' ? `?limit=${TIMELINE_PAGE}` : ''
+        const detail = await api<ConversationDetail>(`/api/conversations/${id}${query}`)
+        if (version !== selectionVersion || channel !== this.channel || (background && this.selected?.conversation.id !== id)) return
+        const previous = this.selected
+        if (background && previous && channel === 'forum') {
+          // Keep the history the user already scrolled back to.
+          this.selected = {
+            ...detail,
+            messages: mergeById(detail.messages, previous.messages),
+            runs: mergeById(detail.runs || [], previous.runs || []),
+            events: mergeById(detail.events, previous.events),
+            has_more: previous.has_more,
+            next_cursor: previous.next_cursor,
+            events_has_more: previous.events_has_more || detail.events_has_more,
+          }
+          return
+        }
+        revokeLocalPreviews(previous?.messages)
+        this.selected = detail; this.liveEvents = []
+        if (!background) sessionStorage.setItem('shuiyuan.monitor.selected', id)
+      } catch (error) {
+        if (version === selectionVersion) this.error = String(error)
+      } finally {
+        if (!background && this.selectingId === id) this.selectingId = null
+      }
+    },
+    // Prepends older entries; the caller restores the scroll position afterwards.
+    async loadOlder() {
+      const current = this.selected
+      if (!current || this.channel !== 'forum' || !current.has_more || this.loadingOlder || !current.next_cursor) return
+      this.loadingOlder = true
+      try {
+        const page = await api<ConversationDetail>(
+          `/api/conversations/${current.conversation.id}?limit=${TIMELINE_PAGE}&before=${encodeURIComponent(current.next_cursor)}`,
+        )
+        const loaded = this.selected
+        if (!loaded || loaded.conversation.id !== current.conversation.id) return
+        this.selected = {
+          ...loaded,
+          messages: mergeById(page.messages, loaded.messages),
+          runs: mergeById(page.runs || [], loaded.runs || []),
+          events: mergeById(page.events, loaded.events),
+          has_more: Boolean(page.has_more),
+          next_cursor: page.next_cursor ?? null,
+          events_has_more: Boolean(loaded.events_has_more || page.events_has_more),
+        }
+      } catch (error) { this.error = String(error) }
+      finally { this.loadingOlder = false }
+    },
+    async loadOlderEvents() {
+      const current = this.selected
+      if (!current || !current.events_has_more) return
+      const oldest = current.events[0]?.id
+      const page = await api<ConversationEvents>(
+        `/api/conversations/${current.conversation.id}/events?limit=200${oldest ? `&before=${oldest}` : ''}`,
+      )
+      const loaded = this.selected
+      if (!loaded || loaded.conversation.id !== current.conversation.id) return
+      this.selected = {
+        ...loaded,
+        events: mergeById(page.events, loaded.events),
+        events_has_more: Boolean(page.has_more),
+      }
     },
     async create() {
       const item = await api<Conversation>('/api/conversations', { method: 'POST', body: '{}' })

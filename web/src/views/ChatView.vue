@@ -18,6 +18,7 @@ import {
   PhUserCircle,
   PhX,
 } from '@phosphor-icons/vue'
+import BrandLoader from '../components/BrandLoader.vue'
 import MarkdownContent from '../components/MarkdownContent.vue'
 import PromptEvent from '../components/PromptEvent.vue'
 import RunProgress from '../components/RunProgress.vue'
@@ -296,6 +297,28 @@ function resizeComposer() {
 function scrollToBottom() {
   if (messagesElement.value) messagesElement.value.scrollTop = messagesElement.value.scrollHeight
 }
+
+let olderTimer: number | undefined
+
+// Reaching the top pulls one older window and keeps the visible content in place.
+async function loadOlder() {
+  const el = messagesElement.value
+  if (!el || store.channel !== 'forum' || !store.selected?.has_more || store.loadingOlder) return
+  if (el.scrollTop > 200) return
+  const height = el.scrollHeight
+  await store.loadOlder()
+  await nextTick()
+  const next = messagesElement.value
+  if (next) next.scrollTop += next.scrollHeight - height
+}
+
+function onMessagesScroll() {
+  if (olderTimer) return
+  olderTimer = window.setTimeout(() => {
+    olderTimer = undefined
+    void loadOlder()
+  }, 80)
+}
 </script>
 
 <template>
@@ -332,7 +355,7 @@ function scrollToBottom() {
           v-for="item in store.conversations"
           :key="item.id"
           class="session-item"
-          :class="{ selected: store.selected?.conversation.id === item.id }"
+          :class="{ selected: (store.selectingId || store.selected?.conversation.id) === item.id, loading: store.selectingId === item.id }"
           :aria-label="item.title"
           :title="item.title"
           @click="selectConversation(item.id)"
@@ -350,8 +373,8 @@ function scrollToBottom() {
       <RouterLink class="settings-link" to="/settings" aria-label="设置"><PhGearSix :size="20" /><span>设置</span></RouterLink>
     </aside>
 
-    <section v-if="store.selected" class="harness-workspace">
-      <header class="workspace-topbar">
+    <section v-if="store.selected || store.selectingId" class="harness-workspace">
+      <header v-if="store.selected" class="workspace-topbar">
         <div class="workspace-title">
           <div class="title-line">
             <input
@@ -388,13 +411,21 @@ function scrollToBottom() {
           </div>
         </div>
       </header>
+      <header v-else class="workspace-topbar" aria-hidden="true"></header>
 
-      <div v-if="activeTab === 'chat'" ref="messagesElement" class="harness-messages">
+      <div v-if="store.selectingId" class="view-loading" role="status" aria-live="polite">
+        <BrandLoader />
+        <p>正在加载对话…</p>
+        <div class="view-loading-lines" aria-hidden="true"><span></span><span></span><span></span></div>
+      </div>
+
+      <div v-else-if="activeTab === 'chat'" ref="messagesElement" class="harness-messages" @scroll.passive="onMessagesScroll">
         <div class="message-stream">
+          <p v-if="store.channel === 'forum' && store.loadingOlder" class="forum-connection" role="status">正在加载更早的记录…</p>
           <p v-if="store.channel === 'forum' && forum.connection" class="forum-connection" role="status">{{ forum.connection }}</p>
-          <ForumConversation v-if="store.channel === 'forum'" :runs="forumRuns" :messages="store.selected.messages" :events="selectedEvents" @preview="lightboxUrl = $event" />
+          <ForumConversation v-if="store.channel === 'forum'" :runs="forumRuns" :messages="store.selected?.messages || []" :events="selectedEvents" @preview="lightboxUrl = $event" />
           <template v-else>
-          <template v-for="message in store.selected.messages" :key="message.id">
+          <template v-for="message in store.selected?.messages || []" :key="message.id">
             <div v-if="message.role === 'system'" class="system-divider" :class="{ failed: message.status === 'failed' }">
               <span></span><p>{{ message.content }}</p><span></span>
             </div>
@@ -410,7 +441,7 @@ function scrollToBottom() {
                 <MarkdownContent
                   :content="message.content"
                   :attachments="message.attachments"
-                  :show-unreferenced-attachments="message.role === 'user' && store.selected.conversation.channel === 'web'"
+                  :show-unreferenced-attachments="message.role === 'user' && store.selected?.conversation.channel === 'web'"
                   @preview="lightboxUrl = $event"
                 />
                 <RunProgress
@@ -434,7 +465,8 @@ function scrollToBottom() {
         <div class="trace-toolbar">
           <span>执行事件</span><small>{{ selectedEvents.length }} records</small>
         </div>
-        <div v-if="selectedEvents.length" class="trace-table">
+        <div v-if="selectedEvents.length || store.selected?.events_has_more" class="trace-table">
+          <button v-if="store.selected?.events_has_more" class="load-more" @click="store.loadOlderEvents()">加载更早的事件</button>
           <div v-for="event in selectedEvents" :key="event.id" class="trace-table-row">
             <time>{{ new Date(event.created_at).toLocaleTimeString() }}</time>
             <span class="event-kind"><small v-if="store.channel === 'forum'">#{{ runsById[event.run_id]?.request.post_number || '历史' }} · </small>{{ event.type }}</span>
@@ -445,7 +477,7 @@ function scrollToBottom() {
         <div v-else class="trace-empty">当前会话还没有执行轨迹。</div>
       </div>
 
-      <div ref="composerDock" class="composer-dock">
+      <div v-if="store.selected" ref="composerDock" class="composer-dock">
         <form v-if="store.selected.conversation.channel === 'web'" class="harness-composer" @submit.prevent="send">
           <div v-if="selectedImages.length" class="composer-attachments">
             <div v-for="(image, index) in selectedImages" :key="image.url" class="composer-thumbnail" :title="image.file.name">

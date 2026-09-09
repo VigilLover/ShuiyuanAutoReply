@@ -342,11 +342,31 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         )
 
     @api.get("/api/conversations/{conversation_id}")
-    async def get_conversation(conversation_id: str, request: Request):
+    async def get_conversation(
+        conversation_id: str,
+        request: Request,
+        limit: int | None = None,
+        before: str | None = None,
+    ):
         store = _store(request)
         record = await _conversation_record(request, conversation_id)
-        messages = await store.list_messages(conversation_id)
-        events = await store.list_events_for_conversation(conversation_id)
+        # Without a limit the whole history is returned, as before. With one, only
+        # the newest window is read so a long topic opens immediately.
+        page = (
+            await store.conversation_timeline_page(
+                conversation_id, limit=limit, before=before
+            )
+            if limit is not None
+            else None
+        )
+        if page is None:
+            messages = await store.list_messages(conversation_id)
+            events = await store.list_events_for_conversation(conversation_id)
+            runs = await store.list_forum_runs(conversation_id)
+        else:
+            messages = page["messages"]
+            events = page["events"]
+            runs = page["runs"]
         serialized_messages = []
         for message in messages:
             attachments = []
@@ -391,7 +411,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 name: getattr(record, name) for name in record.__dataclass_fields__
             },
             "messages": serialized_messages,
-            "runs": await store.list_forum_runs(conversation_id),
+            "runs": runs,
             "events": [
                 {
                     "id": event.id,
@@ -402,6 +422,35 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 }
                 for event in events
             ],
+            "has_more": bool(page and page["has_more"]),
+            "next_cursor": page["next_cursor"] if page else None,
+            "events_has_more": bool(page and page["events_has_more"]),
+        }
+
+    @api.get("/api/conversations/{conversation_id}/events")
+    async def conversation_events(
+        conversation_id: str,
+        request: Request,
+        limit: int = 200,
+        before: int | None = None,
+    ):
+        await _conversation_record(request, conversation_id)
+        page = await _store(request).conversation_events_page(
+            conversation_id, limit=limit, before=before
+        )
+        return {
+            "events": [
+                {
+                    "id": event.id,
+                    "run_id": event.run_id,
+                    "type": event.event_type,
+                    "payload": event.payload,
+                    "created_at": event.created_at,
+                }
+                for event in page["events"]
+            ],
+            "has_more": page["has_more"],
+            "next_cursor": page["next_cursor"],
         }
 
     @api.patch("/api/conversations/{conversation_id}")
