@@ -240,21 +240,19 @@ def test_uncertain_publication_and_recovery(tmp_path):
     asyncio.run(run())
 
 
-def test_worker_prepares_queued_requests_and_preserves_topic_order(
-    tmp_path, monkeypatch
-):
+def test_worker_runs_same_topic_requests_concurrently(tmp_path, monkeypatch):
     monkeypatch.setenv("SHUIYUAN_STATE_DIR", str(tmp_path))
 
     async def run():
         entered, release = asyncio.Event(), asyncio.Event()
-        order = []
+        started = []
 
         async def callback(context):
-            order.append(context.request.forum_context.post_id)
+            started.append(context.request.forum_context.post_id)
             await emit_event("tool.started", {"name": context.request.request_id})
-            if len(order) == 1:
+            if len(started) == 2:
                 entered.set()
-                await release.wait()
+            await release.wait()
             return ReplyResult("done")
 
         model, store = await setup(tmp_path, callback)
@@ -277,22 +275,27 @@ def test_worker_prepares_queued_requests_and_preserves_topic_order(
             worker = asyncio.create_task(model.watch_new_action_routine())
             try:
                 await asyncio.wait_for(entered.wait(), 2)
+                assert sorted(started) == [1, 2]
                 for _ in range(100):
                     snapshot = await store.forum_monitor()
-                    if len(snapshot["runs"]) == 2:
+                    if len(snapshot["runs"]) == 2 and all(
+                        run["status"] == "running" for run in snapshot["runs"]
+                    ):
                         break
                     await asyncio.sleep(0.01)
-                assert sorted(r["status"] for r in snapshot["runs"]) == [
-                    "queued",
+                assert sorted(run["status"] for run in snapshot["runs"]) == [
+                    "running",
                     "running",
                 ]
-                assert order == [1]
                 release.set()
                 for _ in range(100):
-                    if await queue.state(2) == "sent":
+                    if (
+                        await queue.state(2) == "sent"
+                        and await queue.state(1) == "sent"
+                    ):
                         break
                     await asyncio.sleep(0.01)
-                assert order == [1, 2]
+                assert [await queue.state(1), await queue.state(2)] == ["sent", "sent"]
             finally:
                 release.set()
                 worker.cancel()

@@ -810,8 +810,10 @@ class MentionModel(BaseUserActionModel):
             return
         prepared = await self._accept_action(prepared)
         try:
+            # Keyed by post, matching the durable worker: same-topic mentions are
+            # independent questions and may run concurrently.
             async with get_scheduler().admission(
-                ("forum", self.username, action.topic_id)
+                ("forum", self.username, action.post_id)
             ):
                 await self._execute_action(prepared)
         except Exception as exc:
