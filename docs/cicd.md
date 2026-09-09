@@ -30,14 +30,14 @@ git tag vX.Y.Z origin/main
 git push origin vX.Y.Z
 ```
 
-这里只是操作示例，不自动执行（`vX.Y.Z` 为占位符，替换为实际版本号）。标签必须是无前导零的三段数字正式版本，不接受 latest、分支或预发布字符串。
+这里只是操作示例，不自动执行（`vX.Y.Z` 为占位符，替换为实际版本号）。标签必须是无前导零的三段数字正式版本，不接受 latest、分支或预发布字符串。推标签后 Release 会先解析兼容窗口（`scripts/ci/check_compat.py`）：解析不出、来源不足或来源不是正式 Release，会在构建镜像之前直接失败。
 
 Release 在构建机生成三个镜像：`ghcr.io/vigillover/shuiyuan-bot`、`shuiyuan-postgres`、`shuiyuan-mcp`，附版本和完整 Git SHA 标签。部署使用 digest。固定 namespace 为本仓库所有者，fork 不应直接发布到该 namespace。
 
 `deploy/release-policy.json` 必须随发布审阅：
 
 - `none`：普通发布不执行迁移；schema_id 不同则部署端拒绝。
-- `backward-compatible`：填写 `compatible_from` 正式版本列表；集成测试拉取每个旧应用镜像，在新 schema 上读取测试语料、长期记忆和 SQLite 状态，成功后将旧版本镜像 digest 写入兼容证据。
+- `backward-compatible`：`compatible_from` 写 `recent:N`（最近 N 个正式版本，推荐）或显式版本列表；集成测试拉取每个来源的旧应用镜像，在新 schema 上读取测试语料、长期记忆和 SQLite 状态，成功后将旧版本镜像 digest 写入兼容证据。`recent:N` 让策略不必每次发布都改，代价是每次多跑 N 次兼容测试。
 - `manual`：可以构建发布，但普通部署入口拒绝，需要单独维护。
 
 schema_id 保守覆盖持久化、迁移、检索、数据库代码和依赖声明/锁文件；格式或依赖修改也可能要求兼容测试。该机制不能代替迁移审阅，新增持久化实现时必须扩展 identity 覆盖范围。当前初始化仍使用项目已有迁移入口，没有自动生成数据库降级脚本。
@@ -183,7 +183,7 @@ ssh -N -L 11451:127.0.0.1:11451 SERVER_IP
 
 - `failed_phase: pull` 且镜像拉取报 `denied: denied`：服务器上保存的 ghcr.io 凭据对该包没有读权限，GHCR 不会回退到匿名。公开包执行 `sudo docker logout ghcr.io` 后重试；若镜像改为私有，需重新 `docker login ghcr.io` 并只授予 `read:packages`。
 - `Release file integrity failure`：`/opt/shuiyuan/releases/<版本>/` 下的文件被手工改过，控制器会按 manifest 校验每个文件的 sha256。用发布包内的原始文件恢复，配置改动走新版本发布。
-- `No tested backward compatibility for this release`：新版本 `schema_id` 与已部署版本不同，且策略不是 `backward-compatible`。在 `deploy/release-policy.json` 的 `compatible_from` 里补上待升级来源并发布新版本，旧清单已发布、标签不能移动。
+- `No tested backward compatibility for this release`：新版本 `schema_id` 与已部署版本不同，且兼容窗口不覆盖它。把 `compatible_from` 的窗口调大（`recent:N`）或补上该版本，再发布一个新版本；旧清单已发布、标签不能移动。
 
 回滚在同一工作流选择 rollback 和旧版本；必须通过当前版本向该旧版本的兼容判断，且仍先备份。数据库镜像、Embedding 指纹改变、manual 迁移一律拒绝普通回滚。需要恢复数据库时，停止所有写入者，按 deployment.md 在空数据库和空状态卷恢复匹配备份；明确核对备份后的新增记忆及发帖结果，禁止无条件覆盖。
 

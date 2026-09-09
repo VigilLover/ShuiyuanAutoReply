@@ -84,16 +84,15 @@ port=11451
             compatibility = {}
             policy = json.loads((ROOT / "deploy/release-policy.json").read_text())
             if policy["migration"] == "backward-compatible":
-                if not policy.get("compatible_from"):
+                sys.path.insert(0, str(ROOT / "scripts/deploy"))
+                from release import compatibility_sources, validate
+
+                sources = compatibility_sources(policy)
+                if not sources:
                     raise ValueError(
                         "Backward compatibility requires explicit prior releases"
                     )
-                sys.path.insert(0, str(ROOT / "scripts/deploy"))
-                from release import VERSION, validate
-
-                for version in policy["compatible_from"]:
-                    if not VERSION.fullmatch(version):
-                        raise ValueError("Invalid compatibility version")
+                for version in sources:
                     previous_dir = root / version
                     previous_dir.mkdir()
                     metadata = json.loads(

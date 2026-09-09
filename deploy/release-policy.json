@@ -1,1 +1,1 @@
-{"migration":"backward-compatible","compatible_from":["v1.0.3"]}
+{"migration":"backward-compatible","compatible_from":"recent:2"}
