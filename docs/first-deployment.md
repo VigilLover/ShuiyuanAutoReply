@@ -1,6 +1,6 @@
 # 首次部署与 GitHub 自动部署操作指南
 
-本文整理自首次部署说明，命令按执行位置排列。示例使用 Ubuntu 24.04 amd64、Bot 账号 `wolf_lumine`、首次版本 `v1.0.0`。将 `SERVER_IP` 和 `ADMIN_USER` 替换为实际服务器 IP、管理员账号。
+本文整理自首次部署说明，命令按执行位置排列。示例使用 Ubuntu 24.04 amd64、Bot 账号 `wolf_lumine`、首次版本 `v1.0.1`。将 `SERVER_IP` 和 `ADMIN_USER` 替换为实际服务器 IP、管理员账号。
 
 **先完成一次人工初始化和版本登记，之后再使用 GitHub 手动触发的自动部署。** 当前配置统一从 main 发布并提供部署入口，dev 保留为开发分支。Fork 主线切换见 [分支策略](branch-strategy.md)；必须先把这些修改合入 main，再打正式标签，服务器初始化步骤不变。
 
@@ -29,13 +29,13 @@ GitHub 的 workflow_dispatch 入口要求工作流存在于默认分支，当前
 
 ```bash
 git fetch origin
-git tag v1.0.0 origin/main
-git push origin v1.0.0
+git tag v1.0.1 origin/main
+git push origin v1.0.1
 ```
 
 若该标签已存在，使用新的版本号，不移动或覆盖正式标签。
 
-等待 Actions → Release 成功。应看到正式 Release v1.0.0，附件 `shuiyuan-v1.0.0.tar.gz`、`SHA256SUMS`、`release.json`，以及 GHCR 中 bot/postgres/mcp 三个镜像。任务失败时先查看日志，不继续生产初始化。
+等待 Actions → Release 成功。应看到正式 Release v1.0.1，附件 `shuiyuan-v1.0.1.tar.gz`、`SHA256SUMS`、`release.json`，以及 GHCR 中 bot/postgres/mcp 三个镜像。任务失败时先查看日志，不继续生产初始化。
 
 ## 2. 本机：准备 Cookie、Key 和迁移数据
 
@@ -78,6 +78,7 @@ cp -n config/deployment.example.toml config/deployment.toml
 | embedding.model | 确认账号可用的 qwen3.7-text-embedding |
 | embedding.dims | 1024 |
 | forum.bot_username | Cookie 对应的账号；本文按 wolf_lumine 配置 |
+| providers.IMAGE_GEN_API_URL | 生图 API 的 OpenAI 兼容 base URL，请求实际发往 `{base}/images/generations`。只配 `IMAGE_GEN_API_KEY` 时 Bot 能正常回复，但 `generate_image` 返回「IMAGE_GEN_API_URL 未配置」 |
 
 保留 `/run/secrets/...`、`/var/lib/shuiyuan`、`auto_migrate=false`、pgvector 等容器配置。不能把百炼控制台网页 URL 填成 API 地址。若使用其他人物/账号，还需核对人物配置、启动 persona 与语料人物 ID，不只是替换 Cookie。
 
@@ -123,7 +124,7 @@ df -h /
 
 ```bash
 ssh ADMIN_USER@SERVER_IP 'mkdir -p ~/shuiyuan-bootstrap'
-scp shuiyuan-v1.0.0.tar.gz SHA256SUMS ADMIN_USER@SERVER_IP:~/shuiyuan-bootstrap/
+scp shuiyuan-v1.0.1.tar.gz SHA256SUMS ADMIN_USER@SERVER_IP:~/shuiyuan-bootstrap/
 scp config/deployment.toml ADMIN_USER@SERVER_IP:~/shuiyuan-bootstrap/
 scp -r secrets transfer ADMIN_USER@SERVER_IP:~/shuiyuan-bootstrap/
 ```
@@ -135,16 +136,16 @@ ssh ADMIN_USER@SERVER_IP
 cd ~/shuiyuan-bootstrap
 sha256sum -c SHA256SUMS
 mkdir unpacked
-tar -xzf shuiyuan-v1.0.0.tar.gz -C unpacked
+tar -xzf shuiyuan-v1.0.1.tar.gz -C unpacked
 sudo python3 unpacked/scripts/deploy/install_controller.py
-sudo install -m 600 deployment.toml /opt/shuiyuan/shared/deployment.toml
+sudo install -m 444 deployment.toml /opt/shuiyuan/shared/deployment.toml
 sudo cp secrets/* /opt/shuiyuan/shared/secrets/
 sudo chown -R root:root /opt/shuiyuan/shared/secrets
 sudo chmod 700 /opt/shuiyuan/shared/secrets
 sudo find /opt/shuiyuan/shared/secrets -type f -exec chmod 444 {} \;
 ```
 
-这些复制命令只用于新安装；既有配置和秘密文件轮换应按运维指南操作。私有目录内的秘密文件通过单文件 bind mount 提供给容器，Compose secrets 不提供宿主机静态加密。
+这些复制命令只用于新安装；既有配置和秘密文件轮换应按运维指南操作。私有目录内的配置和秘密文件都通过单文件 bind mount 提供给容器，而容器以非 root 用户（uid 10001/10002）运行，所以单文件必须对该用户可读：目录保持 0700 root，文件用 0444。用 0600 会让容器读不到，`migrate`/`bot` 启动即报 `PermissionError`。Compose secrets 不提供宿主机静态加密。
 
 ## 5. 服务器：GitHub/GHCR 只读访问与接收版本
 
@@ -169,12 +170,12 @@ sudo nano /opt/shuiyuan/shared/github_read_token
 
 ```bash
 cd ~/shuiyuan-bootstrap
-bundle_sha=$(sha256sum shuiyuan-v1.0.0.tar.gz | cut -d ' ' -f 1)
-sudo env SSH_ORIGINAL_COMMAND="receive v1.0.0 $bundle_sha" \
-  /usr/local/sbin/shuiyuan-ssh < shuiyuan-v1.0.0.tar.gz
+bundle_sha=$(sha256sum shuiyuan-v1.0.1.tar.gz | cut -d ' ' -f 1)
+sudo env SSH_ORIGINAL_COMMAND="receive v1.0.1 $bundle_sha" \
+  /usr/local/sbin/shuiyuan-ssh < shuiyuan-v1.0.1.tar.gz
 ```
 
-成功会返回 received: v1.0.0。服务器会独立核对 GitHub 正式 Release 的附件摘要，API 不可用或摘要不匹配时停止。
+成功会返回 received: v1.0.1。服务器会独立核对 GitHub 正式 Release 的附件摘要，API 不可用或摘要不匹配时停止。
 
 ## 6. 服务器：初始化数据库
 
@@ -185,7 +186,7 @@ sudo python3 - <<'PY'
 import json
 from pathlib import Path
 root = Path('/opt/shuiyuan')
-release = json.loads((root / 'releases/v1.0.0/release.json').read_text())
+release = json.loads((root / 'releases/v1.0.1/release.json').read_text())
 values = {
     'SHUIYUAN_CONFIG': str(root / 'shared/deployment.toml'),
     'SHUIYUAN_SECRETS': str(root / 'shared/secrets'),
@@ -204,7 +205,7 @@ dc() {
   sudo docker compose \
     --env-file /opt/shuiyuan/shared/initial.env \
     --project-name shuiyuan \
-    -f /opt/shuiyuan/releases/v1.0.0/deploy/compose.yaml "$@"
+    -f /opt/shuiyuan/releases/v1.0.1/deploy/compose.yaml "$@"
 }
 dc config --quiet
 dc pull postgres bot mcp
@@ -212,7 +213,7 @@ dc up -d --wait postgres
 dc run --rm migrate
 ```
 
-dc 只对应首次版本 v1.0.0，重新登录需要重新定义。后续版本通过控制器管理，不能一直用该函数更新生产。现在只初始化数据库、SQLite 和队列，尚未启动 Bot。
+dc 只对应首次版本 v1.0.1，重新登录需要重新定义。后续版本通过控制器管理，不能一直用该函数更新生产。现在只初始化数据库、SQLite 和队列，尚未启动 Bot。
 
 ## 7. 服务器：导入语料和长期记忆
 
@@ -275,7 +276,7 @@ process、database、state、forum 四个字段均应为 ok；forum 暂未就绪
 正常后登记首个版本：
 
 ```bash
-sudo shuiyuan-release adopt --release v1.0.0
+sudo shuiyuan-release adopt --release v1.0.1
 sudo cat /opt/shuiyuan/shared/current.json
 ```
 

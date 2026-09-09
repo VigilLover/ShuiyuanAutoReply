@@ -55,6 +55,11 @@ state_dir = "/var/lib/shuiyuan"
 [profiles.remote.providers]
 DEEPSEEK_API_KEY = {file = "/run/secrets/deepseek_key"}
 IMAGE_GEN_API_KEY = {file = "/run/secrets/image_key"}
+# Image generation needs both keys. Requests go to {IMAGE_GEN_API_URL}/images/generations.
+# With only IMAGE_GEN_API_KEY set, the bot still replies but generate_image returns "IMAGE_GEN_API_URL 未配置".
+IMAGE_GEN_API_URL = "https://YOUR_IMAGE_PROVIDER/v1"
+# Optional; defaults to gpt-image-2. Set it when the provider exposes a different image model.
+# IMAGE_GEN_MODEL = "gpt-image-2"
 [profiles.remote.mcp]
 enabled = true
 url = "http://mcp:58000/sse"

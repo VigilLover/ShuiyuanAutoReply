@@ -32,7 +32,8 @@ cp config/deployment.example.toml config/deployment.toml
 `providers` 中的键是现有 Provider 环境变量名，例如 `DEEPSEEK_API_KEY`、
 `IMAGE_GEN_API_KEY`、`IMAGE_GEN_API_URL`、`OPENROUTER_API_KEY`。
 部署脚本初始化 DeepSeek、Embedding 和图片生成 Key；Compose 已为 Bot/migrate 挂载 `image_key`，
-配置示例使用 `IMAGE_GEN_API_KEY={file="/run/secrets/image_key"}`。
+配置示例使用 `IMAGE_GEN_API_KEY={file="/run/secrets/image_key"}`。生图需要 Key 与 URL 同时配置：
+只配 Key 时 Bot 能正常回复，但 `generate_image` 返回「IMAGE_GEN_API_URL 未配置」。
 不使用生图时可留空，脚本仍创建空 secret 文件以满足 Compose 挂载；生图功能需有效 Key 才能调用。
 不要在构建参数、Dockerfile 或 Git 中放入真实 Key。
 
