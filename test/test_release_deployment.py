@@ -60,6 +60,56 @@ def test_manifest_and_transition_guards():
     release.validate(manifest(inputs=identities()))
 
 
+def test_compatibility_window_expands_recent_releases():
+    with patch("release.recent_releases", return_value=["v1.0.5", "v1.0.4"]):
+        assert release.compatibility_sources({"compatible_from": "recent:2"}) == [
+            "v1.0.5",
+            "v1.0.4",
+        ]
+    assert release.compatibility_sources({"compatible_from": ["v1.0.3"]}) == ["v1.0.3"]
+    for invalid in ("recent:0", "recent:", "latest", ["latest"], "../v1.0.3"):
+        with pytest.raises(ValueError):
+            release.compatibility_sources({"compatible_from": invalid})
+
+
+def test_recent_releases_keeps_only_official_versions_newest_first():
+    rows = [
+        {"tag_name": "v1.0.5", "draft": False, "prerelease": False},
+        {"tag_name": "v1.0.6", "draft": True, "prerelease": False},
+        {"tag_name": "v1.0.4", "draft": False, "prerelease": True},
+        {"tag_name": "v1.0.3", "draft": False, "prerelease": False},
+    ]
+    with (
+        patch("release.default_repository", return_value="o/r"),
+        patch("subprocess.check_output", return_value=json.dumps(rows)),
+    ):
+        assert release.recent_releases(2) == ["v1.0.5", "v1.0.3"]
+        with pytest.raises(ValueError):
+            release.recent_releases(3)
+
+
+def test_default_repository_reads_origin_without_asking_gh():
+    for url, expected in (
+        (
+            "https://github.com/VigilLover/ShuiyuanAutoReply.git",
+            "VigilLover/ShuiyuanAutoReply",
+        ),
+        (
+            "git@github.com:VigilLover/ShuiyuanAutoReply.git",
+            "VigilLover/ShuiyuanAutoReply",
+        ),
+        (
+            "https://github.com/VigilLover/ShuiyuanAutoReply",
+            "VigilLover/ShuiyuanAutoReply",
+        ),
+    ):
+        with patch("subprocess.check_output", return_value=url):
+            assert release.default_repository() == expected
+    with patch("subprocess.check_output", return_value="https://gitlab.com/x/y.git"):
+        with pytest.raises(ValueError):
+            release.default_repository()
+
+
 def test_database_guard_compares_build_inputs_not_digests():
     shared = identities()
     old, new = manifest(inputs=shared), manifest("v1.0.1", inputs=shared)

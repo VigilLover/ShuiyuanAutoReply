@@ -36,6 +36,63 @@ IGNORED = {
     ".mypy_cache",
     ".ruff_cache",
 }
+# `recent:N` keeps the compatibility window at the N most recent official
+# releases, so the policy file does not have to be edited on every release.
+RECENT = re.compile(r"recent:([1-9]\d*)\Z")
+
+
+def _version_key(tag):
+    return tuple(int(part) for part in tag[1:].split("."))
+
+
+def default_repository():
+    """OWNER/REPO of the origin remote, so gh never has to guess (it picks
+    upstream when a fork has one)."""
+    url = subprocess.check_output(
+        ["git", "remote", "get-url", "origin"], text=True
+    ).strip()
+    match = re.fullmatch(
+        r"(?:https://|git@)github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?", url
+    )
+    if match is None:
+        raise ValueError("Cannot resolve the GitHub repository from origin")
+    return f"{match.group(1)}/{match.group(2)}"
+
+
+def recent_releases(limit):
+    """The newest official releases, most recent first."""
+    rows = json.loads(
+        subprocess.check_output(
+            ["gh", "api", f"repos/{default_repository()}/releases?per_page=100"],
+            text=True,
+        )
+    )
+    official = [
+        row["tag_name"]
+        for row in rows
+        if not row["draft"]
+        and not row["prerelease"]
+        and VERSION.fullmatch(row["tag_name"])
+    ]
+    official.sort(key=_version_key, reverse=True)
+    if len(official) < limit:
+        raise ValueError("Not enough official releases for the compatibility window")
+    return official[:limit]
+
+
+def compatibility_sources(policy):
+    """Expand compatible_from into the concrete versions a release is tested against."""
+    sources = policy.get("compatible_from", [])
+    if isinstance(sources, str):
+        window = RECENT.fullmatch(sources)
+        if window is None:
+            raise ValueError("Invalid compatibility policy")
+        sources = recent_releases(int(window.group(1)))
+    sources = list(sources)
+    for version in sources:
+        if not VERSION.fullmatch(version):
+            raise ValueError("Invalid compatibility version")
+    return sources
 
 
 def validate(manifest):
@@ -116,6 +173,11 @@ def image_inputs(root=ROOT):
 
 def bundle(version, images, output):
     policy = json.loads((ROOT / "deploy/release-policy.json").read_text())
+    sources = (
+        compatibility_sources(policy)
+        if policy["migration"] == "backward-compatible"
+        else []
+    )
     manifest = validate(
         dict(
             format=1,
@@ -128,7 +190,7 @@ def bundle(version, images, output):
             images=images,
             image_inputs=image_inputs(),
             migration=policy["migration"],
-            compatible_from=policy.get("compatible_from", []),
+            compatible_from=sources,
             schema_id=schema_id(),
         )
     )
@@ -138,7 +200,7 @@ def bundle(version, images, output):
     manifest["compatibility"] = evidence.get("compatibility", {})
     if policy["migration"] == "backward-compatible" and set(
         manifest["compatibility"]
-    ) != set(policy["compatible_from"]):
+    ) != set(sources):
         raise ValueError("Compatibility evidence missing")
     files = {
         "deploy/compose.yaml",
