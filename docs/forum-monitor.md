@@ -11,8 +11,10 @@
 - `GET /api/forum/monitor`：同一读事务内返回活动 `runs`、论坛 `conversations`（含排队和执行数量）和事件 `cursor`。
 - `GET /api/forum/events/stream?after=N`：只读 SSE，支持 `Last-Event-ID`；每条 `forum.event` 携带 `event_id`、`conversation_id`、`run_id`、`type`、`created_at`、`payload`。每批最多 200 条，空闲时每 500ms 查询、每 15 秒心跳。
 - 会话详情增加 `runs`，每项包含 `request` 元信息、状态和 `last_event_id`；列表增加 `queued_count`、`running_count`。旧响应字段保留。
+- `GET /api/conversations/{id}?limit=N&before=CURSOR`：只返回最新窗口——命中的 run 卡片、独立的旧消息，以及这些 run 的事件（上限 200 条），附 `has_more`、`next_cursor`、`events_has_more`。`limit` 缺省时返回全量，行为不变。
+- `GET /api/conversations/{id}/events?limit=200&before=<event_id>`：轨迹页签按需向前翻页。
 
-新增接口遵循管理站现有访问边界，不占用回复调度槽位。反向代理须允许长连接并关闭 SSE 缓冲；接口已发送 `X-Accel-Buffering: no`。监控断开不取消 Worker 任务，重连通过新快照和游标补齐；当前话题的完整历史重新读取，事件按 ID 去重。浏览器标签页内记住所选渠道与最近会话，窄屏通过话题选择框切换。
+新增接口遵循管理站现有访问边界，不占用回复调度槽位。反向代理须允许长连接并关闭 SSE 缓冲；接口已发送 `X-Accel-Buffering: no`。监控断开不取消 Worker 任务，重连通过新快照和游标补齐；当前话题重新读取最新窗口并合并到已加载内容，事件按 ID 去重。浏览器标签页内记住所选渠道与最近会话，窄屏通过话题选择框切换。打开话题只渲染最新一屏，滚动到顶部时加载更早的一页并保持滚动位置。
 
 沿用 SQLite 的 runs/run_events 表和 JSON 载荷，不增加数据库字段、服务或迁移要求。旧记录沿用原展示，不清理历史未命中记录。
 
