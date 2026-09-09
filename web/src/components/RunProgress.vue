@@ -3,12 +3,12 @@ import { computed } from 'vue'
 import {
   PhCaretRight,
   PhCircle,
-  PhCircleNotch,
   PhClock,
   PhTerminalWindow,
   PhWarningCircle,
 } from '@phosphor-icons/vue'
 import type { RunEvent } from '../api'
+import BrandLoader from './BrandLoader.vue'
 import PromptEvent from './PromptEvent.vue'
 
 const props = defineProps<{
@@ -117,7 +117,7 @@ function isFailed(event: RunEvent) {
 <template>
   <section class="run-progress" :class="{ complete: completed, running }">
     <div class="run-progress-head">
-      <PhCircleNotch v-if="running" class="run-progress-spinner" :size="17" weight="bold" />
+      <BrandLoader v-if="running" compact />
       <PhWarningCircle v-else-if="!completed" :size="18" />
       <strong>{{ statusLabel || (running ? '正在执行' : completed ? '已执行' : '执行已结束') }}</strong>
       <template v-if="completed">

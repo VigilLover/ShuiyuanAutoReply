@@ -18,6 +18,7 @@ import {
   PhUserCircle,
   PhX,
 } from '@phosphor-icons/vue'
+import BrandLoader from '../components/BrandLoader.vue'
 import MarkdownContent from '../components/MarkdownContent.vue'
 import PromptEvent from '../components/PromptEvent.vue'
 import RunProgress from '../components/RunProgress.vue'
@@ -413,7 +414,7 @@ function onMessagesScroll() {
       <header v-else class="workspace-topbar" aria-hidden="true"></header>
 
       <div v-if="store.selectingId" class="view-loading" role="status" aria-live="polite">
-        <span class="view-loading-spinner" aria-hidden="true"></span>
+        <BrandLoader />
         <p>正在加载对话…</p>
         <div class="view-loading-lines" aria-hidden="true"><span></span><span></span><span></span></div>
       </div>
