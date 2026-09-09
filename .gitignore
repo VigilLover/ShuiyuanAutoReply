@@ -266,3 +266,4 @@ deploy/runtime.env
 !web/public/assets/**
 reports/
 dist-release/
+transfer/
