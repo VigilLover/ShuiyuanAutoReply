@@ -796,7 +796,16 @@ class SQLiteStateStore:
             window = rows[:limit]
             message_ids = [row["id"] for row in window if row["kind"] == "msg"]
             run_ids = [row["id"] for row in window if row["kind"] == "run"]
-            events, events_has_more = await self._events_for_runs(db, run_ids)
+            events, _ = await self._events_for_runs(db, run_ids)
+            total_events = (
+                await (
+                    await db.execute(
+                        """SELECT count(*) AS n FROM run_events e
+                        JOIN runs r ON r.id=e.run_id WHERE r.conversation_id=?""",
+                        (conversation_id,),
+                    )
+                ).fetchone()
+            )["n"]
             return {
                 "messages": await self._messages_by_ids(db, message_ids),
                 "runs": await self._monitor_runs(db, ids=run_ids),
@@ -807,7 +816,8 @@ class SQLiteStateStore:
                     if has_more and window
                     else None
                 ),
-                "events_has_more": events_has_more,
+                # The trace view pages the whole conversation, not just this window.
+                "events_has_more": total_events > len(events),
             }
         finally:
             await db.close()

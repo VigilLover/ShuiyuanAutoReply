@@ -457,7 +457,7 @@ function onMessagesScroll() {
         <div class="trace-toolbar">
           <span>执行事件</span><small>{{ selectedEvents.length }} records</small>
         </div>
-        <div v-if="selectedEvents.length" class="trace-table">
+        <div v-if="selectedEvents.length || store.selected?.events_has_more" class="trace-table">
           <button v-if="store.selected?.events_has_more" class="load-more" @click="store.loadOlderEvents()">加载更早的事件</button>
           <div v-for="event in selectedEvents" :key="event.id" class="trace-table-row">
             <time>{{ new Date(event.created_at).toLocaleTimeString() }}</time>

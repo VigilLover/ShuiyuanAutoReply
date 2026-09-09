@@ -559,7 +559,8 @@ def test_timeline_pagination_windows_runs_and_events(tmp_path):
         # Managed runs own their messages, so nothing renders standalone.
         assert first["messages"] == []
         assert first["has_more"] is True and first["next_cursor"]
-        assert first["events"] and first["events_has_more"] is False
+        # The trace view pages the whole conversation, not just this window.
+        assert first["events"] and first["events_has_more"] is True
 
         second = await store.conversation_timeline_page(
             cid, limit=2, before=first["next_cursor"]
@@ -580,6 +581,13 @@ def test_timeline_pagination_windows_runs_and_events(tmp_path):
         assert {e.id for e in events["events"]} & {
             e.id for e in older["events"]
         } == set()
+
+        # A window without runs still advertises the conversation's older events,
+        # otherwise the trace view of a historical topic would stay empty.
+        await store.append_message(cid, "user", "legacy post")
+        legacy = await store.conversation_timeline_page(cid, limit=1)
+        assert legacy["runs"] == [] and len(legacy["messages"]) == 1
+        assert legacy["events"] == [] and legacy["events_has_more"] is True
 
     asyncio.run(run())
 
