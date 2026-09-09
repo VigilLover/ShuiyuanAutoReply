@@ -25,7 +25,7 @@ export const useConversations = defineStore('conversations', {
     channel: (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('shuiyuan.monitor.channel') === 'forum' ? 'forum' : 'web') as 'web' | 'forum', conversations: [] as Conversation[],
     selected: null as ConversationDetail | null, loading: false, running: false,
     error: '', liveEvents: [] as RunEvent[], search: '', hasMore: false, lastFailedMessage: '',
-    lastFailedFiles: [] as File[], loadingOlder: false,
+    lastFailedFiles: [] as File[], loadingOlder: false, selectingId: null as string | null,
   }),
   actions: {
     async load(more = false) {
@@ -63,26 +63,34 @@ export const useConversations = defineStore('conversations', {
     async select(id: string, background = false) {
       const version = background ? selectionVersion : ++selectionVersion
       const channel = this.channel
-      const query = channel === 'forum' ? `?limit=${TIMELINE_PAGE}` : ''
-      const detail = await api<ConversationDetail>(`/api/conversations/${id}${query}`)
-      if (version !== selectionVersion || channel !== this.channel || (background && this.selected?.conversation.id !== id)) return
-      const previous = this.selected
-      if (background && previous && channel === 'forum') {
-        // Keep the history the user already scrolled back to.
-        this.selected = {
-          ...detail,
-          messages: mergeById(detail.messages, previous.messages),
-          runs: mergeById(detail.runs || [], previous.runs || []),
-          events: mergeById(detail.events, previous.events),
-          has_more: previous.has_more,
-          next_cursor: previous.next_cursor,
-          events_has_more: previous.events_has_more || detail.events_has_more,
+      // Foreground selection highlights the sidebar entry before the fetch lands.
+      if (!background) { this.selectingId = id; this.error = '' }
+      try {
+        const query = channel === 'forum' ? `?limit=${TIMELINE_PAGE}` : ''
+        const detail = await api<ConversationDetail>(`/api/conversations/${id}${query}`)
+        if (version !== selectionVersion || channel !== this.channel || (background && this.selected?.conversation.id !== id)) return
+        const previous = this.selected
+        if (background && previous && channel === 'forum') {
+          // Keep the history the user already scrolled back to.
+          this.selected = {
+            ...detail,
+            messages: mergeById(detail.messages, previous.messages),
+            runs: mergeById(detail.runs || [], previous.runs || []),
+            events: mergeById(detail.events, previous.events),
+            has_more: previous.has_more,
+            next_cursor: previous.next_cursor,
+            events_has_more: previous.events_has_more || detail.events_has_more,
+          }
+          return
         }
-        return
+        revokeLocalPreviews(previous?.messages)
+        this.selected = detail; this.liveEvents = []
+        if (!background) sessionStorage.setItem('shuiyuan.monitor.selected', id)
+      } catch (error) {
+        if (version === selectionVersion) this.error = String(error)
+      } finally {
+        if (!background && this.selectingId === id) this.selectingId = null
       }
-      revokeLocalPreviews(previous?.messages)
-      this.selected = detail; this.liveEvents = []
-      if (!background) sessionStorage.setItem('shuiyuan.monitor.selected', id)
     },
     // Prepends older entries; the caller restores the scroll position afterwards.
     async loadOlder() {
