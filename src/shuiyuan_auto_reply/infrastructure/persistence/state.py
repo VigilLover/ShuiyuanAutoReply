@@ -504,6 +504,210 @@ class SQLiteStateStore:
         finally:
             await db.close()
 
+    async def accept_forum_run(
+        self, request: ReplyRequest, handler: str
+    ) -> tuple[str, str]:
+        """Publish acceptance and its run in a single transaction."""
+        conversation = await self.ensure_conversation(request.conversation)
+        run_id, now = str(uuid.uuid4()), utc_now()
+        forum = request.forum_context
+        payload = {
+            "content": request.content,
+            "username": request.actor.username,
+            "display_name": request.actor.display_name,
+            "handler": handler,
+            "topic_id": forum.topic_id,
+            "post_id": forum.post_id,
+            "post_number": forum.post_number,
+            "channel": "forum",
+        }
+        db = await self._connect()
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            previous = await (
+                await db.execute(
+                    "SELECT id FROM runs WHERE request_id=? AND conversation_id=? ORDER BY started_at DESC LIMIT 1",
+                    (request.request_id, conversation.id),
+                )
+            ).fetchone()
+            if previous:
+                payload["previous_run_id"] = previous["id"]
+            await db.execute(
+                "INSERT INTO runs(id,request_id,conversation_id,status,started_at) VALUES (?,?,?,'queued',?)",
+                (run_id, request.request_id, conversation.id, now),
+            )
+            await db.execute(
+                "INSERT INTO run_events(run_id,event_type,payload_json,created_at) VALUES (?,'run.accepted',?,?)",
+                (run_id, json.dumps(payload, ensure_ascii=False), now),
+            )
+            await db.execute(
+                "UPDATE conversations SET updated_at=? WHERE id=?",
+                (now, conversation.id),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+        return run_id, conversation.id
+
+    async def transition_forum_run(
+        self,
+        run_id: str,
+        status: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        usage: dict[str, int] | None = None,
+    ) -> None:
+        """Status and event become visible together; terminal states are immutable."""
+        terminal = status not in {"queued", "running", "publishing"}
+        now = utc_now()
+        db = await self._connect()
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute("SELECT status FROM runs WHERE id=?", (run_id,))
+            ).fetchone()
+            if row is None or row["status"] not in {"queued", "running", "publishing"}:
+                return
+            data = _safe_event_value(payload or {})
+            await db.execute(
+                "UPDATE runs SET status=?,error=?,finished_at=? WHERE id=?",
+                (status, data.get("error"), now if terminal else None, run_id),
+            )
+            if usage:
+                await db.execute(
+                    "UPDATE runs SET input_tokens=?,output_tokens=?,total_tokens=? WHERE id=?",
+                    (
+                        usage.get("input_tokens"),
+                        usage.get("output_tokens"),
+                        usage.get("total_tokens"),
+                        run_id,
+                    ),
+                )
+            await db.execute(
+                "INSERT INTO run_events(run_id,event_type,payload_json,created_at) VALUES (?,?,?,?)",
+                (run_id, event_type, json.dumps(data, ensure_ascii=False), now),
+            )
+            await db.execute(
+                "UPDATE conversations SET updated_at=? WHERE id=(SELECT conversation_id FROM runs WHERE id=?)",
+                (now, run_id),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    async def _monitor_runs(self, db, conversation_id=None, active_only=False):
+        where, params = "c.channel='forum'", []
+        if conversation_id:
+            where += " AND r.conversation_id=?"
+            params.append(conversation_id)
+        if active_only:
+            where += " AND r.status IN ('queued','running','publishing')"
+        rows = await (
+            await db.execute(
+                f"""SELECT r.*, (SELECT COALESCE(MAX(ev.id),0) FROM run_events ev WHERE ev.run_id=r.id) AS last_event_id, e.payload_json AS request_json FROM runs r
+            JOIN conversations c ON c.id=r.conversation_id
+            LEFT JOIN run_events e ON e.run_id=r.id AND e.event_type='run.accepted'
+            WHERE {where} ORDER BY r.started_at,r.id""",
+                params,
+            )
+        ).fetchall()
+        return [
+            {
+                **{k: row[k] for k in row.keys() if k != "request_json"},
+                "request": json.loads(row["request_json"] or "{}"),
+            }
+            for row in rows
+        ]
+
+    async def list_forum_runs(self, conversation_id: str) -> list[dict[str, Any]]:
+        db = await self._connect()
+        try:
+            return await self._monitor_runs(db, conversation_id)
+        finally:
+            await db.close()
+
+    async def forum_monitor(self) -> dict[str, Any]:
+        db = await self._connect()
+        try:
+            await db.execute("BEGIN")
+            cursor = (
+                await (
+                    await db.execute("SELECT COALESCE(MAX(id),0) AS id FROM run_events")
+                ).fetchone()
+            )["id"]
+            runs = await self._monitor_runs(db, active_only=True)
+            rows = await (
+                await db.execute("""SELECT c.*,
+                SUM(CASE WHEN r.status='queued' THEN 1 ELSE 0 END) AS queued_count,
+                SUM(CASE WHEN r.status IN ('running','publishing') THEN 1 ELSE 0 END) AS running_count
+                FROM conversations c LEFT JOIN runs r ON r.conversation_id=c.id
+                WHERE c.channel='forum' GROUP BY c.id ORDER BY c.updated_at DESC""")
+            ).fetchall()
+            return {
+                "cursor": cursor,
+                "runs": runs,
+                "conversations": [dict(row) for row in rows],
+            }
+        finally:
+            await db.close()
+
+    async def forum_events_after(
+        self, after: int, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        db = await self._connect()
+        try:
+            rows = await (
+                await db.execute(
+                    """SELECT e.*,r.conversation_id FROM run_events e
+                JOIN runs r ON r.id=e.run_id JOIN conversations c ON c.id=r.conversation_id
+                WHERE c.channel='forum' AND e.id>? ORDER BY e.id LIMIT ?""",
+                    (after, limit),
+                )
+            ).fetchall()
+            return [
+                {
+                    "event_id": row["id"],
+                    "run_id": row["run_id"],
+                    "conversation_id": row["conversation_id"],
+                    "type": row["event_type"],
+                    "created_at": row["created_at"],
+                    "payload": json.loads(row["payload_json"]),
+                }
+                for row in rows
+            ]
+        finally:
+            await db.close()
+
+    async def recover_forum_runs(self, username: str) -> None:
+        db = await self._connect()
+        try:
+            rows = await (
+                await db.execute(
+                    """SELECT r.id,j.status AS job_status,
+                EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.event_type='run.generation_failed') AS generation_failed
+                FROM runs r JOIN conversations c ON c.id=r.conversation_id
+                LEFT JOIN forum_jobs j ON j.username=c.bot_id AND r.request_id='forum:' || j.post_id
+                WHERE c.channel='forum' AND c.bot_id=? AND r.status IN ('queued','running','publishing')""",
+                    (username,),
+                )
+            ).fetchall()
+        finally:
+            await db.close()
+        for row in rows:
+            state = row["job_status"]
+            status = (
+                ("failed" if row["generation_failed"] else "completed")
+                if state == "sent"
+                else (
+                    "needs_review"
+                    if state in {"sending", "needs_review"}
+                    else "interrupted"
+                )
+            )
+            await self.transition_forum_run(
+                row["id"], status, f"run.{status}", {"recovered": True}
+            )
+
     async def create_run(
         self,
         request_id: str,

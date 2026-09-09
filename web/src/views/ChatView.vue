@@ -21,9 +21,13 @@ import {
 import MarkdownContent from '../components/MarkdownContent.vue'
 import PromptEvent from '../components/PromptEvent.vue'
 import RunProgress from '../components/RunProgress.vue'
+import ForumConversation from '../components/ForumConversation.vue'
+import { useForumMonitor } from '../stores/forum'
+import { mergeRun, type ForumRun } from '../forum'
 import { useConversations } from '../stores/conversations'
 
 const store = useConversations()
+const forum = useForumMonitor()
 const input = ref('')
 const editing = ref(false)
 const title = ref('')
@@ -45,14 +49,31 @@ let searchTimer: number | undefined
 let composerResizeObserver: ResizeObserver | undefined
 
 const channelLabel = computed(() => store.channel === 'web' ? '网页对话' : '论坛记录')
-const selectedEvents = computed(() => store.selected?.events || [])
+const forumRuns = computed(() => {
+  const runs: Record<string, ForumRun> = {}
+  for (const run of store.selected?.runs || []) mergeRun(runs, run)
+  for (const run of Object.values(forum.runs)) {
+    if (run.conversation_id === store.selected?.conversation.id) mergeRun(runs, run)
+  }
+  return Object.values(runs)
+})
+const selectedEvents = computed(() => {
+  const saved = store.selected?.events || []
+  if (store.channel !== 'forum') return saved
+  const live = forumRuns.value.flatMap(run => forum.events[run.id] || [])
+  return [...new Map([...saved, ...live].map(event => [event.id, event])).values()].sort((a, b) => a.id - b.id)
+})
 const shellStyle = computed(() => ({ '--composer-space': `${composerSpace.value}px` }))
 const personaId = computed(() => store.selected?.conversation.persona_id || store.conversations[0]?.persona_id || 'persona')
 const personaLabel = computed(() => personaId.value.toUpperCase())
 
 onMounted(async () => {
   await store.load()
-  if (!store.selected && store.conversations.length) await store.select(store.conversations[0].id)
+  if (!store.selected && store.conversations.length) {
+    const saved = sessionStorage.getItem('shuiyuan.monitor.selected')
+    await store.select((store.conversations.find(item => item.id === saved) || store.conversations[0]).id)
+  }
+  if (store.channel === 'forum') void forum.start()
   await nextTick()
   observeComposer()
   resizeComposer()
@@ -60,6 +81,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  forum.stop()
   window.clearTimeout(searchTimer)
   composerResizeObserver?.disconnect()
   window.removeEventListener('resize', resizeComposer)
@@ -68,11 +90,17 @@ onBeforeUnmount(() => {
 
 watch(() => store.selected?.conversation.title, value => {
   title.value = value || ''
-  activeTab.value = 'chat'
   sessionMenuOpen.value = false
-  nextTick(scrollToBottom)
 })
-watch(() => store.selected?.messages.length, () => nextTick(scrollToBottom))
+watch(() => [store.selected?.messages.length, selectedEvents.value.length, forumRuns.value.length], () => {
+  const el = messagesElement.value
+  if (!el || el.scrollHeight - el.scrollTop - el.clientHeight < 100) nextTick(scrollToBottom)
+})
+watch(() => store.selected?.runs, runs => forum.ingest(runs || []))
+watch(() => store.channel, channel => {
+  sessionStorage.setItem('shuiyuan.monitor.channel', channel)
+  if (channel !== 'forum') forum.stop()
+})
 watch(() => store.selected?.conversation.id, () => nextTick(() => {
   observeComposer()
   resizeComposer()
@@ -85,10 +113,13 @@ watch(() => store.selected?.conversation.channel, () => nextTick(() => {
 watch(input, () => nextTick(resizeComposer))
 
 async function switchChannel(channel: 'web' | 'forum') {
+  forum.stop()
   store.channel = channel
   store.selected = null
   await store.load()
+  if (store.channel !== channel) return
   if (store.conversations.length) await store.select(store.conversations[0].id)
+  if (channel === 'forum' && store.channel === channel) void forum.start()
 }
 
 async function createConversation() {
@@ -291,7 +322,10 @@ function scrollToBottom() {
           @click="selectConversation(item.id)"
         >
           <span>{{ item.title }}</span>
-          <small>{{ new Date(item.updated_at).toLocaleDateString() }}</small>
+          <small v-if="store.channel === 'forum' && (forum.counts(item.id).queued || forum.counts(item.id).running)" class="forum-sidebar-count">
+            {{ forum.counts(item.id).running }} 执行 · {{ forum.counts(item.id).queued }} 排队
+          </small>
+          <small v-else>{{ new Date(item.updated_at).toLocaleDateString() }}</small>
         </button>
         <p v-if="!store.loading && !store.conversations.length" class="empty-small">暂无{{ channelLabel }}</p>
         <button v-if="store.hasMore" class="load-more" @click="store.load(true)">加载更多</button>
@@ -318,6 +352,12 @@ function scrollToBottom() {
             </h1>
             <span class="runtime-pill">{{ store.selected.conversation.channel === 'web' ? 'WEB' : 'FORUM · READ ONLY' }}</span>
           </div>
+          <label v-if="store.channel === 'forum'" class="forum-topic-picker">
+            <span>切换话题</span>
+            <select :value="store.selected.conversation.id" @change="selectConversation(($event.target as HTMLSelectElement).value)">
+              <option v-for="item in store.conversations" :key="item.id" :value="item.id">{{ item.title }} · {{ forum.counts(item.id).running }} 执行 / {{ forum.counts(item.id).queued }} 排队</option>
+            </select>
+          </label>
           <div class="view-tabs">
             <button :class="{ active: activeTab === 'chat' }" @click="activeTab = 'chat'">对话</button>
             <button :class="{ active: activeTab === 'trace' }" @click="activeTab = 'trace'">轨迹 <span>{{ selectedEvents.length }}</span></button>
@@ -335,6 +375,9 @@ function scrollToBottom() {
 
       <div v-if="activeTab === 'chat'" ref="messagesElement" class="harness-messages">
         <div class="message-stream">
+          <p v-if="store.channel === 'forum' && forum.connection" class="forum-connection" role="status">{{ forum.connection }}</p>
+          <ForumConversation v-if="store.channel === 'forum'" :runs="forumRuns" :messages="store.selected.messages" :events="selectedEvents" @preview="lightboxUrl = $event" />
+          <template v-else>
           <template v-for="message in store.selected.messages" :key="message.id">
             <div v-if="message.role === 'system'" class="system-divider" :class="{ failed: message.status === 'failed' }">
               <span></span><p>{{ message.content }}</p><span></span>
@@ -363,6 +406,7 @@ function scrollToBottom() {
           </template>
 
           <RunProgress v-if="store.running" :events="store.liveEvents" running />
+          </template>
           <div v-if="store.error" class="request-error">
             <div><strong>请求失败</strong><p>{{ store.error }}</p></div>
             <button v-if="store.lastFailedMessage || store.lastFailedFiles.length" @click="store.send(store.lastFailedMessage, store.lastFailedFiles)">重试</button>
@@ -377,7 +421,7 @@ function scrollToBottom() {
         <div v-if="selectedEvents.length" class="trace-table">
           <div v-for="event in selectedEvents" :key="event.id" class="trace-table-row">
             <time>{{ new Date(event.created_at).toLocaleTimeString() }}</time>
-            <span class="event-kind">{{ event.type }}</span>
+            <span class="event-kind"><small v-if="store.channel === 'forum'">#{{ forumRuns.find(run => run.id === event.run_id)?.request.post_number || '历史' }} · </small>{{ event.type }}</span>
             <PromptEvent v-if="event.type === 'model.prompt_prepared'" :payload="event.payload" />
             <code v-else>{{ eventSummary(event.payload) }}</code>
           </div>

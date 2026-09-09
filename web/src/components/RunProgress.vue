@@ -14,6 +14,7 @@ import PromptEvent from './PromptEvent.vue'
 const props = defineProps<{
   events: RunEvent[]
   running?: boolean
+  statusLabel?: string
 }>()
 
 const visibleEvents = computed(() => props.events.filter(event => event.type !== 'message.completed'))
@@ -21,6 +22,13 @@ const currentEvent = computed(() => visibleEvents.value.at(-1))
 const completed = computed(() => !props.running && visibleEvents.value.some(event => event.type === 'run.completed'))
 
 const labels: Record<string, string> = {
+  'context.topic_loaded': '加载话题标题',
+  'run.accepted': '收到指令',
+  'run.generated': '回复生成完成',
+  'run.generation_failed': '回复生成失败',
+  'run.interrupted': '执行中断',
+  'run.needs_review': '发送结果待确认',
+  'forum.reply_publishing': '正在发布回复',
   'run.started': '开始处理',
   'context.style_loaded': '检索历史发言',
   'context.style_failed': '历史发言检索失败',
@@ -111,7 +119,7 @@ function isFailed(event: RunEvent) {
     <div class="run-progress-head">
       <PhCircleNotch v-if="running" class="run-progress-spinner" :size="17" weight="bold" />
       <PhWarningCircle v-else-if="!completed" :size="18" />
-      <strong>{{ running ? '正在执行' : completed ? '已执行' : '执行已结束' }}</strong>
+      <strong>{{ statusLabel || (running ? '正在执行' : completed ? '已执行' : '执行已结束') }}</strong>
       <template v-if="completed">
         <span class="run-stat"><PhClock :size="13" />{{ durationText(duration) }}</span>
         <span class="run-stat">输入 {{ tokenText(usage.input) }}</span>

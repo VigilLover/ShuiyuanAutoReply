@@ -426,3 +426,22 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
   .switch-card input:checked + .switch { background: #daf3e6; }
   .switch-card input:checked + .switch::after { background: #1eb96a; }
 }
+
+/* Each forum request owns its instruction, answer and execution trace. */
+.forum-task { margin: 0 0 28px; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-soft); }
+.forum-task-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; font-size: 12px; color: var(--muted); }
+.forum-task-head strong { color: var(--text-soft); }
+.forum-task-head time { font-size: 11px; }
+.forum-task-status { margin-left: auto; color: var(--blue); }
+.forum-task-status.failed, .forum-task-status.needs_review, .forum-task-error { color: #d97757; }
+.forum-task-status.completed { color: var(--muted); }
+.forum-instruction { padding: 12px 16px; border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; }
+.forum-answer { margin-top: 20px; overflow-wrap: anywhere; }
+.forum-answer > strong { display: block; margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+.forum-task-error, .forum-connection { font-size: 12px; overflow-wrap: anywhere; }
+.forum-connection { color: var(--muted); }
+.forum-sidebar-count { color: var(--blue); }
+
+.forum-topic-picker { display: none; align-items: center; gap: 8px; margin: 10px 0; font-size: 12px; color: var(--muted); }
+.forum-topic-picker select { min-width: 0; max-width: 100%; flex: 1; padding: 6px; border: 1px solid var(--line); border-radius: 6px; color: var(--text-soft); background: var(--panel-soft); }
+@media (max-width: 920px) { .forum-topic-picker { display: flex; } }

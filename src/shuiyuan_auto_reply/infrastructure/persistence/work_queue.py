@@ -87,7 +87,7 @@ class ForumQueue:
         try:
             rows = await (
                 await db.execute(
-                    "SELECT post_id,payload FROM forum_jobs WHERE username=? AND status='pending' ORDER BY updated,post_id",
+                    "SELECT post_id,payload FROM forum_jobs WHERE username=? AND status='pending' ORDER BY post_id",
                     (self.username,),
                 )
             ).fetchall()

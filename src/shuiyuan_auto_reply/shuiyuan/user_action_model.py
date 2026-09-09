@@ -69,6 +69,21 @@ class BaseUserActionModel:
         """
         pass
 
+    async def _prepare_action(self, action):
+        return action
+
+    async def _accept_action(self, prepared):
+        return prepared
+
+    async def _execute_action(self, prepared):
+        await self._new_action_routine(prepared)
+
+    async def _interrupt_action(self, prepared):
+        pass
+
+    async def _fail_action(self, prepared, error):
+        pass
+
     async def watch_new_action_routine(self, interval: int = 1) -> None:
         """
         A routine to watch for new actions.
@@ -90,16 +105,34 @@ class BaseUserActionModel:
         queue = ForumQueue(state_directory() / "state.sqlite3", self.username)
         await queue.initialize()
         active = set()
+        prechecks = asyncio.Semaphore(3)
+        prepare_locks = {}
+        topic_tails = {}
+        store = getattr(self, "state_store", None)
+        if store is not None:
+            await store.recover_forum_runs(self.username)
 
-        async def execute(post_id, payload):
+        async def execute(post_id, action, previous, finished, prepare_lock):
             token = _current_job.set((queue, post_id))
+            prepared = None
             try:
-                action = from_dict(UserActionDetails, json.loads(payload))
+                # Same-topic preparation is ordered, but does not wait for generation.
+                async with prepare_lock:
+                    async with prechecks:
+                        async with asyncio.timeout(config["timeout"]):
+                            prepared = await self._prepare_action(action)
+                    if prepared is not None:
+                        prepared = await self._accept_action(prepared)
+                if previous is not None:
+                    await asyncio.shield(previous)
+                if prepared is None:
+                    await queue.status(post_id, "done")
+                    return
                 async with get_scheduler().admission(
                     ("forum", self.username, action.topic_id)
                 ):
                     await queue.status(post_id, "running")
-                    await self._new_action_routine(action)
+                    await self._execute_action(prepared)
                     if await queue.state(post_id) not in {"sent", "needs_review"}:
                         await queue.status(post_id, "done")
             except asyncio.CancelledError:
@@ -113,7 +146,9 @@ class BaseUserActionModel:
                     ),
                 )
                 raise
-            except Exception:
+            except Exception as exc:
+                if prepared is not None:
+                    await self._fail_action(prepared, exc)
                 state = await queue.state(post_id)
                 if state not in {"sent", "needs_review"}:
                     await queue.status(
@@ -121,16 +156,46 @@ class BaseUserActionModel:
                     )
                 logging.exception("Forum job failed: %s", post_id)
             finally:
-                _current_job.reset(token)
-                active.discard(post_id)
+                try:
+                    if prepared is not None:
+                        await self._interrupt_action(prepared)
+                finally:
+                    finished.set_result(None)
+                    if topic_tails.get(action.topic_id) is finished:
+                        topic_tails.pop(action.topic_id, None)
+                        prepare_locks.pop(action.topic_id, None)
+                    _current_job.reset(token)
+                    active.discard(post_id)
 
         while True:
             try:
                 pending = await queue.pending()
                 for post_id, payload in pending:
                     if post_id not in active and len(active) < config["queue_limit"]:
+                        try:
+                            action = from_dict(UserActionDetails, json.loads(payload))
+                        except Exception:
+                            await queue.status(post_id, "failed")
+                            logging.exception(
+                                "Invalid persisted forum action: %s", post_id
+                            )
+                            continue
                         active.add(post_id)
-                        task = asyncio.create_task(execute(post_id, payload))
+                        previous = topic_tails.get(action.topic_id)
+                        finished = asyncio.get_running_loop().create_future()
+                        topic_tails[action.topic_id] = finished
+                        prepare_lock = prepare_locks.setdefault(
+                            action.topic_id, asyncio.Lock()
+                        )
+                        task = asyncio.create_task(
+                            execute(
+                                post_id,
+                                action,
+                                previous,
+                                finished,
+                                prepare_lock,
+                            )
+                        )
                         self._bg_tasks.add(task)
                         task.add_done_callback(self._on_background_task_done)
                 cursor = await queue.cursor()

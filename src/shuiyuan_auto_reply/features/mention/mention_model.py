@@ -6,7 +6,11 @@ import traceback
 from typing import Any, Dict, List, Optional
 
 from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegistry
-from shuiyuan_auto_reply.application.events import emit_event
+from shuiyuan_auto_reply.application.events import (
+    emit_event,
+    reset_execution_context,
+    set_execution_context,
+)
 from shuiyuan_auto_reply.application.handlers import (
     CallbackChatHandler,
     ClearHandler,
@@ -617,146 +621,201 @@ class MentionModel(BaseUserActionModel):
         )
         return self.output_formatter.format_chat(reply, self.nickname)
 
-    async def _new_action_routine(self, action: UserActionDetails) -> None:
-        """
-        A routine to handle new actions for a specific user.
-        NOTE: no exception should be raised in this method.
+    async def _prepare_action(self, action: UserActionDetails):
+        """No monitor writes until a real command has matched."""
+        post = await self.model.get_post_details(action.post_id)
+        if post.raw is None:
+            return None
+        if (
+            settings.contains_auto_reply_tag(post.raw)
+            and post.username == self.username
+        ):
+            return None
+        if re.search(rf"@{re.escape(self.username)}", post.raw, re.IGNORECASE) is None:
+            return None
+        request = ReplyRequest(
+            request_id=f"forum:{action.post_id}",
+            conversation=ConversationRef(
+                Channel.FORUM, f"topic:{post.topic_id}", self.username, self.persona
+            ),
+            actor=ActorRef(Channel.FORUM, str(post.user_id), post.username, post.name),
+            content=post.raw,
+            dispatch_mode=DispatchMode.AUTO,
+            forum_context=ForumContextRef(
+                topic_id=post.topic_id,
+                post_id=post.id,
+                post_number=post.post_number,
+                reply_to_post_number=post.reply_to_post_number,
+            ),
+        )
+        handler = await self.bot_service.match(request)
+        if handler is None:
+            return None
+        return {"request": request, "handler": handler, "observer": None}
 
-        :param action: The details of the user action (mention).
-        :return: None
-        """
-        logging.info(
-            f"==> [MentionModel] Event triggered for action_type={action.action_type} on post_id={action.post_id}"
+    async def _accept_action(self, prepared):
+        if self.state_store is not None:
+            observer = SQLiteExecutionObserver(self.state_store)
+            observer.run_id, observer.conversation_id = (
+                await self.state_store.accept_forum_run(
+                    prepared["request"], prepared["handler"].name
+                )
+            )
+            prepared["observer"] = observer
+        return prepared
+
+    async def _interrupt_action(self, prepared):
+        observer = prepared["observer"]
+        if observer is None:
+            return
+        from shuiyuan_auto_reply.infrastructure.persistence.work_queue import (
+            _current_job,
         )
 
-        if self.runtime_refresher is not None:
-            try:
-                await self.runtime_refresher()
-            except Exception:
-                logging.exception(
-                    "Failed to apply the latest forum runtime; keeping the previous runtime"
-                )
+        job = _current_job.get()
+        state = await job[0].state(job[1]) if job else None
+        status = (
+            "needs_review" if state in {"sending", "needs_review"} else "interrupted"
+        )
+        if state == "sent":
+            status = "failed" if prepared.get("generation_error") else "completed"
+        await self.state_store.transition_forum_run(
+            observer.run_id, status, f"run.{status}"
+        )
 
-        # This is the text to reply to the post
-        text: Optional[str] = None
+    async def _fail_action(self, prepared, error):
+        observer = prepared["observer"]
+        if observer is not None:
+            from shuiyuan_auto_reply.infrastructure.persistence.work_queue import (
+                _current_job,
+            )
+
+            job = _current_job.get()
+            state = await job[0].state(job[1]) if job else None
+            status = (
+                "needs_review" if state in {"sending", "needs_review"} else "failed"
+            )
+            if state == "sent" and not prepared.get("generation_error"):
+                status = "completed"
+            await self.state_store.transition_forum_run(
+                observer.run_id,
+                status,
+                f"run.{status}",
+                {
+                    "warning" if status == "completed" else "error": str(error)
+                    or type(error).__name__
+                },
+            )
+
+    async def _execute_action(self, prepared):
+        request, handler, observer = (
+            prepared["request"],
+            prepared["handler"],
+            prepared["observer"],
+        )
+        tokens = set_execution_context(
+            observer, observer.run_id if observer else None, request.actor.memory_id
+        )
+
+        async def transition(status, event, payload=None):
+            if observer:
+                await self.state_store.transition_forum_run(
+                    observer.run_id, status, event, payload, observer.usage
+                )
 
         try:
-            # First let's try to get the post details
-            post_details = await self.model.get_post_details(action.post_id)
-            post_user = User(
-                post_details.user_id,
-                post_details.username,
-                post_details.name,
-            )
-            logging.info(
-                f"==> [MentionModel] Fetched post details successfully. User={post_user.username}"
-            )
-
-            # If the member "raw" is not present, we should skip it
-            if post_details.raw is None:
-                logging.warning(
-                    f"Post {action.post_id} does not have raw content, skipping."
-                )
-                return
-
-        except Exception:
-            logging.error(
-                f"Failed to get post details for {action.post_id}, "
-                f"traceback is as follows:\n{traceback.format_exc()}"
-            )
-            raise
-
-        try:
-            # If the post is an auto-reply send by the bot, we should skip it
-            if (
-                settings.contains_auto_reply_tag(post_details.raw)
-                and post_details.username == self.username
-            ):
-                logging.info(
-                    f"==> [MentionModel] Post {action.post_id} is an auto-reply. Skipping."
-                )
-                return
-
-            # Check if the mention actually exists
-            r = re.search(rf"@{self.username}", post_details.raw, re.IGNORECASE)
-            if r is None:
-                return
-
-            request = ReplyRequest(
-                request_id=f"forum:{action.post_id}",
-                conversation=ConversationRef(
-                    Channel.FORUM,
-                    f"topic:{post_details.topic_id}",
-                    self.username,
-                    self.persona,
-                ),
-                actor=ActorRef(
-                    Channel.FORUM,
-                    str(post_user.id),
-                    post_user.username,
-                    post_user.name,
-                ),
-                content=post_details.raw,
-                dispatch_mode=DispatchMode.AUTO,
-                forum_context=ForumContextRef(
-                    topic_id=post_details.topic_id,
-                    post_id=post_details.id,
-                    post_number=post_details.post_number,
-                    reply_to_post_number=post_details.reply_to_post_number,
-                ),
-            )
+            await transition("running", "run.started", {"handler": handler.name})
+            if self.runtime_refresher is not None:
+                try:
+                    await self.runtime_refresher()
+                except Exception:
+                    logging.exception(
+                        "Failed to refresh forum runtime; keeping previous runtime"
+                    )
             if self.state_store is not None:
                 try:
-                    topic = await self.model.get_topic_details(post_details.topic_id)
+                    topic = await self.model.get_topic_details(
+                        request.forum_context.topic_id
+                    )
                     await self.state_store.update_title_for_ref(
                         request.conversation, topic.title
                     )
+                    await emit_event("context.topic_loaded", {"title": topic.title})
                 except Exception:
                     logging.exception("Failed to persist forum topic title")
+            generation_error = None
             try:
-                result = await self.bot_service.reply(request)
-            except LookupError:
-                logging.info(
-                    "==> [MentionModel] No conditions matched for post %s.",
-                    action.post_id,
-                )
-                return
-            text = result.text
-
-        except Exception:
-            # If we failed to get the post details or any other error occurred
-            logging.error(
-                f"Failed to process post {action.post_id}, "
-                f"traceback is as follows:\n{traceback.format_exc()}"
-            )
-            # We should reply to the post with an error message
-            text = self.output_formatter.make_unique(
-                "抱歉，小狼bot遇到了一个错误，暂时无法处理您的请求，请稍后再试 :crying_cat:"
-            )
-
-        finally:
-            if text is not None:
-                logging.info(
-                    f"==> [MentionModel] Replying to topic {action.topic_id} at post {action.post_number}..."
-                )
-                await self.model.reply_to_post(
-                    text,
-                    action.topic_id,
-                    action.post_number,
-                )
+                result = await self.bot_service.reply_matched(request, handler)
+                text = result.text
                 await emit_event(
-                    "forum.reply_published",
-                    {"topic_id": action.topic_id, "post_number": action.post_number},
+                    "run.generated",
+                    {"text": result.text} if handler.name == "clear" else {},
                 )
-                if self.state_store is not None:
-                    await self.state_store.append_event_for_request(
-                        f"forum:{action.post_id}",
-                        "forum.reply_published",
-                        {
-                            "topic_id": action.topic_id,
-                            "post_number": action.post_number,
-                        },
-                    )
-                logging.info(
-                    f"==> [MentionModel] Reply successfully sent to post {action.post_id}."
+            except Exception as exc:
+                generation_error = exc
+                prepared["generation_error"] = str(exc)
+                await emit_event("run.generation_failed", {"error": str(exc)})
+                logging.exception("Forum generation failed for %s", request.request_id)
+                text = self.output_formatter.make_unique(
+                    "抱歉，小狼bot遇到了一个错误，暂时无法处理您的请求，请稍后再试 :crying_cat:"
                 )
+            await transition("publishing", "forum.reply_publishing")
+            await self.model.reply_to_post(
+                text, request.forum_context.topic_id, request.forum_context.post_number
+            )
+            await emit_event(
+                "forum.reply_published",
+                {
+                    "topic_id": request.forum_context.topic_id,
+                    "post_number": request.forum_context.post_number,
+                },
+            )
+            if generation_error:
+                await transition(
+                    "failed",
+                    "run.failed",
+                    {"error": str(generation_error), "error_reply_published": True},
+                )
+            else:
+                await transition("completed", "run.completed")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            from shuiyuan_auto_reply.infrastructure.persistence.work_queue import (
+                _current_job,
+            )
+
+            job = _current_job.get()
+            state = await job[0].state(job[1]) if job else None
+            status = (
+                "needs_review" if state in {"sending", "needs_review"} else "failed"
+            )
+            if state == "sent" and not prepared.get("generation_error"):
+                status = "completed"
+            await transition(
+                status,
+                f"run.{status}",
+                {"warning" if status == "completed" else "error": str(exc)},
+            )
+            raise
+        finally:
+            reset_execution_context(tokens)
+
+    async def _new_action_routine(self, action: UserActionDetails) -> None:
+        # Direct callers use the same lifecycle as the durable worker.
+        from shuiyuan_auto_reply.application.scheduling import get_scheduler
+
+        prepared = await self._prepare_action(action)
+        if prepared is None:
+            return
+        prepared = await self._accept_action(prepared)
+        try:
+            async with get_scheduler().admission(
+                ("forum", self.username, action.topic_id)
+            ):
+                await self._execute_action(prepared)
+        except Exception as exc:
+            await self._fail_action(prepared, exc)
+            raise
+        finally:
+            await self._interrupt_action(prepared)

@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
 import { api, type Attachment, type Conversation, type ConversationDetail, type Message, type RunEvent } from '../api'
 
+let selectionVersion = 0
+let loadVersion = 0
+
 function revokeLocalPreviews(messages: Message[] | undefined) {
   for (const message of messages || []) {
     for (const attachment of message.attachments) {
@@ -13,26 +16,34 @@ function revokeLocalPreviews(messages: Message[] | undefined) {
 
 export const useConversations = defineStore('conversations', {
   state: () => ({
-    channel: 'web' as 'web' | 'forum', conversations: [] as Conversation[],
+    channel: (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('shuiyuan.monitor.channel') === 'forum' ? 'forum' : 'web') as 'web' | 'forum', conversations: [] as Conversation[],
     selected: null as ConversationDetail | null, loading: false, running: false,
     error: '', liveEvents: [] as RunEvent[], search: '', hasMore: false, lastFailedMessage: '',
     lastFailedFiles: [] as File[],
   }),
   actions: {
     async load(more = false) {
+      const version = ++loadVersion
+      const channel = this.channel
       this.loading = true; this.error = ''
       try {
         const offset = more ? this.conversations.length : 0
         const page = await api<Conversation[]>(`/api/conversations?channel=${this.channel}&search=${encodeURIComponent(this.search)}&limit=50&offset=${offset}`)
+        if (version !== loadVersion || channel !== this.channel) return
         this.conversations = more ? [...this.conversations, ...page] : page
         this.hasMore = page.length === 50
       }
-      catch (error) { this.error = String(error) } finally { this.loading = false }
+      catch (error) { if (version === loadVersion && channel === this.channel) this.error = String(error) }
+      finally { if (version === loadVersion) this.loading = false }
     },
-    async select(id: string) {
+    async select(id: string, background = false) {
+      const version = background ? selectionVersion : ++selectionVersion
+      const channel = this.channel
       const detail = await api<ConversationDetail>(`/api/conversations/${id}`)
+      if (version !== selectionVersion || channel !== this.channel || (background && this.selected?.conversation.id !== id)) return
       revokeLocalPreviews(this.selected?.messages)
       this.selected = detail; this.liveEvents = []
+      if (!background) sessionStorage.setItem('shuiyuan.monitor.selected', id)
     },
     async create() {
       const item = await api<Conversation>('/api/conversations', { method: 'POST', body: '{}' })

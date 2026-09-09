@@ -246,6 +246,42 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="本地状态库未启用")
         return store
 
+    @api.get("/api/forum/monitor")
+    async def forum_monitor(request: Request):
+        return await _store(request).forum_monitor()
+
+    @api.get("/api/forum/events/stream")
+    async def forum_events(request: Request, after: int = 0):
+        try:
+            cursor = max(0, after, int(request.headers.get("last-event-id", "0")))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="无效的事件游标")
+        store = _store(request)
+
+        async def stream():
+            nonlocal cursor
+            heartbeat = asyncio.get_running_loop().time()
+            while not await request.is_disconnected():
+                batch = await store.forum_events_after(cursor)
+                for event in batch:
+                    cursor = event["event_id"]
+                    yield f"id: {cursor}\nevent: forum.event\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                now = asyncio.get_running_loop().time()
+                if now - heartbeat >= 15:
+                    yield ": heartbeat\n\n"
+                    heartbeat = now
+                if len(batch) < 200:
+                    await asyncio.sleep(0.5)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     @api.get("/api/conversations")
     async def list_conversations(
         request: Request,
@@ -257,14 +293,28 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         records = await _store(request).list_conversations(
             channel=channel, search=search, limit=limit, offset=offset
         )
-        return [
-            (
-                record.__dict__
-                if hasattr(record, "__dict__")
-                else {
-                    name: getattr(record, name) for name in record.__dataclass_fields__
+        counts = {}
+        if channel in {None, "forum"}:
+            monitor = await _store(request).forum_monitor()
+            counts = {
+                item["id"]: {
+                    "queued_count": item["queued_count"],
+                    "running_count": item["running_count"],
                 }
-            )
+                for item in monitor["conversations"]
+            }
+        return [
+            {
+                **(
+                    record.__dict__
+                    if hasattr(record, "__dict__")
+                    else {
+                        name: getattr(record, name)
+                        for name in record.__dataclass_fields__
+                    }
+                ),
+                **counts.get(record.id, {}),
+            }
             for record in records
         ]
 
@@ -341,6 +391,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 name: getattr(record, name) for name in record.__dataclass_fields__
             },
             "messages": serialized_messages,
+            "runs": await store.list_forum_runs(conversation_id),
             "events": [
                 {
                     "id": event.id,

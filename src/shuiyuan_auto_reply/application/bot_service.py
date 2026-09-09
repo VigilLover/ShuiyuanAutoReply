@@ -2,7 +2,7 @@
 
 from shuiyuan_auto_reply.domain import DispatchMode, ReplyRequest, ReplyResult
 
-from .dispatch import BotContext, HandlerRegistry
+from .dispatch import BotContext, HandlerRegistry, MessageHandler
 from .events import reset_execution_context, set_execution_context
 from .ports.session import SessionRepository
 
@@ -26,6 +26,28 @@ class BotService:
 
         async with get_scheduler().admission(request.conversation):
             return await self._reply(request)
+
+    async def match(self, request: ReplyRequest) -> MessageHandler | None:
+        """Select a handler without loading or creating conversation history."""
+        if request.dispatch_mode is DispatchMode.CHAT_ONLY:
+            return self._handlers.by_name(self._chat_handler_name)
+        context = BotContext(request=request, history=())
+        for handler in self._handlers.handlers:
+            if await handler.matches(context):
+                return handler
+        return None
+
+    async def reply_matched(
+        self, request: ReplyRequest, handler: MessageHandler
+    ) -> ReplyResult:
+        """Execute an admitted forum request under its caller-owned observer."""
+        history = tuple(await self._sessions.load(request.conversation))
+        result = await handler.handle(BotContext(request=request, history=history))
+        if handler.name == "clear":
+            await self._sessions.clear(request.conversation)
+        else:
+            await self._sessions.append(request.conversation, request, result)
+        return result
 
     async def _reply(self, request: ReplyRequest) -> ReplyResult:
         if not request.request_id or (
