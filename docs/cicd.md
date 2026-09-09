@@ -42,7 +42,7 @@ Release 在构建机生成三个镜像：`ghcr.io/vigillover/shuiyuan-bot`、`sh
 
 schema_id 保守覆盖持久化、迁移、检索、数据库代码和依赖声明/锁文件；格式或依赖修改也可能要求兼容测试。该机制不能代替迁移审阅，新增持久化实现时必须扩展 identity 覆盖范围。当前初始化仍使用项目已有迁移入口，没有自动生成数据库降级脚本。
 
-三个镜像分别使用缓存。数据库/MCP 版本变化不是普通应用发布的一部分；相同构建输入应复用既有缓存并核对最终 digest。若重建产生了新的 PostgreSQL digest，部署端会拒绝，必须保持发布清单引用既有数据库 digest，或走维护流程。
+三个镜像分别使用缓存。数据库/MCP 版本变化不是普通应用发布的一部分；相同构建输入复用既有镜像：release.json 记录每个镜像构建输入的 `image_inputs` 指纹，`publish.py` 比对上一版指纹，未变时直接沿用其 digest、不再重复推送。部署端 `transition()` 同样按 `image_inputs`（而非 digest）判断数据库镜像是否真变——Docker 构建不可复现，重建未变的镜像也会产生新 digest，按 digest 判断会误拦；只有指纹确实不同时才要求维护流程。v1.0.2 及更早的 manifest 没有该字段，部署端会记一条 WARNING 并跳过该检查，待新旧两侧都带指纹后自动转为严格。
 
 部署包包含 release.json、Compose、脚本、配置示例、文档、测试摘要及 SHA256SUMS；不含真实配置、Cookie、Key、数据或模型权重。GitHub Release 在所有上传成功后才从 draft 转为正式。失败留下的 draft 由维护者检查后清理，不覆盖已发布版本。
 

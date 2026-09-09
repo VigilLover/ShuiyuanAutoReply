@@ -16,8 +16,15 @@ import release
 import remote
 
 
-def manifest(version="v1.0.0", schema="a", migration="none"):
-    return dict(
+def identities(postgres="a" * 64):
+    return {
+        name: postgres if name == "postgres" else "e" * 64
+        for name in ("bot", "postgres", "mcp")
+    }
+
+
+def manifest(version="v1.0.0", schema="a", migration="none", inputs=None):
+    description = dict(
         format=1,
         config_version=1,
         version=version,
@@ -31,6 +38,9 @@ def manifest(version="v1.0.0", schema="a", migration="none"):
         },
         files={},
     )
+    if inputs is not None:
+        description["image_inputs"] = inputs
+    return description
 
 
 def test_manifest_and_transition_guards():
@@ -44,12 +54,56 @@ def test_manifest_and_transition_guards():
     new["compatibility"] = {old["version"]: old["images"]["bot"]}
     remote.transition(old, new)
     remote.transition(new, old, rollback=True)
-    new["images"]["postgres"] = new["images"]["postgres"].replace("b" * 64, "d" * 64)
-    with pytest.raises(ValueError, match="Database"):
-        remote.transition(old, new)
     for invalid in ("latest", "v1.2.3;id", "../v1.2.3", "v01.2.3"):
         with pytest.raises(ValueError):
             release.validate(manifest(invalid))
+    release.validate(manifest(inputs=identities()))
+
+
+def test_database_guard_compares_build_inputs_not_digests():
+    shared = identities()
+    old, new = manifest(inputs=shared), manifest("v1.0.1", inputs=shared)
+    # Rebuilding an unchanged image yields a new digest; that must not block.
+    new["images"]["postgres"] = new["images"]["postgres"].replace("b" * 64, "d" * 64)
+    remote.transition(old, new)
+    new["image_inputs"] = identities(postgres="f" * 64)
+    with pytest.raises(ValueError, match="Database"):
+        remote.transition(old, new)
+
+
+def test_database_guard_warns_and_allows_legacy_manifests(caplog):
+    old, new = manifest(), manifest("v1.0.1")
+    new["images"]["postgres"] = new["images"]["postgres"].replace("b" * 64, "d" * 64)
+    remote.transition(old, new)
+    assert "lack image input identity" in caplog.text
+
+
+def test_image_inputs_track_content_and_ignore_noise(tmp_path):
+    for directory in (
+        "deploy/postgres",
+        "deploy/vendor/pgvector/src",
+        "deploy/vendor/pgvector/.git",
+        "src",
+        "web",
+    ):
+        (tmp_path / directory).mkdir(parents=True)
+    for name in ("pyproject.toml", "uv.lock", "README.md"):
+        (tmp_path / name).write_text(name)
+    (tmp_path / "deploy/Dockerfile").write_text("from scratch")
+    (tmp_path / "deploy/postgres/Dockerfile").write_text("from scratch")
+    (tmp_path / "deploy/postgres/init.sh").write_text("select 1")
+    (tmp_path / "deploy/vendor/pgvector/src/vector.c").write_text("int main;")
+    (tmp_path / "deploy/vendor/pgvector/.git/HEAD").write_text("ref")
+    (tmp_path / "src/app.py").write_text("pass")
+    (tmp_path / "web/index.html").write_text("<html>")
+    original = release.image_inputs(tmp_path)
+    assert release.image_inputs(tmp_path) == original
+    (tmp_path / "deploy/vendor/pgvector/.git/HEAD").write_text("moved")
+    assert release.image_inputs(tmp_path) == original
+    (tmp_path / "deploy/postgres/init.sh").write_text("select 2")
+    changed = release.image_inputs(tmp_path)
+    assert changed["postgres"] != original["postgres"]
+    assert changed["bot"] == original["bot"]
 
 
 def test_receive_rejects_traversal_and_wrong_checksum(tmp_path):
