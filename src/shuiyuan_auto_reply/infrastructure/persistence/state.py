@@ -460,20 +460,7 @@ class SQLiteStateStore:
         db = await self._connect()
         try:
             rows = await (await db.execute(sql, params)).fetchall()
-            return [
-                MessageRecord(
-                    id=row["id"],
-                    conversation_id=row["conversation_id"],
-                    epoch=row["epoch"],
-                    role=row["role"],
-                    content=row["content"],
-                    status=row["status"],
-                    run_id=row["run_id"],
-                    attachments=tuple(json.loads(row["attachments_json"])),
-                    created_at=row["created_at"],
-                )
-                for row in rows
-            ]
+            return [self._message(row) for row in rows]
         finally:
             await db.close()
 
@@ -595,11 +582,18 @@ class SQLiteStateStore:
         finally:
             await db.close()
 
-    async def _monitor_runs(self, db, conversation_id=None, active_only=False):
+    async def _monitor_runs(
+        self, db, conversation_id=None, active_only=False, ids=None
+    ):
         where, params = "c.channel='forum'", []
         if conversation_id:
             where += " AND r.conversation_id=?"
             params.append(conversation_id)
+        if ids is not None:
+            if not ids:
+                return []
+            where += f" AND r.id IN ({','.join('?' * len(ids))})"
+            params.extend(ids)
         if active_only:
             where += " AND r.status IN ('queued','running','publishing')"
         rows = await (
@@ -708,6 +702,144 @@ class SQLiteStateStore:
                 row["id"], status, f"run.{status}", {"recovered": True}
             )
 
+    @staticmethod
+    def _message(row) -> MessageRecord:
+        return MessageRecord(
+            id=row["id"],
+            conversation_id=row["conversation_id"],
+            epoch=row["epoch"],
+            role=row["role"],
+            content=row["content"],
+            status=row["status"],
+            run_id=row["run_id"],
+            attachments=tuple(json.loads(row["attachments_json"])),
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _event(row) -> RunEventRecord:
+        return RunEventRecord(
+            row["id"],
+            row["run_id"],
+            row["event_type"],
+            json.loads(row["payload_json"]),
+            row["created_at"],
+        )
+
+    async def _messages_by_ids(self, db, ids) -> list[MessageRecord]:
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        rows = await (
+            await db.execute(
+                f"SELECT * FROM messages WHERE id IN ({placeholders})", list(ids)
+            )
+        ).fetchall()
+        by_id = {row["id"]: row for row in rows}
+        return [self._message(by_id[item]) for item in ids if item in by_id]
+
+    async def _events_for_runs(self, db, run_ids, *, limit: int = 200):
+        """Newest events of the given runs, oldest-first, plus older ones exist."""
+        if not run_ids:
+            return [], False
+        placeholders = ",".join("?" * len(run_ids))
+        rows = await (
+            await db.execute(
+                f"""SELECT e.* FROM run_events e JOIN runs r ON r.id=e.run_id
+                WHERE e.run_id IN ({placeholders}) ORDER BY e.id DESC LIMIT ?""",
+                [*run_ids, limit + 1],
+            )
+        ).fetchall()
+        has_more = len(rows) > limit
+        window = list(rows[:limit])
+        window.reverse()
+        return [self._event(row) for row in window], has_more
+
+    async def conversation_timeline_page(
+        self, conversation_id: str, *, limit: int = 30, before: str | None = None
+    ) -> dict[str, Any]:
+        """Newest-first window of runs and standalone messages, with their events.
+
+        A run owns its messages once it carries accepted metadata; runs without it
+        stay standalone messages so historical topics keep their layout.
+        """
+        limit = max(1, min(int(limit), 200))
+        db = await self._connect()
+        try:
+            params: list[Any] = [conversation_id, conversation_id]
+            cursor = ""
+            if before:
+                stamp, _, identifier = before.partition("|")
+                cursor = "WHERE (t, id) < (?, ?)"
+                params.extend([stamp, identifier])
+            params.append(limit + 1)
+            rows = await (
+                await db.execute(
+                    f"""WITH managed AS (
+                    SELECT e.run_id AS run_id FROM run_events e
+                    JOIN runs r ON r.id=e.run_id
+                    WHERE r.conversation_id=? AND e.event_type='run.accepted'
+                ), entries AS (
+                    SELECT r.started_at AS t, r.id AS id, 'run' AS kind
+                    FROM runs r JOIN managed m ON m.run_id=r.id
+                    UNION ALL
+                    SELECT m.created_at AS t, m.id AS id, 'msg' AS kind FROM messages m
+                    WHERE m.conversation_id=?
+                      AND (m.run_id IS NULL OR m.run_id NOT IN (SELECT run_id FROM managed))
+                )
+                SELECT t, id, kind FROM entries {cursor}
+                ORDER BY t DESC, id DESC LIMIT ?""",
+                    params,
+                )
+            ).fetchall()
+            has_more = len(rows) > limit
+            window = rows[:limit]
+            message_ids = [row["id"] for row in window if row["kind"] == "msg"]
+            run_ids = [row["id"] for row in window if row["kind"] == "run"]
+            events, events_has_more = await self._events_for_runs(db, run_ids)
+            return {
+                "messages": await self._messages_by_ids(db, message_ids),
+                "runs": await self._monitor_runs(db, ids=run_ids),
+                "events": events,
+                "has_more": has_more,
+                "next_cursor": (
+                    f"{window[-1]['t']}|{window[-1]['id']}"
+                    if has_more and window
+                    else None
+                ),
+                "events_has_more": events_has_more,
+            }
+        finally:
+            await db.close()
+
+    async def conversation_events_page(
+        self, conversation_id: str, *, limit: int = 200, before: int | None = None
+    ) -> dict[str, Any]:
+        """Newest-first event page for the trace view."""
+        limit = max(1, min(int(limit), 500))
+        db = await self._connect()
+        try:
+            sql = """SELECT e.* FROM run_events e JOIN runs r ON r.id=e.run_id
+                WHERE r.conversation_id=?"""
+            params: list[Any] = [conversation_id]
+            if before is not None:
+                sql += " AND e.id < ?"
+                params.append(int(before))
+            sql += " ORDER BY e.id DESC LIMIT ?"
+            params.append(limit + 1)
+            rows = await (await db.execute(sql, params)).fetchall()
+            has_more = len(rows) > limit
+            window = list(rows[:limit])
+            next_cursor = window[-1]["id"] if has_more and window else None
+            window.reverse()
+            return {
+                "events": [self._event(row) for row in window],
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            }
+        finally:
+            await db.close()
+
     async def create_run(
         self,
         request_id: str,
@@ -801,16 +933,7 @@ class SQLiteStateStore:
                     (conversation_id,),
                 )
             ).fetchall()
-            return [
-                RunEventRecord(
-                    row["id"],
-                    row["run_id"],
-                    row["event_type"],
-                    json.loads(row["payload_json"]),
-                    row["created_at"],
-                )
-                for row in rows
-            ]
+            return [self._event(row) for row in rows]
         finally:
             await db.close()
 
@@ -824,16 +947,7 @@ class SQLiteStateStore:
                     (request_id,),
                 )
             ).fetchall()
-            return [
-                RunEventRecord(
-                    row["id"],
-                    row["run_id"],
-                    row["event_type"],
-                    json.loads(row["payload_json"]),
-                    row["created_at"],
-                )
-                for row in rows
-            ]
+            return [self._event(row) for row in rows]
         finally:
             await db.close()
 

@@ -542,3 +542,82 @@ def test_snapshot_cursor_and_counts_share_one_read_view(tmp_path):
         assert len(await store.forum_events_after(snapshot["cursor"])) == 1
 
     asyncio.run(run())
+
+
+def test_timeline_pagination_windows_runs_and_events(tmp_path):
+    async def run():
+        model, store = await setup(tmp_path)
+        for post_id in (1, 2, 3):
+            prepared = await model._accept_action(
+                await model._prepare_action(action(post_id))
+            )
+            await model._execute_action(prepared)
+            cid = prepared["observer"].conversation_id
+
+        first = await store.conversation_timeline_page(cid, limit=2)
+        assert len(first["runs"]) == 2
+        # Managed runs own their messages, so nothing renders standalone.
+        assert first["messages"] == []
+        assert first["has_more"] is True and first["next_cursor"]
+        assert first["events"] and first["events_has_more"] is False
+
+        second = await store.conversation_timeline_page(
+            cid, limit=2, before=first["next_cursor"]
+        )
+        assert len(second["runs"]) == 1 and second["has_more"] is False
+        assert second["next_cursor"] is None
+        seen = {run["id"] for run in first["runs"]} | {
+            run["id"] for run in second["runs"]
+        }
+        assert len(seen) == 3
+
+        events = await store.conversation_events_page(cid, limit=2)
+        assert len(events["events"]) == 2 and events["has_more"] is True
+        older = await store.conversation_events_page(
+            cid, limit=2, before=events["next_cursor"]
+        )
+        assert older["events"]
+        assert {e.id for e in events["events"]} & {
+            e.id for e in older["events"]
+        } == set()
+
+    asyncio.run(run())
+
+
+def test_conversation_detail_window_keeps_unlimited_default(tmp_path):
+    async def run():
+        from shuiyuan_auto_reply.interfaces.api.app import create_app
+
+        model, store = await setup(tmp_path)
+        prepared = await model._accept_action(await model._prepare_action(action()))
+        await model._execute_action(prepared)
+        cid = prepared["observer"].conversation_id
+        app = create_app()
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(container=SimpleNamespace(state_store=store))
+            ),
+        )
+
+        def endpoint(path):
+            return next(
+                route.endpoint
+                for route in app.routes
+                if getattr(route, "path", "") == path
+                and "GET" in getattr(route, "methods", set())
+            )
+
+        detail = endpoint("/api/conversations/{conversation_id}")
+        windowed = await detail(cid, request, limit=1, before=None)
+        assert len(windowed["runs"]) == 1 and windowed["has_more"] is False
+        assert windowed["messages"] == []
+        full = await detail(cid, request, limit=None, before=None)
+        assert full["has_more"] is False and full["next_cursor"] is None
+        assert len(full["messages"]) == 2
+
+        page = await endpoint("/api/conversations/{conversation_id}/events")(
+            cid, request, limit=1, before=None
+        )
+        assert len(page["events"]) == 1 and page["has_more"] is True
+
+    asyncio.run(run())
