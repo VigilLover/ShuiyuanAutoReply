@@ -296,6 +296,28 @@ function resizeComposer() {
 function scrollToBottom() {
   if (messagesElement.value) messagesElement.value.scrollTop = messagesElement.value.scrollHeight
 }
+
+let olderTimer: number | undefined
+
+// Reaching the top pulls one older window and keeps the visible content in place.
+async function loadOlder() {
+  const el = messagesElement.value
+  if (!el || store.channel !== 'forum' || !store.selected?.has_more || store.loadingOlder) return
+  if (el.scrollTop > 200) return
+  const height = el.scrollHeight
+  await store.loadOlder()
+  await nextTick()
+  const next = messagesElement.value
+  if (next) next.scrollTop += next.scrollHeight - height
+}
+
+function onMessagesScroll() {
+  if (olderTimer) return
+  olderTimer = window.setTimeout(() => {
+    olderTimer = undefined
+    void loadOlder()
+  }, 80)
+}
 </script>
 
 <template>
@@ -389,8 +411,9 @@ function scrollToBottom() {
         </div>
       </header>
 
-      <div v-if="activeTab === 'chat'" ref="messagesElement" class="harness-messages">
+      <div v-if="activeTab === 'chat'" ref="messagesElement" class="harness-messages" @scroll.passive="onMessagesScroll">
         <div class="message-stream">
+          <p v-if="store.channel === 'forum' && store.loadingOlder" class="forum-connection" role="status">正在加载更早的记录…</p>
           <p v-if="store.channel === 'forum' && forum.connection" class="forum-connection" role="status">{{ forum.connection }}</p>
           <ForumConversation v-if="store.channel === 'forum'" :runs="forumRuns" :messages="store.selected.messages" :events="selectedEvents" @preview="lightboxUrl = $event" />
           <template v-else>
@@ -435,6 +458,7 @@ function scrollToBottom() {
           <span>执行事件</span><small>{{ selectedEvents.length }} records</small>
         </div>
         <div v-if="selectedEvents.length" class="trace-table">
+          <button v-if="store.selected?.events_has_more" class="load-more" @click="store.loadOlderEvents()">加载更早的事件</button>
           <div v-for="event in selectedEvents" :key="event.id" class="trace-table-row">
             <time>{{ new Date(event.created_at).toLocaleTimeString() }}</time>
             <span class="event-kind"><small v-if="store.channel === 'forum'">#{{ runsById[event.run_id]?.request.post_number || '历史' }} · </small>{{ event.type }}</span>
