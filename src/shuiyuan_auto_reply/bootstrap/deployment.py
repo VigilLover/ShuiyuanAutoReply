@@ -53,7 +53,7 @@ DEFAULTS = {
         "max_image_bytes": 20971520,
         "max_turn_bytes": 41943040,
         "max_images": 20,
-        "max_pixels": 4000000,
+        "max_pixels": 32000000,
         "max_long_edge": 2048,
         "quota_bytes": 3221225472,
         "retention_days": 30,
