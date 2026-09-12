@@ -39,3 +39,24 @@ test('legacy messages remain visible; saved and live events are deduplicated', (
   const saved: RunEvent = { id: 1, run_id: 'a', type: 'tool.started', created_at: '', payload: {} }
   assert.equal(runEvents([saved], [saved, { ...saved, id: 2, run_id: 'b' }], 'a').length, 1)
 })
+
+test('paged replies and inline images stay inside their own forum runs', () => {
+  const runs: Record<string, ForumRun> = {}, events: Record<string, RunEvent[]> = {}
+  applyForumEvent(runs, events, event(1, 'a', 'topic1', 'run.accepted'))
+  applyForumEvent(runs, events, event(2, 'b', 'topic1', 'run.accepted'))
+  const messages: Message[] = ['a', 'b'].flatMap(runId => ['user', 'assistant'].map(role => ({
+    id: `${runId}-${role}`, role, run_id: runId, status: 'completed', epoch: 0,
+    created_at: '2026-09-08T12:01:00Z',
+    content: role === 'assistant' ? `之前\n\n![图片](/api/artifacts/${runId})\n\n之后` : '指令',
+    attachments: role === 'assistant' ? [{ artifact_id: runId, url: `/api/artifacts/${runId}`, mime_type: 'image/png', source_kind: 'generated' as const }] : [],
+  })))
+  const timeline = forumTimeline(Object.values(runs), messages)
+  assert.equal(timeline.length, 2)
+  for (const entry of timeline) {
+    assert.equal(entry.messages.length, 2)
+    assert.ok(entry.messages.every(message => message.run_id === entry.run?.id))
+    assert.equal(entry.messages[1].attachments[0].artifact_id, entry.run?.id)
+    assert.match(entry.messages[1].content, /之前\n\n!\[图片\].*\n\n之后/)
+  }
+  assert.deepEqual(forumTimeline(Object.values(runs), messages), timeline)
+})

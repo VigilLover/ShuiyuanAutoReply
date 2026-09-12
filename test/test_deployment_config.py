@@ -1,3 +1,6 @@
+import tomllib
+from pathlib import Path
+
 import pytest
 
 from shuiyuan_auto_reply.bootstrap import deployment
@@ -35,3 +38,13 @@ def test_secret_redaction(tmp_path):
 def test_remote_requires_file():
     with pytest.raises(ValueError):
         deployment.load_deployment(profile="remote")
+
+
+def test_default_and_example_media_limits_match():
+    example = Path(__file__).resolve().parents[1] / "config/deployment.example.toml"
+    with example.open("rb") as source:
+        media = tomllib.load(source)["common"]["media"]
+    defaults = deployment.load_deployment().section("media")
+    assert defaults["max_pixels"] == media["max_pixels"] == 32000000
+    assert defaults["max_long_edge"] == media["max_long_edge"] == 2048
+    assert defaults["max_image_bytes"] == media["max_image_bytes"] == 20971520

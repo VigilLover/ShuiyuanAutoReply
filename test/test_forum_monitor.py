@@ -556,8 +556,16 @@ def test_timeline_pagination_windows_runs_and_events(tmp_path):
 
         first = await store.conversation_timeline_page(cid, limit=2)
         assert len(first["runs"]) == 2
-        # Managed runs own their messages, so nothing renders standalone.
-        assert first["messages"] == []
+        # Each selected run carries its complete pair, rendered inside its card.
+        assert len(first["messages"]) == 4
+        for item in first["runs"]:
+            assert [m.role for m in first["messages"] if m.run_id == item["id"]] == [
+                "user",
+                "assistant",
+            ]
+        assert {m.run_id for m in first["messages"]} == {
+            item["id"] for item in first["runs"]
+        }
         assert first["has_more"] is True and first["next_cursor"]
         # The trace view pages the whole conversation, not just this window.
         assert first["events"] and first["events_has_more"] is True
@@ -566,6 +574,10 @@ def test_timeline_pagination_windows_runs_and_events(tmp_path):
             cid, limit=2, before=first["next_cursor"]
         )
         assert len(second["runs"]) == 1 and second["has_more"] is False
+        assert [m.role for m in second["messages"]] == ["user", "assistant"]
+        assert {m.id for m in first["messages"]}.isdisjoint(
+            m.id for m in second["messages"]
+        )
         assert second["next_cursor"] is None
         seen = {run["id"] for run in first["runs"]} | {
             run["id"] for run in second["runs"]
@@ -618,14 +630,41 @@ def test_conversation_detail_window_keeps_unlimited_default(tmp_path):
         detail = endpoint("/api/conversations/{conversation_id}")
         windowed = await detail(cid, request, limit=1, before=None)
         assert len(windowed["runs"]) == 1 and windowed["has_more"] is False
-        assert windowed["messages"] == []
+        assert [m["role"] for m in windowed["messages"]] == ["user", "assistant"]
         full = await detail(cid, request, limit=None, before=None)
         assert full["has_more"] is False and full["next_cursor"] is None
         assert len(full["messages"]) == 2
+        assert windowed["messages"] == full["messages"]
 
         page = await endpoint("/api/conversations/{conversation_id}/events")(
             cid, request, limit=1, before=None
         )
         assert len(page["events"]) == 1 and page["has_more"] is True
+
+    asyncio.run(run())
+
+
+def test_timeline_messages_are_scoped_and_refresh_without_duplicates(tmp_path):
+    async def run():
+        from shuiyuan_auto_reply.domain import Channel, ConversationRef
+
+        model, store = await setup(tmp_path)
+        prepared = await model._accept_action(await model._prepare_action(action()))
+        cid = prepared["observer"].conversation_id
+        run_id = prepared["observer"].run_id
+        assert (await store.conversation_timeline_page(cid, limit=1))["messages"] == []
+        await model._execute_action(prepared)
+        other = await store.ensure_conversation(
+            ConversationRef(Channel.FORUM, "topic:other", "bot", "wolf_lumine")
+        )
+        await store.append_message(other.id, "assistant", "other topic", run_id=run_id)
+        await store.append_message(cid, "system", "standalone")
+        page = await store.conversation_timeline_page(cid, limit=2)
+        assert [m.role for m in page["messages"]] == ["user", "assistant", "system"]
+        assert all(m.conversation_id == cid for m in page["messages"])
+        assert len({m.id for m in page["messages"]}) == 3
+        refreshed = await store.conversation_timeline_page(cid, limit=2)
+        assert refreshed["messages"] == page["messages"]
+        assert not page["has_more"]
 
     asyncio.run(run())

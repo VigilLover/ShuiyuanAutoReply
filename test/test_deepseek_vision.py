@@ -429,11 +429,19 @@ class VisionUploadApiTests(unittest.TestCase):
             asyncio.run(
                 store.set_forum_short_path("forum-image", "upload://forum-image.png")
             )
+            run_id = asyncio.run(store.create_run("forum-image-request", forum.id))
+            asyncio.run(
+                store.append_event(run_id, "run.accepted", {"content": "画一张图片"})
+            )
+            asyncio.run(
+                store.append_message(forum.id, "user", "画一张图片", run_id=run_id)
+            )
             asyncio.run(
                 store.append_message(
                     forum.id,
                     "assistant",
                     "之前\n\n![img](upload://forum-image.png)\n\n之后",
+                    run_id=run_id,
                     attachments=("forum-image",),
                 )
             )
@@ -449,8 +457,11 @@ class VisionUploadApiTests(unittest.TestCase):
                 return container
 
             with TestClient(create_app(factory)) as client:
-                detail = client.get(f"/api/conversations/{forum.id}").json()
-                message = detail["messages"][0]
+                detail = client.get(f"/api/conversations/{forum.id}?limit=1").json()
+                self.assertEqual(len(detail["runs"]), 1)
+                self.assertEqual(len(detail["messages"]), 2)
+                message = detail["messages"][1]
+                self.assertEqual(message["run_id"], run_id)
                 self.assertEqual(
                     message["content"],
                     "之前\n\n![img](/api/artifacts/forum-image)\n\n之后",
@@ -460,6 +471,9 @@ class VisionUploadApiTests(unittest.TestCase):
                     "/api/artifacts/forum-image",
                 )
                 self.assertEqual(message["attachments"][0]["source_kind"], "web_search")
+                image = client.get(message["attachments"][0]["url"])
+                self.assertEqual(image.status_code, 200)
+                self.assertEqual(image.content, png_bytes())
 
     def test_upload_count_and_actual_image_validation(self):
         with (

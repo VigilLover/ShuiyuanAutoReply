@@ -726,17 +726,26 @@ class SQLiteStateStore:
             row["created_at"],
         )
 
-    async def _messages_by_ids(self, db, ids) -> list[MessageRecord]:
-        if not ids:
+    async def _timeline_messages(
+        self, db, conversation_id, message_ids, run_ids
+    ) -> list[MessageRecord]:
+        conditions = []
+        params = [conversation_id]
+        for column, ids in (("id", message_ids), ("run_id", run_ids)):
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                conditions.append(f"{column} IN ({placeholders})")
+                params.extend(ids)
+        if not conditions:
             return []
-        placeholders = ",".join("?" * len(ids))
         rows = await (
             await db.execute(
-                f"SELECT * FROM messages WHERE id IN ({placeholders})", list(ids)
+                f"""SELECT * FROM messages WHERE conversation_id=?
+                AND ({' OR '.join(conditions)}) ORDER BY created_at, id""",
+                params,
             )
         ).fetchall()
-        by_id = {row["id"]: row for row in rows}
-        return [self._message(by_id[item]) for item in ids if item in by_id]
+        return [self._message(row) for row in rows]
 
     async def _events_for_runs(self, db, run_ids, *, limit: int = 200):
         """Newest events of the given runs, oldest-first, plus older ones exist."""
@@ -807,7 +816,9 @@ class SQLiteStateStore:
                 ).fetchone()
             )["n"]
             return {
-                "messages": await self._messages_by_ids(db, message_ids),
+                "messages": await self._timeline_messages(
+                    db, conversation_id, message_ids, run_ids
+                ),
                 "runs": await self._monitor_runs(db, ids=run_ids),
                 "events": events,
                 "has_more": has_more,
