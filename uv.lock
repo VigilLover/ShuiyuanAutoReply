@@ -3327,6 +3327,7 @@ dependencies = [
     { name = "langgraph-checkpoint-postgres" },
     { name = "langgraph-prebuilt" },
     { name = "langmem" },
+    { name = "markdownify" },
     { name = "numpy" },
     { name = "openai" },
     { name = "pandas" },
@@ -3342,7 +3343,6 @@ dependencies = [
 dev = [
     { name = "black" },
     { name = "isort" },
-    { name = "markdownify" },
 ]
 local-embedding = [
     { name = "sentence-transformers" },
@@ -3377,7 +3377,7 @@ requires-dist = [
     { name = "langgraph-checkpoint-postgres" },
     { name = "langgraph-prebuilt", specifier = ">=1.1,<1.2" },
     { name = "langmem" },
-    { name = "markdownify", marker = "extra == 'dev'", specifier = "==1.2.0" },
+    { name = "markdownify", specifier = "==1.2.0" },
     { name = "neomodel", marker = "extra == 'neo4j'" },
     { name = "numpy" },
     { name = "openai", specifier = ">=3.3.1,<4" },

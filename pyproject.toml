@@ -26,6 +26,7 @@ dependencies = [
     "langgraph-checkpoint-postgres",
     "langmem",
     "numpy",
+    "markdownify==1.2.0",
     "openai>=3.3.1,<4",
     "pandas",
     "pillow",
@@ -39,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["black", "isort", "markdownify==1.2.0"]
+dev = ["black", "isort"]
 local-embedding = ["sentence-transformers"]
 neo4j = ["neomodel"]
 server = ["fastapi[all]"]

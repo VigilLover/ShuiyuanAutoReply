@@ -459,6 +459,10 @@ class MentionChatModel:
         # 函数名 → 工具名映射：工具名用短名，避免 LLM 记不住长名而调用错误
         _TOOL_NAMES = {
             "search_user_by_term": "search_user",
+            "get_user": "get_user",
+            "get_users": "get_users",
+            "get_post_by_id": "get_post_by_id",
+            "read_tool_result": "read_tool_result",
             "search_user_by_user_id": "search_user_by_id",
             "search_post_details_by_optional_username_topic": "search_posts",
             "query_recent_posts_by_topic_id": "recent_posts",

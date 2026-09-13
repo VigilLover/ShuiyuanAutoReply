@@ -1,8 +1,33 @@
+import asyncio
+import inspect
+import json
+from functools import wraps
 from typing import List, Optional
 
+from shuiyuan_auto_reply.application.tool_results import (
+    cached_query,
+    current_turn,
+    tool_error,
+)
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 from .shuiyuan_tools_objects import PostShort, UserShort
+
+
+def cached_read(func):
+    @wraps(func)
+    async def wrapped(self, *args, **kwargs):
+        bound = inspect.signature(func).bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        values = dict(bound.arguments)
+        values.pop("self")
+        refresh = values.pop("refresh", False)
+        key = func.__name__ + json.dumps(values, sort_keys=True, ensure_ascii=False)
+        return await cached_query(
+            key, lambda: func(self, *args, **kwargs), refresh=refresh
+        )
+
+    return wrapped
 
 
 class ShuiyuanToolsWrapper:
@@ -13,10 +38,12 @@ class ShuiyuanToolsWrapper:
     def __init__(self, shuiyuan_model: ShuiyuanModel):
         self.shuiyuan_model = shuiyuan_model
 
+    @cached_read
     async def search_user_by_term(
         self,
         term: str,
         include_avatar: bool = False,
+        refresh: bool = False,
     ) -> List[UserShort] | str:
         """
         Search for users by a search term.
@@ -30,15 +57,17 @@ class ShuiyuanToolsWrapper:
             users = await self.shuiyuan_model.search_user_by_term(term)
             return [UserShort(user, include_avatar=include_avatar) for user in users]
         except Exception as e:
-            return str(e)
+            return tool_error(e)
 
+    @cached_read
     async def search_user_by_user_id(
         self,
         user_id: int,
         include_avatar: bool = False,
+        refresh: bool = False,
     ) -> UserShort | None | str:
         """
-        Search for a user by their user ID.
+        Resolve a user ID through their post history; no result does NOT prove the user is absent. Prefer get_user when the username is known.
 
         :param user_id: The ID of the user to search for.
         :param include_avatar: Whether to include each user's avatar. Default is False.
@@ -55,14 +84,16 @@ class ShuiyuanToolsWrapper:
                     user = full_user
             return UserShort(user, include_avatar=include_avatar) if user else None
         except Exception as e:
-            return str(e)
+            return tool_error(e)
 
+    @cached_read
     async def search_post_details_by_optional_username_topic(
         self,
         term: str = "",
         latest: bool = False,
         username: Optional[str] = None,
         topic_id: Optional[int] = None,
+        refresh: bool = False,
     ) -> List[PostShort] | str:
         """
         Search for posts by a search term, an optional username and an optional topic ID, and return detailed information.
@@ -86,12 +117,14 @@ class ShuiyuanToolsWrapper:
                 for post in post_list
             ]
         except Exception as e:
-            return str(e)
+            return tool_error(e)
 
+    @cached_read
     async def query_recent_posts_by_topic_id(
         self,
         topic_id: int,
         limit: int = 10,
+        refresh: bool = False,
     ) -> List[PostShort] | str:
         """
         Query recent posts in a topic by its ID.
@@ -106,10 +139,11 @@ class ShuiyuanToolsWrapper:
             )
             return [PostShort(post, title) for post in posts]
         except Exception as e:
-            return str(e)
+            return tool_error(e)
 
+    @cached_read
     async def get_post_details_by_post_number(
-        self, topic_id: int, post_number: int
+        self, topic_id: int, post_number: int, refresh: bool = False
     ) -> PostShort | str:
         """
         Get the details of a post by its topic ID and post number.
@@ -123,20 +157,27 @@ class ShuiyuanToolsWrapper:
         :return: An instance of PostShort containing the post information or error message.
         """
         try:
-            topic = await self.shuiyuan_model.get_topic_details(topic_id)
+            turn = current_turn.get()
+            key = f"post_number:{topic_id}:{post_number}"
+            if turn and not refresh and key in turn.cache:
+                return turn.cache[key]
             post = await self.shuiyuan_model.get_post_details_by_post_number(
                 topic_id,
                 post_number,
             )
-            return PostShort(post, topic.title)
+            if post.topic_id != topic_id or post.post_number != post_number:
+                raise ValueError("Post identity mismatch")
+            return await self._full_post(post, refresh=refresh)
         except Exception as e:
-            return str(e)
+            return tool_error(e)
 
+    @cached_read
     async def search_post_details_by_time_range_and_topic(
         self,
         topic_id: int,
         after_date: Optional[str] = None,
         before_date: Optional[str] = None,
+        refresh: bool = False,
     ) -> List[PostShort] | str:
         """
         Search for posts within a specific topic and time range, and return detailed information.
@@ -158,4 +199,137 @@ class ShuiyuanToolsWrapper:
                 for post in post_list
             ]
         except Exception as e:
-            return str(e)
+            return tool_error(e)
+
+    async def _full_post(self, post, *, refresh=False):
+        warnings = []
+        if post.raw is None:
+            try:
+                original = post
+                post = await self.shuiyuan_model.get_post_details(post.id)
+                if (post.id, post.topic_id, post.post_number) != (
+                    original.id,
+                    original.topic_id,
+                    original.post_number,
+                ):
+                    raise ValueError("Post identity mismatch")
+            except Exception as exc:
+                post = original
+                warnings.append(tool_error(exc))
+        result = PostShort(post, full=True)
+        result.warnings = warnings
+        turn = current_turn.get()
+        if turn and not warnings and post.raw is not None:
+            turn.cache["post:" + str(post.id)] = result
+            turn.cache[f"post_number:{post.topic_id}:{post.post_number}"] = result
+        return result
+
+    @cached_read
+    async def get_post_by_id(self, post_id: int, refresh: bool = False):
+        """Read a complete post by GLOBAL post ID (not topic-local floor number).
+
+        Returns raw text, reply relation, mentions and media. Long text includes
+        result_id/next_cursor for read_tool_result. refresh bypasses this turn's cache.
+        """
+        try:
+            turn = current_turn.get()
+            if turn and not refresh and "post:" + str(post_id) in turn.cache:
+                return turn.cache["post:" + str(post_id)]
+            post = await self.shuiyuan_model.get_post_details(post_id)
+            if post.id != post_id:
+                raise ValueError("Post identity mismatch")
+            return await self._full_post(post, refresh=refresh)
+        except Exception as exc:
+            return tool_error(exc)
+
+    async def get_user(
+        self, username: str, include_avatar: bool = False, refresh: bool = False
+    ):
+        """Get exactly one user by username. Never substitutes nickname/fuzzy matches.
+
+        Set include_avatar only when needed. refresh requests current data again.
+        Not found is an explicit error; use search_user only to resolve ambiguity.
+        """
+        username = username.strip().lstrip("@")
+
+        async def fetch():
+            try:
+                if not username or any(c in username for c in "/?#"):
+                    raise ValueError("Invalid username")
+                user = await self.shuiyuan_model.get_user_by_username(username)
+                if user is None:
+                    return {
+                        "status": "error",
+                        "error": "not_found",
+                        "username": username,
+                        "retryable": False,
+                    }
+                if user.username.casefold() != username.casefold():
+                    raise ValueError("User identity mismatch")
+                value = UserShort(user, include_avatar=True)
+                return {
+                    "status": "ok",
+                    "user_id": value.id,
+                    "username": value.username,
+                    "name": value.name,
+                    "avatar": value.avatar,
+                }
+            except Exception as exc:
+                return tool_error(exc)
+
+        result = await cached_query(
+            "user:" + username.casefold(), fetch, refresh=refresh
+        )
+        return (
+            dict(result)
+            if include_avatar
+            else {k: v for k, v in result.items() if k != "avatar"}
+        )
+
+    async def get_users(
+        self, usernames: list[str], include_avatar: bool = False, refresh: bool = False
+    ):
+        """Resolve up to 50 exact usernames, preserving input order and per-item errors.
+
+        Prefer this to separate calls for a list of known usernames. Successful
+        items are cached within this turn; retries only refetch failed items.
+        """
+        if not usernames or len(usernames) > 50:
+            return {
+                "status": "error",
+                "error": "Provide 1 to 50 usernames",
+                "retryable": False,
+            }
+        gate = asyncio.Semaphore(4)
+        tasks = {}
+
+        async def fetch(name):
+            async with gate:
+                return await self.get_user(name, include_avatar, refresh)
+
+        for name in usernames:
+            key = name.strip().lstrip("@").casefold()
+            if key not in tasks:
+                tasks[key] = asyncio.create_task(fetch(name))
+        await asyncio.gather(*tasks.values())
+        items = [
+            {"input": name, **tasks[name.strip().lstrip("@").casefold()].result()}
+            for name in usernames
+        ]
+        return {
+            "status": "ok" if all(i["status"] == "ok" for i in items) else "partial",
+            "items": items,
+        }
+
+    async def read_tool_result(self, result_id: str, cursor: int = 0):
+        """Read the next 12000-character page of a result saved in this execution turn.
+
+        Use the exact result_id and next_cursor returned by a tool or context summary.
+        Results are not available in later turns.
+        """
+        turn = current_turn.get()
+        return (
+            turn.read(result_id, cursor)
+            if turn
+            else {"status": "error", "error": "no_active_turn"}
+        )

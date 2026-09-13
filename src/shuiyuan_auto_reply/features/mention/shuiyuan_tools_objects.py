@@ -2,13 +2,16 @@
 Only important information for LLM is kept here.
 """
 
+import json
 from typing import Optional
 
+from shuiyuan_auto_reply.application.tool_results import PAGE_CHARS, current_turn
 from shuiyuan_auto_reply.shuiyuan.constants import base_url
 from shuiyuan_auto_reply.shuiyuan.objects import PostDetails, User
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 from .mention_multimodal import extract_image_urls
+from .post_content import parse_content
 
 
 class UserShort:
@@ -62,7 +65,7 @@ class PostShort:
     title: str
     image_urls: list[str]
 
-    def __init__(self, post: PostDetails, title: str):
+    def __init__(self, post: PostDetails, title: str = "", *, full: bool = False):
         self.id = post.id
         self.post_number = post.post_number
         self.topic_id = post.topic_id
@@ -78,21 +81,45 @@ class PostShort:
                 seen.add(image_url)
                 image_urls.append(image_url)
         self.image_urls = image_urls
-        self.cooked = post.cooked[:384]
-        self.raw = post.raw[:384] if post.raw else None
+        self.cooked = post.cooked
+        self.raw = post.raw
+        self.full = full
+        self.warnings = []
+        self._data = parse_content(post.raw, post.cooked)
+        self.result_id = None
+        turn = current_turn.get()
+        if turn:
+            self.result_id = turn.save(self._data["content"])
         self.reply_to_post_number = post.reply_to_post_number
         self.title = title
 
+    def to_dict(self) -> dict:
+        content = self._data["content"]
+        limit = PAGE_CHARS if self.full else 800
+        return {
+            "post_id": self.id,
+            "topic_id": self.topic_id,
+            "post_number": self.post_number,
+            "reply_to_post_number": self.reply_to_post_number,
+            "author": {
+                "user_id": self.user_id,
+                "username": self.username,
+                "name": self.name,
+            },
+            "title": self.title,
+            **self._data,
+            "content": content[:limit],
+            "image_urls": self.image_urls,
+            "truncated": len(content) > limit,
+            "total_chars": len(content),
+            "result_id": self.result_id,
+            "next_cursor": limit if len(content) > limit else None,
+            "read_full": {"tool": "get_post_by_id", "post_id": self.id},
+            "warnings": self.warnings,
+        }
+
     def __str__(self):
-        text = (
-            f"PostMeta: id={self.id}, post_number={self.post_number}, topic_id={self.topic_id}\n"
-            f"FromUser: {UserShort(User(id=self.user_id, username=self.username, name=self.name))}"
-            f"TopicTitle: {self.title}\n"
-            f"Content: {ShuiyuanModel.remove_shuiyuan_signature(self.raw) if self.raw else self.cooked}\n"
-        )
-        if self.image_urls:
-            text += f"Images: {', '.join(self.image_urls)}\n"
-        return text
+        return json.dumps(self.to_dict(), ensure_ascii=False)
 
     def __repr__(self):
         return self.__str__()
