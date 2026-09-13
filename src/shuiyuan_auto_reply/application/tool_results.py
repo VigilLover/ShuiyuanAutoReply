@@ -88,3 +88,23 @@ def tool_error(exc: Exception) -> dict:
         "message": str(exc)[:300],
         "retryable": isinstance(exc, (TimeoutError, ConnectionError)),
     }
+
+
+def turn_scope(func):
+    """Give every invocation an isolated store, including nested/concurrent turns."""
+    from functools import wraps
+
+    @wraps(func)
+    async def wrapped(*args, **kwargs):
+        turn = TurnResults()
+        token = current_turn.set(turn)
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            for task in turn.pending.values():
+                task.cancel()
+            if turn.pending:
+                await asyncio.gather(*turn.pending.values(), return_exceptions=True)
+            current_turn.reset(token)
+
+    return wrapped

@@ -1,5 +1,6 @@
 # Copy to config/deployment.toml. Paths are relative to this file.
 [common.runtime]
+context_token_budget = 24000
 concurrency = 3
 queue_limit = 100
 timeout = 900

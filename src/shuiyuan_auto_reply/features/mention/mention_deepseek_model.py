@@ -330,7 +330,9 @@ class MentionDeepSeekModel(MentionChatModel):
         if not state.get("reply_to_post_number") or len(images) >= MAX_IMAGES_PER_TURN:
             return {"image_inputs": images}
         try:
-            post = await self.model.get_post_details_by_post_number(
+            post = state.get(
+                "target_post"
+            ) or await self.model.get_post_details_by_post_number(
                 state["topic_id"], state["reply_to_post_number"]
             )
         except Exception as exc:
@@ -389,6 +391,18 @@ class MentionDeepSeekModel(MentionChatModel):
                 break
             tool_messages.append(message)
         tool_messages.reverse()
+        tool_messages = [
+            m
+            for m in tool_messages
+            if m.name
+            not in {
+                "search_user",
+                "search_user_by_id",
+                "get_user",
+                "get_users",
+                "prepare_image_references",
+            }
+        ]
         if not self.uses_responses_api:
             new_images = await self.vision_media.prepare_tool_output(
                 tool_messages,
