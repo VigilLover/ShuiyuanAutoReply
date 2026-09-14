@@ -1177,10 +1177,40 @@ class SQLiteStateStore:
             # Runtime profiles are JSON-backed. Merge newly introduced optional
             # fields at read time so old rows remain compatible without a table
             # migration; the merged shape is persisted on the next normal save.
-            draft = {**defaults, **json.loads(row["draft_json"])}
-            active = {**defaults, **json.loads(row["active_json"])}
+            from shuiyuan_auto_reply.infrastructure.prompts.profiles import (
+                normalize_profile,
+            )
+
+            draft = normalize_profile(
+                {**defaults, **json.loads(row["draft_json"])}, scope
+            )
+            active = normalize_profile(
+                {**defaults, **json.loads(row["active_json"])}, scope
+            )
+            # Preserve active/draft independently and keep the legacy full prompt for rollback.
+            await db.execute(
+                "UPDATE runtime_profiles SET draft_json=?, active_json=? WHERE scope=?",
+                (
+                    json.dumps(draft, ensure_ascii=False),
+                    json.dumps(active, ensure_ascii=False),
+                    scope,
+                ),
+            )
+            await db.commit()
+            active["profile_revision"] = row["active_revision"]
+            used = await (
+                await db.execute(
+                    "SELECT payload_json, created_at FROM run_events WHERE event_type='runtime.profile_used' AND json_extract(payload_json, '$.scope')=? ORDER BY id DESC LIMIT 1",
+                    (scope,),
+                )
+            ).fetchone()
             return {
                 "scope": scope,
+                "last_runtime_used": (
+                    {**json.loads(used["payload_json"]), "at": used["created_at"]}
+                    if used
+                    else None
+                ),
                 "draft": draft,
                 "active": active,
                 "active_revision": row["active_revision"],

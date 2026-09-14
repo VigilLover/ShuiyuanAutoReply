@@ -8,7 +8,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -113,7 +113,11 @@ class ProfileDraftRequest(BaseModel):
         default_factory=lambda: AppSettings().providers.deepseek_api_format
     )
     fallback_model: str | None = None
-    system_prompt: str
+    system_prompt: str = ""
+    prompt_mode: Literal["managed", "legacy"] = "legacy"
+    persona_id: str = "wolf_lumine"
+    persona_text: str | None = None
+    additional_instructions: str = ""
     enabled_tools: list[str] | None = None
     disabled_mcp_tools: list[str] = Field(default_factory=list)
     api_key: str | None = None
@@ -698,6 +702,14 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             await store.get_profile(scope, _profile_defaults(scope))
             for scope in ("forum", "web")
         ]
+        from shuiyuan_auto_reply.infrastructure.prompts.profiles import profile_metadata
+
+        for profile in profiles:
+            active = {
+                k: v for k, v in profile["active"].items() if k != "profile_revision"
+            }
+            profile["draft_changed"] = active != profile["draft"]
+            profile["prompt_metadata"] = profile_metadata(active, profile["scope"])
         vault = request.app.state.container.secret_vault
         env_names = {
             "openrouter": "OPENROUTER_API_KEY",
@@ -763,7 +775,10 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         errors = []
         if not draft.get("provider"):
             errors.append("Provider 不能为空")
-        if not str(draft.get("system_prompt", "")).strip():
+        if (
+            draft.get("prompt_mode") != "managed"
+            and not str(draft.get("system_prompt", "")).strip()
+        ):
             errors.append("System Prompt 不能为空")
         return {"valid": not errors, "errors": errors}
 
@@ -776,6 +791,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         container = request.app.state.container
         prepared = None
         forum_candidate = None
+        profile["draft"]["profile_revision"] = profile["active_revision"] + 1
         prepare_runtime = getattr(container, "prepare_runtime_profile", None)
         if scope == "web" and prepare_runtime is not None:
             try:
@@ -856,6 +872,46 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 await handler.aclose()
             elif candidate is not None:
                 await candidate.aclose()
+
+    @api.post("/api/settings/profiles/{scope}/prompt-preview")
+    async def preview_prompt(scope: str, payload: ProfileDraftRequest):
+        if scope not in {"forum", "web"}:
+            raise HTTPException(status_code=404, detail="未知应用")
+        from shuiyuan_auto_reply.infrastructure.prompts.profiles import (
+            profile_metadata,
+            render_profile,
+        )
+
+        value = payload.model_dump(exclude={"api_key"})
+        return {
+            "template": render_profile(value, scope),
+            **profile_metadata(value, scope),
+        }
+
+    @api.post("/api/settings/profiles/{scope}/prompt-migrate")
+    async def migrate_prompt(scope: str, request: Request):
+        if scope not in {"forum", "web"}:
+            raise HTTPException(status_code=404, detail="未知应用")
+        profile = await _store(request).get_profile(scope, _profile_defaults(scope))
+        draft = profile["draft"]
+        draft.update(
+            prompt_mode="managed", persona_text=None, additional_instructions=""
+        )
+        await _store(request).save_profile_draft(scope, draft)
+        return {
+            "status": "draft_updated",
+            "message": "旧完整提示词已保留；请审阅人设并应用",
+        }
+
+    @api.post("/api/settings/profiles/{scope}/restore-persona")
+    async def restore_persona(scope: str, request: Request):
+        if scope not in {"forum", "web"}:
+            raise HTTPException(status_code=404, detail="未知应用")
+        profile = await _store(request).get_profile(scope, _profile_defaults(scope))
+        draft = profile["draft"]
+        draft["persona_text"] = None
+        await _store(request).save_profile_draft(scope, draft)
+        return {"status": "draft_updated"}
 
     @api.post("/api/settings/profiles/{scope}/restore-default")
     async def restore_profile_default(scope: str, request: Request):

@@ -1245,6 +1245,13 @@ class MentionChatModel:
                 "context.evidence",
                 {"results": len(turn.results), "cache_hits": turn.cache_hits},
             )
+        await emit_event(
+            "runtime.profile_used",
+            {
+                **getattr(self, "runtime_profile_metadata", {}),
+                "scope": self.prompt_scope.value,
+            },
+        )
         await emit_event("model.started", {})
         response = await self.llm_with_tools.ainvoke(prompt_value)
         usage = getattr(response, "usage_metadata", None) or {}

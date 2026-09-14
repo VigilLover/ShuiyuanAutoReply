@@ -110,7 +110,7 @@ async def run_worker(persona: str = "wolf_lumine") -> None:
             ),
             disabled_mcp_tools=set(profile["active"].get("disabled_mcp_tools", [])),
             state_store=state_store,
-            system_prompt_override=profile["active"].get("system_prompt"),
+            prompt_profile=profile["active"],
         )
         active_revision = profile["active_revision"]
         refresh_lock = asyncio.Lock()
@@ -137,7 +137,7 @@ async def run_worker(persona: str = "wolf_lumine") -> None:
                         latest["active"].get("disabled_mcp_tools", [])
                     ),
                     state_store=state_store,
-                    system_prompt_override=latest["active"].get("system_prompt"),
+                    prompt_profile=latest["active"],
                 )
                 await mention.swap_chat_model(candidate)
                 active_revision = latest["active_revision"]

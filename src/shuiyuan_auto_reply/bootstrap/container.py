@@ -305,7 +305,7 @@ class ApplicationContainer:
                             profile["active"].get("disabled_mcp_tools", [])
                         ),
                         state_store=state_store,
-                        system_prompt_override=profile["active"].get("system_prompt"),
+                        prompt_profile=profile["active"],
                     )
 
                 chat_model = LazyChat(build_chat)
@@ -332,7 +332,7 @@ class ApplicationContainer:
             enabled_tools=set(enabled) if enabled is not None else None,
             disabled_mcp_tools=set(profile.get("disabled_mcp_tools", [])),
             state_store=self.state_store,
-            system_prompt_override=profile.get("system_prompt"),
+            prompt_profile=profile,
         )
         new_handler, new_service = self._build_web_service(
             candidate, settings, self.state_store
@@ -352,7 +352,7 @@ class ApplicationContainer:
             enabled_tools=set(enabled) if enabled is not None else None,
             disabled_mcp_tools=set(profile.get("disabled_mcp_tools", [])),
             state_store=self.state_store,
-            system_prompt_override=profile.get("system_prompt"),
+            prompt_profile=profile,
         )
 
     async def activate_prepared_runtime(self, prepared) -> None:

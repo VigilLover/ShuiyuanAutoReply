@@ -33,9 +33,14 @@ class MentionProviderFactory:
         disabled_mcp_tools: set[str] | None = None,
         state_store=None,
         system_prompt_override: str | None = None,
+        prompt_profile: dict | None = None,
     ):
+        from shuiyuan_auto_reply.infrastructure.prompts.profiles import render_profile
+
+        if prompt_profile is not None:
+            system_prompt_override = render_profile(prompt_profile, prompt_scope.value)
         settings.validate_forum()
-        return cls._providers[settings.mention_provider](
+        model = cls._providers[settings.mention_provider](
             forum_model,
             username=persona,
             provider_settings=settings,
@@ -45,6 +50,16 @@ class MentionProviderFactory:
             state_store=state_store,
             system_prompt_override=system_prompt_override,
         )
+        from shuiyuan_auto_reply.infrastructure.prompts.profiles import profile_metadata
+
+        model.runtime_profile_metadata = profile_metadata(
+            prompt_profile or {"system_prompt": system_prompt_override or ""},
+            prompt_scope.value,
+        )
+        model.runtime_profile_metadata["profile_revision"] = (prompt_profile or {}).get(
+            "profile_revision"
+        )
+        return model
 
     @staticmethod
     def create_api(
@@ -57,9 +72,14 @@ class MentionProviderFactory:
         disabled_mcp_tools: set[str] | None = None,
         state_store=None,
         system_prompt_override: str | None = None,
+        prompt_profile: dict | None = None,
     ):
+        from shuiyuan_auto_reply.infrastructure.prompts.profiles import render_profile
+
+        if prompt_profile is not None:
+            system_prompt_override = render_profile(prompt_profile, prompt_scope.value)
         settings.validate_api()
-        return MentionOpenRouterModel(
+        model = MentionOpenRouterModel(
             forum_model,
             username=persona,
             provider_settings=settings,
@@ -69,3 +89,13 @@ class MentionProviderFactory:
             state_store=state_store,
             system_prompt_override=system_prompt_override,
         )
+        from shuiyuan_auto_reply.infrastructure.prompts.profiles import profile_metadata
+
+        model.runtime_profile_metadata = profile_metadata(
+            prompt_profile or {"system_prompt": system_prompt_override or ""},
+            prompt_scope.value,
+        )
+        model.runtime_profile_metadata["profile_revision"] = (prompt_profile or {}).get(
+            "profile_revision"
+        )
+        return model
