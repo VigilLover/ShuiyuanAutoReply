@@ -421,9 +421,7 @@ class ShuiyuanModel:
         post_stream = data.get("post_stream", {})
         posts = post_stream.get("posts", [])
         if not posts:
-            raise Exception(
-                f"Post with number {post_number} not found in topic {topic_id}"
-            )
+            raise ReadFailure(404)
 
         # Find the specific post with the given post number
         post_data = next(
@@ -431,9 +429,7 @@ class ShuiyuanModel:
             None,
         )
         if not post_data:
-            raise Exception(
-                f"Post with number {post_number} not found in topic {topic_id}"
-            )
+            raise ReadFailure(404)
 
         return from_dict(PostDetails, post_data)
 

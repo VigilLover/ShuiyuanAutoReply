@@ -23,7 +23,9 @@ class TurnResults:
     execution_ids: set[str] = field(default_factory=set)
     read_pages: set[tuple] = field(default_factory=set)
     external_requests: int = 0
-    image_failures: dict[str, str] = field(default_factory=dict)
+    media_bytes: dict[str, bytes] = field(default_factory=dict)
+    media_digests: dict[str, int] = field(default_factory=dict)
+    image_failures: dict[str, Any] = field(default_factory=dict)
     results: dict[str, Any] = field(default_factory=dict)
     digests: dict[str, str] = field(default_factory=dict)
     index_ids: set[str] = field(default_factory=set)
@@ -134,11 +136,18 @@ class TurnResults:
             return await self.pending[key]
         if refresh:
             self.cache.pop(key, None)
-        self.external_requests += 1
+        if not key.startswith("image:"):
+            self.external_requests += 1
         task = asyncio.create_task(call())
         self.pending[key] = task
         try:
             result = await task
+            if (
+                isinstance(result, dict)
+                and result.get("status") == "error"
+                and result.get("retryable") is False
+            ):
+                self.cache[key] = result
             if (
                 result is not None
                 and not isinstance(result, str)

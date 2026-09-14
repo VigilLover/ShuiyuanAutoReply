@@ -326,44 +326,7 @@ class MentionDeepSeekModel(MentionChatModel):
     async def _load_replied_post_images(
         self, state: MentionGraphState
     ) -> MentionGraphState:
-        images = list(state.get("image_inputs", []) or [])
-        if not state.get("reply_to_post_number") or len(images) >= MAX_IMAGES_PER_TURN:
-            return {"image_inputs": images}
-        try:
-            post = state.get(
-                "target_post"
-            ) or await self.model.get_post_details_by_post_number(
-                state["topic_id"], state["reply_to_post_number"]
-            )
-        except Exception as exc:
-            logging.warning("Failed to load replied-post images: %s", exc)
-            return {"image_inputs": images}
-        urls = list(getattr(post, "image_urls", []) or [])
-        urls.extend(extract_image_urls(getattr(post, "raw", "")))
-        urls.extend(extract_image_urls(getattr(post, "cooked", "")))
-        seen = {image.source_url for image in images}
-        for url in urls:
-            if len(images) >= MAX_IMAGES_PER_TURN:
-                break
-            if url in seen:
-                continue
-            try:
-                image = await self.vision_media.prepare_forum_url(
-                    url,
-                    conversation_id=state.get("conversation_id"),
-                    source_kind="forum_post",
-                    description="被回复论坛帖子图片",
-                )
-            except Exception as exc:
-                logging.warning("Failed to prepare replied image %s: %s", url, exc)
-                continue
-            if image:
-                seen.add(url)
-                images.append(image)
-        return {
-            "image_inputs": images,
-            "input_visual_artifacts": [image.artifact for image in images],
-        }
+        return {"image_inputs": list(state.get("image_inputs", []) or [])}
 
     async def _prepare_messages(self, state: MentionGraphState) -> MentionGraphState:
         text = (
@@ -394,15 +357,10 @@ class MentionDeepSeekModel(MentionChatModel):
         tool_messages = [
             m
             for m in tool_messages
-            if m.name
-            not in {
-                "search_user",
-                "search_user_by_id",
-                "get_user",
-                "get_users",
-                "prepare_image_references",
-            }
+            if m.name in {"inspect_images", "inspect_image", "image_search"}
         ]
+        if not tool_messages:
+            return {"image_inputs": existing}
         if not self.uses_responses_api:
             new_images = await self.vision_media.prepare_tool_output(
                 tool_messages,

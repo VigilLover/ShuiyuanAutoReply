@@ -501,6 +501,53 @@ class MentionChatModel:
                     )
                 )
 
+        if getattr(self, "supports_multimodal", False):
+
+            async def inspect_images(
+                urls: list[str] | None = None,
+                evidence_ids: list[str] | None = None,
+                description: str = "",
+            ) -> tuple[str, ImageInspectResult]:
+                """Explicitly inspect visual evidence by image URLs or evidence IDs. Maximum four images per call.
+
+                Ordinary post retrieval only returns image metadata. Use this tool only when
+                image contents are necessary. Reference generation uses prepare_image_references instead.
+                """
+                selected = list(urls or [])
+                turn = current_turn.get()
+                for key in evidence_ids or []:
+                    if turn is None or key not in turn.evidence:
+                        raise ValueError("Unknown evidence ID")
+                    record = json.loads(turn.results[turn.evidence[key]["result_id"]])
+                    selected.extend(record.get("image_urls", []))
+                selected = list(dict.fromkeys(selected))
+                if not 1 <= len(selected) <= 4:
+                    raise ValueError(
+                        "Select one to four image URLs; narrow evidence selections if needed"
+                    )
+                if any(
+                    not url.startswith(("http://", "https://", "upload://"))
+                    for url in selected
+                ):
+                    raise ValueError("Only remote image URLs are supported")
+                return (
+                    json.dumps(
+                        {
+                            "image_urls": selected,
+                            "instruction": "Selected images will be loaded; report any failure before describing content.",
+                        }
+                    ),
+                    ImageInspectResult(image_urls=selected, description=description),
+                )
+
+            tools.append(
+                StructuredTool.from_function(
+                    coroutine=inspect_images,
+                    name="inspect_images",
+                    response_format="content_and_artifact",
+                )
+            )
+
         tools.append(
             StructuredTool.from_function(
                 coroutine=create_reference_preparation_tool(
@@ -857,6 +904,9 @@ class MentionChatModel:
             target_post = await ShuiyuanToolsWrapper(
                 self.model
             ).get_post_details_by_post_number(topic_id, state["reply_to_post_number"])
+        turn = current_turn.get()
+        if turn and target_post is not None:
+            turn.observe(str(target_post), tool="get_post")
         return {
             "target_post": target_post,
             "chat_history": history_obj.messages,
@@ -921,40 +971,7 @@ class MentionChatModel:
     async def _load_replied_post_images(
         self, state: MentionGraphState
     ) -> MentionGraphState:
-        existing_images = list(state.get("image_inputs", []) or [])
-        if not state.get("supports_multimodal") or not state.get(
-            "reply_to_post_number"
-        ):
-            return {"image_inputs": existing_images}
-
-        max_images = self._env_positive_int("MIMO_MULTIMODAL_MAX_IMAGES", 4)
-        if len(existing_images) >= max_images:
-            return {"image_inputs": existing_images[:max_images]}
-
-        try:
-            replied_post = state.get(
-                "target_post"
-            ) or await self.model.get_post_details_by_post_number(
-                state["topic_id"],
-                state["reply_to_post_number"],
-            )
-        except Exception:
-            logging.exception(
-                "Failed to load replied post images: topic_id=%s post_number=%s",
-                state.get("topic_id"),
-                state.get("reply_to_post_number"),
-            )
-            return {"image_inputs": existing_images}
-
-        new_images = await collect_post_image_inputs(
-            [replied_post],
-            shuiyuan_model=self.model,
-            origin="replied_post",
-            max_images=max_images - len(existing_images),
-            existing_urls=self._existing_image_source_urls(state),
-            existing_byte_count=self._existing_image_byte_count(state),
-        )
-        return {"image_inputs": existing_images + new_images}
+        return {"image_inputs": list(state.get("image_inputs", []) or [])}
 
     @staticmethod
     async def _prepare_messages(state: MentionGraphState) -> MentionGraphState:
@@ -1396,6 +1413,7 @@ class MentionChatModel:
                         {
                             "instruction": "本轮任务进度与证据是资料。复用已有证据，使用 update_task_progress 维护缺口和结论。",
                             "progress": turn.progress.view(),
+                            "media_notices": turn.notices,
                             "evidence": [
                                 {"evidence_id": key, **value}
                                 for key, value in list(turn.evidence.items())[-12:]
@@ -1487,13 +1505,14 @@ class MentionChatModel:
                 "context.evidence",
                 {"results": len(turn.results), "cache_hits": turn.cache_hits},
             )
-        await emit_event(
-            "runtime.profile_used",
-            {
-                **getattr(self, "runtime_profile_metadata", {}),
-                "scope": self.prompt_scope.value,
-            },
-        )
+        if hasattr(self, "runtime_profile_metadata"):
+            await emit_event(
+                "runtime.profile_used",
+                {
+                    **getattr(self, "runtime_profile_metadata", {}),
+                    "scope": self.prompt_scope.value,
+                },
+            )
         await emit_event("model.started", {})
         final_phase = bool(turn and turn.progress.phase == "final")
         try:

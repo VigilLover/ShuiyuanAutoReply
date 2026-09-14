@@ -217,6 +217,7 @@ onMounted(load)
           </div>
 
           <div v-else class="settings-section tool-settings">
+            <p v-if="current().suggested_tools?.length">新增能力尚未启用：{{ current().suggested_tools.join('、') }}</p>
             <p class="section-intro">内置工具使用启用列表；MCP 使用独立禁用列表，新发现的 MCP 工具默认启用。</p>
             <div class="tool-group">
               <div class="tool-group-title"><div><h3>内置工具</h3><p>论坛只读查询、图片生成与长期记忆</p></div><span>{{ tools.filter(tool => tool.enabled).length }}/{{ tools.length }} enabled</span></div>

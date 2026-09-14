@@ -710,6 +710,17 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             }
             profile["draft_changed"] = active != profile["draft"]
             profile["prompt_metadata"] = profile_metadata(active, profile["scope"])
+            configured = profile["draft"].get("enabled_tools")
+            profile["suggested_tools"] = [
+                name
+                for name in (
+                    "inspect_images",
+                    "get_users",
+                    "read_tool_result",
+                    "prepare_image_references",
+                )
+                if configured is not None and name not in configured
+            ]
         vault = request.app.state.container.secret_vault
         env_names = {
             "openrouter": "OPENROUTER_API_KEY",
@@ -937,6 +948,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                     item["enabled"] = item["name"] in selected
             return catalog
         names = [
+            "inspect_images",
             "get_user",
             "get_users",
             "get_post_by_id",

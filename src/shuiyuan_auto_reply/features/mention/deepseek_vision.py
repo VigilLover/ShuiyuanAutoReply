@@ -23,7 +23,13 @@ import httpx
 from openai import AsyncOpenAI
 from PIL import Image, UnidentifiedImageError
 
+from shuiyuan_auto_reply.application.tool_results import current_turn
 from shuiyuan_auto_reply.domain import AttachmentRef, VisualMediaArtifact
+from shuiyuan_auto_reply.infrastructure.image_transport import (
+    cached_media_attempt,
+    remember_media,
+    remembered_media,
+)
 from shuiyuan_auto_reply.infrastructure.persistence.state import state_directory
 
 from .mention_multimodal import extract_image_urls, normalize_shuiyuan_image_url
@@ -366,6 +372,7 @@ class DeepSeekVisionMediaManager:
             description=artifact.filename or "用户上传图片",
         )
 
+    @cached_media_attempt
     async def prepare_forum_url(
         self,
         url: str,
@@ -377,10 +384,14 @@ class DeepSeekVisionMediaManager:
         normalized = normalize_shuiyuan_image_url(url)
         if normalized is None:
             return None
-        if normalized.startswith("upload://"):
+        cached_bytes = remembered_media(normalized)
+        if cached_bytes is not None:
+            data = cached_bytes
+        elif normalized.startswith("upload://"):
             data = await self.forum_model.download_image(normalized)
         else:
             data = await self.forum_model.download_raw_image(normalized)
+        remember_media(normalized, data)
         artifact = await self._register_bytes(
             data,
             conversation_id=conversation_id,
@@ -421,6 +432,7 @@ class DeepSeekVisionMediaManager:
             description=filename,
         )
 
+    @cached_media_attempt
     async def prepare_public_url(
         self,
         url: str,
@@ -435,41 +447,44 @@ class DeepSeekVisionMediaManager:
         headers = dict(_IMAGE_REQUEST_HEADERS)
         if referer and referer.startswith(("http://", "https://")):
             headers["Referer"] = referer
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(60, connect=10), headers=headers
-        ) as client:
-            for _ in range(5):
-                parsed = urlparse(current)
-                if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-                    raise VisionMediaError("图片 URL 无效")
-                await _assert_public_host(parsed.hostname)
-                async with client.stream(
-                    "GET", current, follow_redirects=False
-                ) as response:
-                    if response.status_code in {301, 302, 303, 307, 308}:
-                        location = response.headers.get("location")
-                        if not location:
-                            raise VisionMediaError("图片重定向缺少目标地址")
-                        current = urljoin(current, location)
-                        continue
-                    response.raise_for_status()
-                    declared_length = int(
-                        response.headers.get("content-length", "0") or 0
-                    )
-                    if declared_length > MAX_IMAGE_BYTES:
-                        raise VisionMediaError("单张图片不能超过 20MB")
-                    chunks: list[bytes] = []
-                    byte_count = 0
-                    async for chunk in response.aiter_bytes():
-                        byte_count += len(chunk)
-                        if byte_count > MAX_IMAGE_BYTES:
+        data = remembered_media(url)
+        if data is None:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(60, connect=10), headers=headers
+            ) as client:
+                for _ in range(5):
+                    parsed = urlparse(current)
+                    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                        raise VisionMediaError("图片 URL 无效")
+                    await _assert_public_host(parsed.hostname)
+                    async with client.stream(
+                        "GET", current, follow_redirects=False
+                    ) as response:
+                        if response.status_code in {301, 302, 303, 307, 308}:
+                            location = response.headers.get("location")
+                            if not location:
+                                raise VisionMediaError("图片重定向缺少目标地址")
+                            current = urljoin(current, location)
+                            continue
+                        response.raise_for_status()
+                        declared_length = int(
+                            response.headers.get("content-length", "0") or 0
+                        )
+                        if declared_length > MAX_IMAGE_BYTES:
                             raise VisionMediaError("单张图片不能超过 20MB")
-                        chunks.append(chunk)
-                    data = b"".join(chunks)
-                    response_headers = dict(response.headers)
-                break
-            else:
-                raise VisionMediaError("图片重定向次数过多")
+                        chunks: list[bytes] = []
+                        byte_count = 0
+                        async for chunk in response.aiter_bytes():
+                            byte_count += len(chunk)
+                            if byte_count > MAX_IMAGE_BYTES:
+                                raise VisionMediaError("单张图片不能超过 20MB")
+                            chunks.append(chunk)
+                        data = b"".join(chunks)
+                        response_headers = dict(response.headers)
+                    break
+                else:
+                    raise VisionMediaError("图片重定向次数过多")
+        remember_media(url, data)
         artifact = await self._register_bytes(
             data,
             conversation_id=conversation_id,
@@ -545,6 +560,11 @@ class DeepSeekVisionMediaManager:
                         description=f"来自 {name or '论坛工具'}",
                     )
                 except Exception as exc:
+                    turn = current_turn.get()
+                    if turn and name in {"inspect_images", "inspect_image"}:
+                        turn.notices.append(
+                            "部分请求查看的图片读取失败，不能据此确认图片内容。"
+                        )
                     logging.warning(
                         "Failed to cache forum search image %s from %s: %s",
                         private_url,
@@ -557,6 +577,9 @@ class DeepSeekVisionMediaManager:
                     results.append(image)
 
             for public_url in extract_public_image_urls(combined):
+                # Forum URLs must never fall back to an unauthenticated public request.
+                if normalize_shuiyuan_image_url(public_url):
+                    continue
                 if len(results) >= limit:
                     return results
                 if public_url in existing_urls:
@@ -570,6 +593,11 @@ class DeepSeekVisionMediaManager:
                         referer=referer,
                     )
                 except Exception as exc:
+                    turn = current_turn.get()
+                    if turn and name in {"inspect_images", "inspect_image"}:
+                        turn.notices.append(
+                            "部分请求查看的图片读取失败，不能据此确认图片内容。"
+                        )
                     logging.warning(
                         "Failed to cache web search image %s from %s: %s",
                         public_url,

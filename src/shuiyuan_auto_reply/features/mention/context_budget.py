@@ -47,7 +47,9 @@ def project_messages(messages, budget: int = 24_000, *, preserve_first: bool = T
     projected = []
     for index, message in enumerate(messages):
         # Keep current request (first human) intact. Tool payloads are independently readable.
-        if preserve_first and index == 0 and isinstance(message, HumanMessage):
+        if (
+            preserve_first and index == 0 and isinstance(message, HumanMessage)
+        ) or getattr(message, "name", None) in {"task_progress", "target_post"}:
             projected.append(message)
         else:
             content = (
