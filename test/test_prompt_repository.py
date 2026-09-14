@@ -8,11 +8,11 @@ from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 
 
 class PromptRepositoryTests(unittest.TestCase):
-    def test_wolf_system_prompt_is_byte_for_byte_equivalent(self):
+    def test_wolf_system_prompt_v2_snapshot(self):
         bundle = FilePromptRepository().load("wolf_lumine", set())
         self.assertEqual(
             sha256(bundle.system_prompt.encode()).hexdigest(),
-            "6de67ea61ab0c9729afe42cc0b52446da582aee15be2188b7daf55f7fc47f2dd",
+            "6faf3bf490358b351cf8131aef2c63734dbeac9f9cc49432a522a3bdd83e372a",
         )
 
     def test_unknown_persona_falls_back_to_wolf(self):
@@ -20,20 +20,20 @@ class PromptRepositoryTests(unittest.TestCase):
         self.assertEqual(bundle.persona_id, "wolf_lumine")
         self.assertEqual(
             sha256(bundle.system_prompt.encode()).hexdigest(),
-            "dd9e43f1fb07b23b86cd9c92f83c3428a68450fb88724693533745ca4b4ade2e",
+            "e4a0fe06b8a63872747bec51b51f538f43854b5af88e7d5b6b12d1d3248e1f4d",
         )
 
-    def test_archive_and_multimodal_snapshots_are_unchanged(self):
+    def test_archive_and_multimodal_v2_snapshots(self):
         repository = FilePromptRepository()
         archive = repository.load("存档读取", set()).system_prompt
         multimodal = repository.load("wolf_lumine", {"multimodal"}).system_prompt
         self.assertEqual(
             sha256(archive.encode()).hexdigest(),
-            "63a15c0714c544d35d7aa27c60f8e405ce0d4bc8c0b01ab3f42afd1edb80ab50",
+            "95b8b2902c74eaf0645afc75c1ef7761e8171a58f4eb0921a5e9b67ece26d392",
         )
         self.assertEqual(
             sha256(multimodal.encode()).hexdigest(),
-            "73333d78bbd1e6b06748c78546b5cb9edcbc34b6fd5967b267c9131c9f741f1a",
+            "1523e8c3209b83ec226af3e1778f4e68a13dd395bfb3da82632019d10c14a1aa",
         )
 
     def test_web_prompt_keeps_shared_rules_without_forum_write_capabilities(self):

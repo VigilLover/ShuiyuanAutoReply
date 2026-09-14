@@ -52,9 +52,11 @@ def parse_content(raw: str | None, cooked: str) -> dict:
         tag.replace_with(tag.get("alt", ""))
     content = clean_raw(raw) if raw is not None else markdownify(str(soup)).strip()
     if not mentions and raw:
-        plain = re.sub(r"```.*?```|`[^`]*`", "", raw, flags=re.S)
+        plain = re.sub(r"```.*?```|~~~.*?~~~|`[^`]*`", "", raw, flags=re.S)
+        quote_depth = 0
         for line in plain.splitlines():
-            quoted = line.lstrip().startswith(">") or "[quote" in line
+            quote_depth += len(re.findall(r"\[quote(?:\]|[ =])", line, re.I))
+            quoted = line.lstrip().startswith(">") or quote_depth > 0
             for username in re.findall(r"(?<![\w@])@([^\s@<>\[\]，。！？,:;]+)", line):
                 key = (username.casefold(), quoted)
                 if key not in seen:
@@ -62,6 +64,9 @@ def parse_content(raw: str | None, cooked: str) -> dict:
                     mentions.append(
                         {"username": username, "source": "quote" if quoted else "body"}
                     )
+            quote_depth = max(
+                0, quote_depth - len(re.findall(r"\[/quote\]", line, re.I))
+            )
     return {
         "content": content,
         "content_source": "raw" if raw is not None else "cooked_text",

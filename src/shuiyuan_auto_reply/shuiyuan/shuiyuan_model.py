@@ -18,7 +18,8 @@ from dacite import from_dict
 from PIL import Image
 from yarl import URL
 
-from shuiyuan_auto_reply.infrastructure.forum.image_transport import (
+from shuiyuan_auto_reply.domain.tool_error import ReadFailure
+from shuiyuan_auto_reply.infrastructure.image_transport import (
     ImageDownloadError,
     encoded_image_url,
 )
@@ -355,7 +356,7 @@ class ShuiyuanModel:
             "get", f"{get_topic_url}/{topic_id}.json"
         )
         if response.status != 200:
-            raise Exception(f"Failed to get topic details: {await response.text()}")
+            raise ReadFailure(response.status)
 
         data = await response.json()
         return from_dict(TopicDetails, data)
@@ -374,7 +375,7 @@ class ShuiyuanModel:
             logging.warning(f"User '{username}' not found.")
             return None
         elif response.status != 200:
-            raise Exception(f"Failed to get user details: {await response.text()}")
+            raise ReadFailure(response.status)
 
         data = await response.json()
         user_fields = data.get("user")
@@ -393,7 +394,7 @@ class ShuiyuanModel:
             "get", f"{reply_url}/{post_id}.json"
         )
         if response.status != 200:
-            raise Exception(f"Failed to get post details: {await response.text()}")
+            raise ReadFailure(response.status)
 
         data = await response.json()
         return from_dict(PostDetails, data)
@@ -414,7 +415,7 @@ class ShuiyuanModel:
             f"{get_topic_url}/{topic_id}/{post_number}.json",
         )
         if response.status != 200:
-            raise Exception(f"Failed to get post details: {await response.text()}")
+            raise ReadFailure(response.status)
 
         data = await response.json()
         post_stream = data.get("post_stream", {})
@@ -451,6 +452,8 @@ class ShuiyuanModel:
             f"{get_topic_url}/{topic_id}/posts.json",
             params={"post_ids[]": post_ids, "include_raw": "true"},
         )
+        if response.status != 200:
+            raise ReadFailure(response.status)
         data = await response.json()
         post_stream = data.get("post_stream", {})
         posts = post_stream.get("posts", [])
@@ -756,7 +759,7 @@ class ShuiyuanModel:
             "get", f"{user_search_url}", params={"term": term, "limit": 6}
         )
         if response.status != 200:
-            raise Exception(f"Failed to search users: {await response.text()}")
+            raise ReadFailure(response.status)
 
         data = await response.json()
         user_list = data.get("users", [])
@@ -820,7 +823,7 @@ class ShuiyuanModel:
             "get", f"{post_search_url}", params={"q": query}
         )
         if response.status != 200:
-            raise Exception(f"Failed to search posts: {await response.text()}")
+            raise ReadFailure(response.status)
 
         data = await response.json()
         post_list = [
@@ -930,9 +933,7 @@ class ShuiyuanModel:
             "get", f"{post_search_url}", params=params
         )
         if response.status != 200:
-            raise Exception(
-                f"Failed to search posts by time range: {await response.text()}"
-            )
+            raise ReadFailure(response.status)
 
         data = await response.json()
         post_list = [

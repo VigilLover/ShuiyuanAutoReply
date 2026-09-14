@@ -19,7 +19,7 @@ from PIL import Image
 from shuiyuan_auto_reply.application.tool_results import current_turn
 from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.domain import GeneratedImageArtifact
-from shuiyuan_auto_reply.infrastructure.forum.image_transport import (
+from shuiyuan_auto_reply.infrastructure.image_transport import (
     ImageDownloadError,
     encoded_image_url,
 )
@@ -722,7 +722,7 @@ def create_image_generation_tool(model, *, state_store=None):
         reference_set_id: str | None = None,
     ) -> str:
         """
-        根据用户的文字描述生成图片，自动上传到水源并返回图片的短链接。
+        根据用户的文字描述生成图片并返回可展示结果；网页仅保存本地 Artifact，论坛由发布流程上传。
 
         这是生成图片的唯一方式。如果你没有调用此工具，你没有任何图片可以展示。
         绝对禁止在没有调用本工具的情况下编造或输出任何图片链接。
@@ -731,8 +731,8 @@ def create_image_generation_tool(model, *, state_store=None):
         例如返回 `upload://zuyICpNdsQZCsV4cWeOwgcDLLak.jpeg`，你在回复中写 `![生成的图片](upload://zuyICpNdsQZCsV4cWeOwgcDLLak.jpeg)`
 
         提示词(prompt)编写规则（根据是否有参考图区别对待）：
-        - 有参考图（reference_images 非空）：prompt 只需用纯中文简要描述原本要求，不要自行添加任何风格词或细节描写，让参考图主导视觉，并且强调"根据给定的参考图生成图片"。
-        - 需要参考水源用户头像时，先通过 search_user 或 search_user_by_id 获取 avatar，再把 avatar URL 传入 reference_images。
+        - 有参考图（reference_images 非空）：prompt 简要准确描述用户要求，保留用户明确指定的风格、布局及修改要求，不擅自添加要求，让参考图提供形象依据，并且强调"根据给定的参考图生成图片"。
+        - 需要参考水源用户头像时，已知用户名使用 get_user/get_users(include_avatar=True)，不确定名称才搜索。用 prepare_image_references 准备选中素材，以标签描述对象并传 reference_set_id；不要自行添加数字编号。
         - 无参考图（reference_images 为空）：必须用纯中文进行极其详细的画面描述，涵盖外貌、服饰、姿态、光影、背景、氛围等。如果绘画对象是人物，画风默认二次元精美插画，强调"唯美、精细、干净通透"，避免过度锐化、畸变与崩坏。若用户提供设定/附件/印象，必须将关键元素具象化融入画面。
 
         :param prompt: 详细的纯中文生图提示词。

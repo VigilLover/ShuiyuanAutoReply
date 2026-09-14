@@ -143,3 +143,46 @@ class EvidenceProjectionTests(unittest.TestCase):
             )
         finally:
             current_turn.reset(token)
+
+    def test_target_and_latest_two_tool_batches_survive_long_history(self):
+        from shuiyuan_auto_reply.application.tool_results import (
+            TurnResults,
+            current_turn,
+        )
+        from shuiyuan_auto_reply.features.mention.context_budget import project_messages
+
+        turn = TurnResults()
+        token = current_turn.set(turn)
+        try:
+            messages = [
+                HumanMessage(content="current task"),
+                HumanMessage(content="target raw body", name="target_post"),
+            ]
+            for i in range(107):
+                messages.append(
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": str(i),
+                                "name": "get_post",
+                                "args": {"topic_id": 42, "post_number": i + 1},
+                            }
+                        ],
+                    )
+                )
+                messages.append(
+                    ToolMessage(
+                        content=f"post {i} " + "long content " * 1000,
+                        tool_call_id=str(i),
+                    )
+                )
+            projected = project_messages(messages, 4000)
+            _assert_valid_tool_sequence(self, projected)
+            self.assertTrue(any(m.name == "target_post" for m in projected))
+            ids = {m.tool_call_id for m in projected if isinstance(m, ToolMessage)}
+            self.assertTrue({"105", "106"} <= ids)
+            self.assertTrue(any("results_index" in str(m.content) for m in projected))
+            self.assertTrue(any("post 50 " in text for text in turn.results.values()))
+        finally:
+            current_turn.reset(token)

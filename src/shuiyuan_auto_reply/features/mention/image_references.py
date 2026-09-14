@@ -13,7 +13,7 @@ from PIL import Image
 
 from shuiyuan_auto_reply.application.events import emit_event
 from shuiyuan_auto_reply.application.tool_results import cached_query, current_turn
-from shuiyuan_auto_reply.infrastructure.forum.image_transport import (
+from shuiyuan_auto_reply.infrastructure.image_transport import (
     ImageDownloadError,
     encoded_image_url,
 )

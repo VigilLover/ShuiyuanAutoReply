@@ -1,6 +1,7 @@
 """Protocol-preserving context projection backed by request-local evidence."""
 
 import json
+import logging
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
@@ -34,17 +35,19 @@ def compact_content(content, limit: int, *, result_id=None):
     )
 
 
-def project_messages(messages, budget: int = 24_000):
+def project_messages(messages, budget: int = 24_000, *, preserve_first: bool = True):
     """Keep call/result pairing, save full evidence before shortening the projection."""
     messages = list(messages)
     if count_tokens_approximately(messages) <= budget:
         return messages
     turn = current_turn.get()
+    if turn is None:
+        return messages  # Never discard evidence without a readable backing store.
     # The caller's original messages are immutable evidence, never edit in place.
     projected = []
     for index, message in enumerate(messages):
         # Keep current request (first human) intact. Tool payloads are independently readable.
-        if index == 0 and isinstance(message, HumanMessage):
+        if preserve_first and index == 0 and isinstance(message, HumanMessage):
             projected.append(message)
         else:
             content = compact_content(message.content, 1800)
@@ -62,13 +65,29 @@ def project_messages(messages, budget: int = 24_000):
             groups[-1].append(message)
         else:
             groups.append([message])
-    # Save all removed results and calls as evidence, never a bare "messages omitted".
-    while (
-        len(groups) > 3
-        and count_tokens_approximately([m for g in groups for m in g]) > budget - 1000
-    ):
-        removed = groups.pop(1)
-        if turn:
+    # Preserve target reference and the newest two atomic tool interaction blocks.
+    tool_groups = [
+        i
+        for i, group in enumerate(groups)
+        if isinstance(group[0], AIMessage) and group[0].tool_calls
+    ]
+    protected = set(tool_groups[-2:])
+    protected.update(
+        i
+        for i, group in enumerate(groups)
+        if getattr(group[0], "name", None) == "target_post"
+    )
+    if preserve_first:
+        protected.add(0)
+    retained = []
+    for i, group in enumerate(groups):
+        if (
+            i not in protected
+            and count_tokens_approximately(
+                [m for g in groups[i:] for m in g] + [m for g in retained for m in g]
+            )
+            > budget - 1500
+        ):
             turn.save(
                 [
                     {
@@ -76,25 +95,29 @@ def project_messages(messages, budget: int = 24_000):
                         "content": m.content,
                         "calls": getattr(m, "tool_calls", []),
                     }
-                    for m in removed
+                    for m in group
                 ]
             )
+        else:
+            retained.append(group)
+    groups = retained
     result = [m for g in groups for m in g]
     if turn:
         index_data = [
             {"result_id": key, "preview": text_value(value)[:180]}
             for key, value in turn.results.items()
+            if key not in turn.index_ids
         ]
-        index_id = turn.save(index_data)
+        index_id = turn.save(index_data, index=True)
         # Cache contains normalized post/user objects, so mappings survive removed tool blocks.
         known = {
             key: value
             for key, value in turn.cache.items()
             if key.startswith(("user:", "post:"))
         }
-        known_id = turn.save(known)
+        known_id = turn.save(known, index=True)
         result.insert(
-            1,
+            1 if result and isinstance(result[0], HumanMessage) else 0,
             HumanMessage(
                 content=json.dumps(
                     {
@@ -119,4 +142,11 @@ def project_messages(messages, budget: int = 24_000):
             )
             for m in result
         ]
+    logging.info(
+        "Context projection: estimated_tokens=%d -> %d budget=%d evidence=%d",
+        count_tokens_approximately(messages),
+        count_tokens_approximately(result),
+        budget,
+        len(turn.results),
+    )
     return result

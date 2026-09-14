@@ -70,3 +70,24 @@ class TurnResultsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [m.status for m in result["messages"]], ["success", "error", "error"]
         )
+
+    def test_result_snapshots_are_immutable_and_deduplicated(self):
+        turn = TurnResults()
+        source = {"users": ["Alice"]}
+        first = turn.save(source)
+        self.assertEqual(first, turn.save(source))
+        source["users"].append("Bob")
+        self.assertNotIn("Bob", turn.read(first)["content"])
+        self.assertNotEqual(first, turn.save(source))
+
+    async def test_nonretryable_read_failure_stops_at_first_attempt(self):
+        from shuiyuan_auto_reply.application.tool_results import tool_error
+        from shuiyuan_auto_reply.domain.tool_error import ReadFailure
+        from shuiyuan_auto_reply.retry import async_retry
+
+        call = AsyncMock(side_effect=ReadFailure(403))
+        with self.assertRaises(ReadFailure):
+            await async_retry()(call)()
+        call.assert_awaited_once()
+        self.assertEqual(tool_error(ReadFailure(429))["error"], "rate_limited")
+        self.assertTrue(tool_error(ReadFailure(429))["retryable"])

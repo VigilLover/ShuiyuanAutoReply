@@ -14,7 +14,7 @@ from shuiyuan_auto_reply.features.mention.image_generation import (
     create_image_generation_tool,
 )
 from shuiyuan_auto_reply.features.mention.image_references import prepare_references
-from shuiyuan_auto_reply.infrastructure.forum.image_transport import (
+from shuiyuan_auto_reply.infrastructure.image_transport import (
     ImageDownloadError,
     encoded_image_url,
 )

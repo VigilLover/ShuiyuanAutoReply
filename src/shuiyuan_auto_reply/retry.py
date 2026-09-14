@@ -56,6 +56,8 @@ def async_retry(
                     return await func(*args, **kwargs)
                 except Exception as exc:
                     last_error = exc
+                    if getattr(exc, "retryable", None) is False:
+                        break
                     if log_traceback:
                         logging.warning(
                             "%s attempt %d failed with error: %s, "

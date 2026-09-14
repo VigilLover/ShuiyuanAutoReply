@@ -1,5 +1,5 @@
 {
-  "version": "1",
+  "version": "2",
   "default_persona": "wolf_lumine",
   "system_template": "policies/system_template.txt",
   "web_system_template": "policies/web_system_template.txt",

@@ -103,3 +103,36 @@ class ForumToolContentTests(unittest.IsolatedAsyncioTestCase):
             '<blockquote><a class="mention" href="/u/alice">@Alice</a></blockquote><pre><a class="mention" href="/u/fake">@fake</a></pre>',
         )
         self.assertEqual(data["mentions"], [{"username": "alice", "source": "quote"}])
+
+    async def test_cursor_on_exact_tool_and_alias_refresh(self):
+        raw = "paragraph\n" * 2500
+        model = SimpleNamespace(
+            get_post_details=AsyncMock(return_value=post(raw)),
+            get_post_details_by_post_number=AsyncMock(return_value=post(raw)),
+        )
+        tools = ShuiyuanToolsWrapper(model)
+        first = await tools.get_post_by_id(100)
+        rest = await tools.get_post_details_by_post_number(42, 7, cursor=12000)
+        final = await tools.get_post_by_id(100, cursor=24000)
+        self.assertEqual(
+            first.to_dict()["content"] + rest["content"] + final["content"], raw.strip()
+        )
+        model.get_post_details.assert_awaited_once()
+        model.get_post_details_by_post_number.assert_not_awaited()
+        model.get_post_details.return_value = post("updated")
+        await tools.get_post_by_id(100, refresh=True)
+        reread = await tools.get_post_details_by_post_number(42, 7)
+        self.assertEqual(reread.to_dict()["content"], "updated")
+
+    def test_multiline_quote_mentions_are_distinct_from_body(self):
+        result = parse_content(
+            "[quote]\n@Alice\n@Bob\n[/quote]\n@Carol\n~~~\n@fake\n~~~", ""
+        )
+        self.assertEqual(
+            result["mentions"],
+            [
+                {"username": "Alice", "source": "quote"},
+                {"username": "Bob", "source": "quote"},
+                {"username": "Carol", "source": "body"},
+            ],
+        )

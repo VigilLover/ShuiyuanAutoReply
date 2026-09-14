@@ -93,7 +93,7 @@ class PostShort:
         self.reply_to_post_number = post.reply_to_post_number
         self.title = title
 
-    def to_dict(self) -> dict:
+    def to_dict(self, cursor: int = 0) -> dict:
         content = self._data["content"]
         limit = PAGE_CHARS if self.full else 800
         return {
@@ -108,12 +108,12 @@ class PostShort:
             },
             "title": self.title,
             **self._data,
-            "content": content[:limit],
+            "content": content[cursor : cursor + limit],
             "image_urls": self.image_urls,
-            "truncated": len(content) > limit,
+            "truncated": len(content) > cursor + limit,
             "total_chars": len(content),
             "result_id": self.result_id,
-            "next_cursor": limit if len(content) > limit else None,
+            "next_cursor": cursor + limit if len(content) > cursor + limit else None,
             "read_full": {"tool": "get_post_by_id", "post_id": self.id},
             "warnings": self.warnings,
         }
@@ -123,3 +123,20 @@ class PostShort:
 
     def __repr__(self):
         return self.__str__()
+
+
+class PostSearchResults(list):
+    """List-compatible search result with explicit coverage metadata for the model."""
+
+    def __str__(self):
+        return json.dumps(
+            {
+                "posts": [post.to_dict() for post in self],
+                "returned_count": len(self),
+                "coverage": "not_guaranteed_complete",
+                "continuation": "Use get_post/get_post_by_id for full content; refine query for additional matches.",
+            },
+            ensure_ascii=False,
+        )
+
+    __repr__ = __str__
