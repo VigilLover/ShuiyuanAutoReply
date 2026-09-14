@@ -16,8 +16,13 @@ from urllib.parse import urljoin, urlsplit
 import aiohttp
 from PIL import Image
 
+from shuiyuan_auto_reply.application.tool_results import current_turn
 from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.domain import GeneratedImageArtifact
+from shuiyuan_auto_reply.infrastructure.image_transport import (
+    ImageDownloadError,
+    encoded_image_url,
+)
 from shuiyuan_auto_reply.infrastructure.persistence.state import state_directory
 
 from .mention_multimodal import normalize_shuiyuan_image_url
@@ -388,6 +393,7 @@ async def _download_and_encode(
     max_bytes: int = _MAX_REFERENCE_BYTES,
     strict_remote: bool = False,
     _redirects_remaining: int = 3,
+    raise_errors: bool = False,
 ) -> str | None:
     """下载图片并转为 base64 data URL，整合了水源认证下载。"""
     if url.startswith("data:"):
@@ -434,6 +440,8 @@ async def _download_and_encode(
                         shuiyuan_image_url
                     )
             except Exception as exc:
+                if raise_errors:
+                    raise
                 logger.warning(
                     "Shuiyuan reference image download failed for %s: %s",
                     shuiyuan_image_url,
@@ -470,12 +478,13 @@ async def _download_and_encode(
                     max_bytes=max_bytes,
                     strict_remote=strict_remote,
                     _redirects_remaining=_redirects_remaining,
+                    raise_errors=raise_errors,
                 )
         if strict_remote and not await _is_public_http_url(url):
             logger.warning("Blocked non-public reference image URL: %s", url[:80])
             return None
         async with session.get(
-            url,
+            encoded_image_url(url),
             timeout=aiohttp.ClientTimeout(total=30),
             allow_redirects=not strict_remote,
         ) as response:
@@ -495,8 +504,13 @@ async def _download_and_encode(
                     max_bytes=max_bytes,
                     strict_remote=True,
                     _redirects_remaining=_redirects_remaining - 1,
+                    raise_errors=raise_errors,
                 )
             if response.status != 200:
+                if raise_errors:
+                    raise ImageDownloadError(
+                        response.status, response.headers.get("Retry-After")
+                    )
                 logger.warning(
                     "Download reference image failed: %s HTTP %s",
                     url[:80],
@@ -524,6 +538,8 @@ async def _download_and_encode(
                 logger.warning("Reference image exceeded size limit after download")
                 return None
     except Exception as exc:
+        if raise_errors:
+            raise
         logger.warning("Download reference image error: %s %s", url[:80], exc)
         return None
 
@@ -614,6 +630,12 @@ def _image_mime_from_bytes(image_bytes: bytes, fallback: str = "image/jpeg") -> 
 
 def _encode_bytes(image_bytes: bytes, source_hint: str, max_bytes: int) -> str | None:
     """将图片字节压缩并编码为 base64 data URL"""
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image.verify()
+    except Exception:
+        logger.warning("Reference payload is not a decodable image")
+        return None
     # 预压缩以减小服务端处理时间
     image_bytes = _compress_reference_image(image_bytes)
 
@@ -697,9 +719,10 @@ def create_image_generation_tool(model, *, state_store=None):
         image_size: str = "1K",
         reference_images: str | list[str] | None = None,
         output_dir: str | None = None,
+        reference_set_id: str | None = None,
     ) -> str:
         """
-        根据用户的文字描述生成图片，自动上传到水源并返回图片的短链接。
+        根据用户的文字描述生成图片并返回可展示结果；网页仅保存本地 Artifact，论坛由发布流程上传。
 
         这是生成图片的唯一方式。如果你没有调用此工具，你没有任何图片可以展示。
         绝对禁止在没有调用本工具的情况下编造或输出任何图片链接。
@@ -708,14 +731,15 @@ def create_image_generation_tool(model, *, state_store=None):
         例如返回 `upload://zuyICpNdsQZCsV4cWeOwgcDLLak.jpeg`，你在回复中写 `![生成的图片](upload://zuyICpNdsQZCsV4cWeOwgcDLLak.jpeg)`
 
         提示词(prompt)编写规则（根据是否有参考图区别对待）：
-        - 有参考图（reference_images 非空）：prompt 只需用纯中文简要描述原本要求，不要自行添加任何风格词或细节描写，让参考图主导视觉，并且强调"根据给定的参考图生成图片"。
-        - 需要参考水源用户头像时，先通过 search_user 或 search_user_by_id 获取 avatar，再把 avatar URL 传入 reference_images。
+        - 有参考图（reference_images 非空）：prompt 简要准确描述用户要求，保留用户明确指定的风格、布局及修改要求，不擅自添加要求，让参考图提供形象依据，并且强调"根据给定的参考图生成图片"。
+        - 需要参考水源用户头像时，已知用户名使用 get_user/get_users(include_avatar=True)，不确定名称才搜索。用 prepare_image_references 准备选中素材，以标签描述对象并传 reference_set_id；不要自行添加数字编号。
         - 无参考图（reference_images 为空）：必须用纯中文进行极其详细的画面描述，涵盖外貌、服饰、姿态、光影、背景、氛围等。如果绘画对象是人物，画风默认二次元精美插画，强调"唯美、精细、干净通透"，避免过度锐化、畸变与崩坏。若用户提供设定/附件/印象，必须将关键元素具象化融入画面。
 
         :param prompt: 详细的纯中文生图提示词。
         :param aspect_ratio: 画面宽高比，默认 1:1。支持 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9, 1:4, 4:1, 1:8, 8:1。
         :param image_size: 保留用于兼容已有工具调用；当前始终使用固定 1K 分辨率，传入其他值会被忽略。
         :param reference_images: 参考图片 URL 列表。传入 Python 列表格式如 ["upload://xxx.jpeg"]，支持 upload://、http(s)://、data: 等格式。
+        :param reference_set_id: prepare_image_references 返回的本轮素材集 ID；与 reference_images 互斥。使用标签描述素材，不自行编排编号。
         :param output_dir: 可选的自定义输出目录，用于保存生成的图片备份。
         :return: 图片的短链接。你必须用 `![描述](链接)` 格式嵌入回复中。
         """
@@ -784,52 +808,51 @@ def create_image_generation_tool(model, *, state_store=None):
         else:
             reference_images = None
 
-        reference_data_urls: list[str] = []
-        total_ref_bytes = 0
-        use_edit_endpoint = bool(reference_images)
-        if reference_images:
-            if state_store is not None:
-                unsafe = [
-                    url
-                    for url in reference_images
-                    if not url.startswith(
-                        (
-                            "data:",
-                            "upload://",
-                            "/uploads/short-url/",
-                            "http://",
-                            "https://",
-                        )
-                    )
-                ]
-                if unsafe:
-                    return "图片生成失败: 网页运行时不允许读取本地参考图路径."
-            async with aiohttp.ClientSession() as session:
-                for url in reference_images:
-                    data_url = await _download_and_encode(
-                        session,
-                        url,
-                        shuiyuan_model=model,
-                        strict_remote=state_store is not None,
-                    )
-                    if not data_url:
-                        continue
-                    encoded_length = (
-                        len(data_url.split(",", 1)[1])
-                        if "," in data_url
-                        else len(data_url)
-                    )
-                    estimated_bytes = int(encoded_length * 3 / 4)
-                    if total_ref_bytes + estimated_bytes > _MAX_TOTAL_REFERENCE_BYTES:
-                        logger.warning(
-                            "Reference images total size would exceed %dMB, skipping remaining",
-                            _MAX_TOTAL_REFERENCE_BYTES // (1024 * 1024),
-                        )
-                        break
-                    total_ref_bytes += estimated_bytes
-                    reference_data_urls.append(data_url)
+        from .image_references import prepare_references
+
+        turn = current_turn.get()
+        if reference_set_id and reference_images:
+            return "图片生成失败: reference_set_id 与 reference_images 互斥."
+        prepared = None
+        if reference_set_id:
+            prepared = turn.references.get(reference_set_id) if turn else None
+            if prepared is None:
+                return "图片生成失败: 素材集不存在或不属于本轮，请重新 prepare_image_references."
+        elif reference_images:
+            prepared = await prepare_references(
+                [
+                    {"key": str(i + 1), "url": url, "label": f"原参考图{i + 1}"}
+                    for i, url in enumerate(reference_images)
+                ],
+                model=model,
+                strict_remote=state_store is not None,
+            )
+            if prepared["status"] == "partial":
+                public = {k: v for k, v in prepared.items() if k != "data_urls"}
+                return "部分参考素材读取失败，尚未生成。请按成功素材标签调整描述，再用 reference_set_id 生成：" + json.dumps(
+                    public, ensure_ascii=False
+                )
+        reference_data_urls = prepared["data_urls"] if prepared else []
+        use_edit_endpoint = bool(reference_images or reference_set_id)
         if use_edit_endpoint and not reference_data_urls:
-            return "图片生成失败: 未能读取可用的参考图片."
+            return "图片生成失败: 未能读取可用的参考图片. " + json.dumps(
+                prepared.get("items", []) if prepared else [], ensure_ascii=False
+            )
+        reference_notice = ""
+        if prepared and reference_set_id:
+            good = [item for item in prepared["items"] if item["status"] == "ok"]
+            missing = [item for item in prepared["items"] if item["status"] != "ok"]
+            mapping = "\n".join(
+                f"参考图{i + 1}：{item['label']}" for i, item in enumerate(good)
+            )
+            prompt += "\n\n【实际参考素材对应关系】\n" + mapping
+            if missing:
+                labels = "、".join(item["label"] for item in missing)
+                prompt += f"\n仅使用上述 {len(good)} 项成功素材；未提供的素材（{labels}）及其对应对象不纳入生成，不猜测其形象。"
+                reference_notice = f"参考素材 {len(good)}/{len(prepared['items'])} 项可用；未纳入：{labels}。"
+        total_ref_bytes = sum(
+            len(value.split(",", 1)[1]) * 3 // 4 for value in reference_data_urls
+        )
 
         image_operation = "edits" if use_edit_endpoint else "generations"
         request_url = _image_api_endpoint(api_url, image_operation)
@@ -1022,8 +1045,11 @@ def create_image_generation_tool(model, *, state_store=None):
                     width=width,
                     height=height,
                 )
+                if turn and reference_notice:
+                    turn.notices.append(reference_notice)
                 return (
-                    f"图片生成成功：{artifact.uri}。请在最终回复中使用该地址展示图片。",
+                    f"图片生成成功：{artifact.uri}。请在最终回复中使用该地址展示图片。"
+                    + reference_notice,
                     artifact,
                 )
             except Exception as exc:
@@ -1033,7 +1059,11 @@ def create_image_generation_tool(model, *, state_store=None):
         try:
             response = await model.upload_image(upload_bytes)
             logger.info("Uploaded to Shuiyuan: %s", response.short_path)
-            return response.short_path
+            if turn and reference_notice:
+                turn.notices.append(reference_notice)
+            return response.short_path + (
+                "\n" + reference_notice if reference_notice else ""
+            )
         except Exception as exc:
             logger.error("Shuiyuan upload failed: %s", exc)
             return f"图片生成失败: 上传到水源异常 {exc}"
@@ -1058,6 +1088,7 @@ class ImageGenerationService:
         image_size: str = "1K",
         reference_images: str | list[str] | None = None,
         output_dir: str | None = None,
+        reference_set_id: str | None = None,
     ) -> tuple[str, GeneratedImageArtifact | None]:
         """Return the two-part result required by ``content_and_artifact``.
 
@@ -1072,6 +1103,7 @@ class ImageGenerationService:
             image_size=image_size,
             reference_images=reference_images,
             output_dir=output_dir,
+            reference_set_id=reference_set_id,
         )
         if isinstance(result, tuple) and len(result) == 2:
             return result

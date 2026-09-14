@@ -48,6 +48,7 @@ DEFAULTS = {
         "shutdown_timeout": 60,
         "history_limit": 100,
         "history_ttl": 1800,
+        "context_token_budget": 24000,
     },
     "media": {
         "max_image_bytes": 20971520,
@@ -200,6 +201,7 @@ def load_deployment(
             "poll_interval",
             "history_limit",
             "history_ttl",
+            "context_token_budget",
         ),
         "media": (
             "max_image_bytes",

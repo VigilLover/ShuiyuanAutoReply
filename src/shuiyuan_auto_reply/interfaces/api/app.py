@@ -881,6 +881,11 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                     item["enabled"] = item["name"] in selected
             return catalog
         names = [
+            "get_user",
+            "get_users",
+            "get_post_by_id",
+            "read_tool_result",
+            "prepare_image_references",
             "search_user",
             "search_user_by_id",
             "search_posts",

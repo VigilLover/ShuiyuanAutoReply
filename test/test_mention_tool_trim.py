@@ -55,7 +55,9 @@ class MentionToolLoopTrimTests(unittest.TestCase):
         self.assertEqual(len(messages), 21)
         trimmed = MentionChatModel._trim_tool_loop_messages(messages)
 
-        self.assertLessEqual(len(trimmed), MentionChatModel._MAX_TOOL_LOOP_MESSAGES)
+        self.assertEqual(
+            trimmed, messages
+        )  # Small results no longer hit a message-count cap.
         _assert_valid_tool_sequence(self, trimmed)
 
     def test_trim_single_tool_calls_still_valid(self):
@@ -81,7 +83,9 @@ class MentionToolLoopTrimTests(unittest.TestCase):
         self.assertEqual(len(messages), 21)
         trimmed = MentionChatModel._trim_tool_loop_messages(messages)
 
-        self.assertLessEqual(len(trimmed), MentionChatModel._MAX_TOOL_LOOP_MESSAGES)
+        self.assertEqual(
+            trimmed, messages
+        )  # Small results no longer hit a message-count cap.
         _assert_valid_tool_sequence(self, trimmed)
 
     def test_trim_returns_original_when_within_limit(self):
@@ -100,3 +104,85 @@ class MentionToolLoopTrimTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EvidenceProjectionTests(unittest.TestCase):
+    def test_large_parallel_batch_keeps_all_responses_and_readable_evidence(self):
+        from shuiyuan_auto_reply.application.tool_results import (
+            TurnResults,
+            current_turn,
+        )
+        from shuiyuan_auto_reply.features.mention.context_budget import project_messages
+
+        turn = TurnResults()
+        token = current_turn.set(turn)
+        try:
+            turn.cache["user:alice"] = {
+                "username": "alice",
+                "avatar": "https://example.org/a.png",
+            }
+            calls = [
+                {"name": "get_user", "args": {"username": str(i)}, "id": str(i)}
+                for i in range(30)
+            ]
+            messages = [
+                HumanMessage(content="Use the supplied users"),
+                AIMessage(content="", tool_calls=calls),
+            ]
+            messages += [
+                ToolMessage(content=(f"evidence-{i} " * 3000), tool_call_id=str(i))
+                for i in range(30)
+            ]
+            projected = project_messages(messages, 4000)
+            _assert_valid_tool_sequence(self, projected)
+            self.assertEqual(sum(isinstance(m, ToolMessage) for m in projected), 30)
+            self.assertGreaterEqual(len(turn.results), 30)
+            self.assertTrue(any("evidence-29" in str(v) for v in turn.results.values()))
+            self.assertEqual(
+                turn.cache["user:alice"]["avatar"], "https://example.org/a.png"
+            )
+        finally:
+            current_turn.reset(token)
+
+    def test_target_and_latest_two_tool_batches_survive_long_history(self):
+        from shuiyuan_auto_reply.application.tool_results import (
+            TurnResults,
+            current_turn,
+        )
+        from shuiyuan_auto_reply.features.mention.context_budget import project_messages
+
+        turn = TurnResults()
+        token = current_turn.set(turn)
+        try:
+            messages = [
+                HumanMessage(content="current task"),
+                HumanMessage(content="target raw body", name="target_post"),
+            ]
+            for i in range(107):
+                messages.append(
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": str(i),
+                                "name": "get_post",
+                                "args": {"topic_id": 42, "post_number": i + 1},
+                            }
+                        ],
+                    )
+                )
+                messages.append(
+                    ToolMessage(
+                        content=f"post {i} " + "long content " * 1000,
+                        tool_call_id=str(i),
+                    )
+                )
+            projected = project_messages(messages, 4000)
+            _assert_valid_tool_sequence(self, projected)
+            self.assertTrue(any(m.name == "target_post" for m in projected))
+            ids = {m.tool_call_id for m in projected if isinstance(m, ToolMessage)}
+            self.assertTrue({"105", "106"} <= ids)
+            self.assertTrue(any("results_index" in str(m.content) for m in projected))
+            self.assertTrue(any("post 50 " in text for text in turn.results.values()))
+        finally:
+            current_turn.reset(token)

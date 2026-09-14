@@ -263,13 +263,10 @@ class TestPostShortImages(unittest.TestCase):
                 "upload://cooked-late.webp",
             ],
         )
-        self.assertLessEqual(len(post.raw), 384)
-        self.assertLessEqual(len(post.cooked), 384)
-        self.assertIn("PostMeta:", str(post))
-        self.assertIn(
-            "Images: upload://raw-late.jpeg, upload://same.png, upload://cooked-late.webp",
-            str(post),
-        )
+        self.assertEqual(post.raw, raw)
+        self.assertEqual(post.cooked, cooked)
+        self.assertEqual(post.to_dict()["post_id"], 1)
+        self.assertEqual(post.to_dict()["image_urls"], post.image_urls)
 
 
 class TestMentionMimoModel(unittest.TestCase):
