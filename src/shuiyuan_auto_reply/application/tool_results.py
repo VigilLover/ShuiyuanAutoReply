@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -18,6 +19,7 @@ class TurnResults:
     references: dict[str, Any] = field(default_factory=dict)
     notices: list[str] = field(default_factory=list)
     cache_hits: int = 0
+    deadline: float = field(default_factory=lambda: time.monotonic() + 900)
 
     def save(self, value: Any) -> str:
         key = str(uuid4())

@@ -50,6 +50,7 @@ from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from .chat_pipeline import ChatOrchestrator
 from .context_budget import compact_content, project_messages
 from .image_generation import ImageGenerationService, create_image_generation_tool
+from .image_references import create_reference_preparation_tool
 from .mention_memory_model import MentionMemoryModel
 from .mention_multimodal import (
     ImageInspectResult,
@@ -489,6 +490,15 @@ class MentionChatModel:
                     )
                 )
 
+        tools.append(
+            StructuredTool.from_function(
+                coroutine=create_reference_preparation_tool(
+                    self.model,
+                    strict_remote=getattr(self, "state_store", None) is not None,
+                ),
+                name="prepare_image_references",
+            )
+        )
         if getattr(
             self,
             "uses_inspect_image_tool",
@@ -1269,6 +1279,11 @@ class MentionChatModel:
         final_clean_text = ShuiyuanModel.strip_forum_signature(
             self.parse_model_output(raw_output)
         )
+        turn = current_turn.get()
+        if turn:
+            for notice in dict.fromkeys(turn.notices):
+                if notice not in final_clean_text:
+                    final_clean_text += "\n\n" + notice
         return {
             "raw_output": raw_output,
             "final_text": final_clean_text,
@@ -1375,6 +1390,15 @@ class MentionChatModel:
             len(conversation),
             self._preview_text(conversation),
         )
+        import time
+
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
+        turn = current_turn.get()
+        if turn:
+            turn.deadline = (
+                time.monotonic() + get_deployment().section("runtime")["timeout"]
+            )
         effective_session_id = topic_id if session_id is None else session_id
         if effective_session_id is None:
             raise ValueError("session_id is required when topic_id is None")

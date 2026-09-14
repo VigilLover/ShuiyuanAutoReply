@@ -18,6 +18,10 @@ from dacite import from_dict
 from PIL import Image
 from yarl import URL
 
+from shuiyuan_auto_reply.infrastructure.forum.image_transport import (
+    ImageDownloadError,
+    encoded_image_url,
+)
 from shuiyuan_auto_reply.retry import async_retry
 
 from ..constants import settings
@@ -643,7 +647,9 @@ class ShuiyuanModel:
             return await response.read()
 
         if response.status not in {301, 302, 303, 307, 308}:
-            raise Exception(f"Failed to download image: {await response.text()}")
+            raise ImageDownloadError(
+                response.status, response.headers.get("Retry-After")
+            )
 
         redirect_url = response.headers.get("Location")
         response.release()
@@ -657,11 +663,13 @@ class ShuiyuanModel:
             headers={"User-Agent": default_user_agent}
         ) as download_session:
             response = await download_session.get(
-                URL(redirect_url, encoded=True),
+                encoded_image_url(redirect_url),
                 allow_redirects=True,
             )
             if response.status != 200:
-                raise Exception(f"Failed to download image: {await response.text()}")
+                raise ImageDownloadError(
+                    response.status, response.headers.get("Retry-After")
+                )
 
             return await response.read()
 
@@ -684,12 +692,12 @@ class ShuiyuanModel:
 
         response = await self._rate_limited_request(
             "get",
-            URL(request_url, encoded=True),
+            encoded_image_url(request_url),
             allow_redirects=True,
         )
         if response.status != 200:
-            raise Exception(
-                f"Failed to download Shuiyuan image: {await response.text()}"
+            raise ImageDownloadError(
+                response.status, response.headers.get("Retry-After")
             )
 
         return await response.read()
