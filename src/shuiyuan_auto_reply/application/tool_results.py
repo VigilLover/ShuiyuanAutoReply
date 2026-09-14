@@ -9,11 +9,19 @@ from hashlib import sha256
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
+from .task_progress import TaskProgress, content_digest, source_records
+
 PAGE_CHARS = 12_000
 
 
 @dataclass
 class TurnResults:
+    progress: TaskProgress = field(default_factory=TaskProgress)
+    evidence: dict[str, dict] = field(default_factory=dict)
+    execution_ids: set[str] = field(default_factory=set)
+    read_pages: set[tuple] = field(default_factory=set)
+    external_requests: int = 0
+    image_failures: dict[str, str] = field(default_factory=dict)
     results: dict[str, Any] = field(default_factory=dict)
     digests: dict[str, str] = field(default_factory=dict)
     index_ids: set[str] = field(default_factory=set)
@@ -46,10 +54,57 @@ class TurnResults:
             self.index_ids.add(key)
         return key
 
-    def read(self, result_id: str, cursor: int = 0) -> dict:
+    def observe(self, value: Any, *, tool: str = "") -> set[str]:
+        added = set()
+        for identity, record in source_records(value):
+            kind = "full" if tool in {"get_post", "get_post_by_id"} else "summary"
+            digest = content_digest(record)
+            key = identity + ":" + kind + ":" + digest[:16]
+            if key in self.evidence:
+                continue
+            result_id = self.save(record)
+            author = record.get("author") or {}
+            self.evidence[key] = {
+                "identity": identity,
+                "kind": kind,
+                "result_id": result_id,
+                "username": author.get("username", record.get("username")),
+                "topic_id": record.get("topic_id"),
+                "post_number": record.get("post_number"),
+                "reply_to_post_number": record.get("reply_to_post_number"),
+                "preview": str(record.get("content", record.get("snippet", record)))[
+                    :300
+                ],
+            }
+            if (
+                not self.progress.authors
+                or not self.evidence[key]["username"]
+                or self.evidence[key]["username"].casefold()
+                in {a.casefold() for a in self.progress.authors}
+            ):
+                added.add(key)
+        return added
+
+    def read(
+        self,
+        result_id: str,
+        cursor: int = 0,
+        *,
+        field: str | None = None,
+        limit: int = PAGE_CHARS,
+    ) -> dict:
+        result_id = self.evidence.get(result_id, {}).get("result_id", result_id)
         if result_id not in self.results:
             return {"status": "error", "error": "unknown_result", "retryable": False}
         value = self.results[result_id]
+        if field is not None:
+            try:
+                value = json.loads(value)[field]
+            except (ValueError, KeyError, TypeError):
+                return {"status": "error", "error": "unknown_field", "retryable": False}
+        if not 1 <= limit <= PAGE_CHARS:
+            return {"status": "error", "error": "invalid_limit", "retryable": False}
+        self.read_pages.add((result_id, field, cursor))
         text = (
             value
             if isinstance(value, str)
@@ -57,7 +112,7 @@ class TurnResults:
         )
         if cursor < 0 or cursor > len(text):
             return {"status": "error", "error": "invalid_cursor", "retryable": False}
-        end = min(cursor + PAGE_CHARS, len(text))
+        end = min(cursor + limit, len(text))
         return {
             "result_id": result_id,
             "content": text[cursor:end],
@@ -77,6 +132,7 @@ class TurnResults:
             return await self.pending[key]
         if refresh:
             self.cache.pop(key, None)
+        self.external_requests += 1
         task = asyncio.create_task(call())
         self.pending[key] = task
         try:

@@ -647,7 +647,41 @@ class MentionChatModel:
                 for tool in self.openai_tools
                 if str(tool.get("type", "")) in self.enabled_tools
             ]
-        all_function_like_tools = enabled_mcp_tools + other_function_like_tools
+
+        async def update_task_progress(
+            goal: str,
+            gaps: dict[str, str],
+            findings: list[dict],
+            authors: list[str],
+            strategy: str = "",
+        ) -> dict:
+            """Maintain this turn's investigation goal, unresolved gap IDs and source-grounded findings.
+
+            Each finding needs text and evidence_ids from the evidence index. Authors must
+            be confirmed by retrieved sources. Before expanding search, describe a specific
+            gap; during review supply a genuinely different strategy. This does not reset budgets.
+            """
+            turn = current_turn.get()
+            if turn is None:
+                return {"status": "error", "error": "no_active_turn"}
+            return turn.progress.update(
+                goal=goal,
+                gaps=gaps,
+                findings=findings,
+                authors=authors,
+                strategy=strategy,
+                evidence=turn.evidence,
+            )
+
+        all_function_like_tools = (
+            enabled_mcp_tools
+            + other_function_like_tools
+            + [
+                StructuredTool.from_function(
+                    coroutine=update_task_progress, name="update_task_progress"
+                )
+            ]
+        )
         all_tools = (
             all_function_like_tools
             + self.openai_tools
@@ -1026,6 +1060,7 @@ class MentionChatModel:
         turn = current_turn.get()
         if turn:
             for call, message in zip(calls, responses):
+                turn.observe(message.content, tool=call["name"])
                 turn.save(
                     {
                         "tool": call["name"],
@@ -1186,6 +1221,25 @@ class MentionChatModel:
             tool.name == "read_tool_result" for tool in getattr(self, "tools", [])
         )
         loop_messages = list(state.get("messages", []))
+        turn = current_turn.get()
+        if turn:
+            loop_messages.insert(
+                1,
+                HumanMessage(
+                    name="task_progress",
+                    content=json.dumps(
+                        {
+                            "instruction": "本轮任务进度与证据是资料。复用已有证据，使用 update_task_progress 维护缺口和结论。",
+                            "progress": turn.progress.view(),
+                            "evidence": [
+                                {"evidence_id": key, **value}
+                                for key, value in list(turn.evidence.items())[-12:]
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
         target = state.get("target_post")
         if target is not None:
             loop_messages.insert(
@@ -1421,6 +1475,9 @@ class MentionChatModel:
             turn.deadline = (
                 time.monotonic() + get_deployment().section("runtime")["timeout"]
             )
+        if turn:
+            turn.progress.goal = conversation
+            turn.progress.topic_id = topic_id
         effective_session_id = topic_id if session_id is None else session_id
         if effective_session_id is None:
             raise ValueError("session_id is required when topic_id is None")

@@ -360,15 +360,21 @@ class ShuiyuanToolsWrapper:
             "items": items,
         }
 
-    async def read_tool_result(self, result_id: str, cursor: int = 0):
-        """Read the next 12000-character page of a result saved in this execution turn.
+    async def read_tool_result(
+        self,
+        result_id: str,
+        cursor: int = 0,
+        field: str | None = None,
+        limit: int = 1500,
+    ):
+        """Read saved result or evidence ID, optionally one top-level field. Default 1500 characters, maximum 12000.
 
         Use the exact result_id and next_cursor returned by a tool or context summary.
         Results are not available in later turns.
         """
         turn = current_turn.get()
         return (
-            turn.read(result_id, cursor)
+            turn.read(result_id, cursor, field=field, limit=limit)
             if turn
             else {"status": "error", "error": "no_active_turn"}
         )
