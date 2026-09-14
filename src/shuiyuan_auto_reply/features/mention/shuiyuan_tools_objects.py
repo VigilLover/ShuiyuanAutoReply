@@ -128,9 +128,17 @@ class PostShort:
 class PostSearchResults(list):
     """List-compatible search result with explicit coverage metadata for the model."""
 
+    def __init__(self, items=(), *, query=None, truncated=False):
+        super().__init__(items)
+        self.query = query or {}
+        self.truncated = truncated
+
     def __str__(self):
         return json.dumps(
             {
+                "query_scope": self.query,
+                "truncated": self.truncated,
+                "pagination_supported": False,
                 "posts": [post.to_dict() for post in self],
                 "returned_count": len(self),
                 "coverage": "not_guaranteed_complete",

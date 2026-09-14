@@ -9,6 +9,7 @@ from hashlib import sha256
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
+from .retrieval_control import RetrievalControl
 from .task_progress import TaskProgress, content_digest, source_records
 
 PAGE_CHARS = 12_000
@@ -16,6 +17,7 @@ PAGE_CHARS = 12_000
 
 @dataclass
 class TurnResults:
+    control: RetrievalControl = field(default_factory=RetrievalControl)
     progress: TaskProgress = field(default_factory=TaskProgress)
     evidence: dict[str, dict] = field(default_factory=dict)
     execution_ids: set[str] = field(default_factory=set)

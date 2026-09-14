@@ -23,6 +23,8 @@ def cached_read(func):
         values.pop("self")
         refresh = values.pop("refresh", False)
         cursor = values.pop("cursor", 0)
+        values.pop("gap_id", None)
+        values.pop("scope_reason", None)
         if cursor < 0 or any(
             values.get(name, 1) <= 0
             for name in ("post_id", "post_number")
@@ -42,6 +44,19 @@ def cached_read(func):
             key = f"post_number:{values['topic_id']}:{values['post_number']}"
         else:
             key = func.__name__ + json.dumps(values, sort_keys=True, ensure_ascii=False)
+        if "page" in values and values["page"] != 0:
+            return {
+                "status": "error",
+                "error": "pagination_unsupported",
+                "retryable": False,
+                "message": "This backend does not expose reliable pagination; refine the query",
+            }
+        if "limit" in values and not 1 <= values["limit"] <= 20:
+            return {
+                "status": "error",
+                "error": "limit_must_be_1_to_20",
+                "retryable": False,
+            }
         turn = current_turn.get()
         old = turn.cache.get(key) if turn else None
         if refresh and isinstance(old, PostShort):
@@ -50,6 +65,12 @@ def cached_read(func):
         result = await cached_query(
             key, lambda: func(self, *args, **kwargs), refresh=refresh
         )
+        if isinstance(result, PostSearchResults):
+            result = PostSearchResults(
+                result[: values.get("limit", 10)],
+                query=values,
+                truncated=len(result) > values.get("limit", 10),
+            )
         if cursor and isinstance(result, PostShort):
             if cursor < 0 or cursor > result.to_dict()["total_chars"]:
                 return {
@@ -127,6 +148,10 @@ class ShuiyuanToolsWrapper:
         username: Optional[str] = None,
         topic_id: Optional[int] = None,
         refresh: bool = False,
+        gap_id: str = "",
+        scope_reason: str = "",
+        page: int = 0,
+        limit: int = 10,
     ) -> List[PostShort] | str:
         """
         Search posts and return summaries (up to 800 characters each). Use get_post/get_post_by_id for full content. Results may not exhaust the topic; do not assume complete coverage. refresh=True explicitly bypasses cached results.
@@ -160,6 +185,9 @@ class ShuiyuanToolsWrapper:
         topic_id: int,
         limit: int = 10,
         refresh: bool = False,
+        gap_id: str = "",
+        scope_reason: str = "",
+        page: int = 0,
     ) -> List[PostShort] | str:
         """
         Read recent post summaries, up to 800 characters each. Use get_post for full text and reply relations. Start small; expand only for a specific information gap. refresh=True bypasses cached results.
@@ -178,7 +206,13 @@ class ShuiyuanToolsWrapper:
 
     @cached_read
     async def get_post_details_by_post_number(
-        self, topic_id: int, post_number: int, refresh: bool = False, cursor: int = 0
+        self,
+        topic_id: int,
+        post_number: int,
+        refresh: bool = False,
+        cursor: int = 0,
+        gap_id: str = "",
+        scope_reason: str = "",
     ) -> PostShort | str:
         """
         Read full raw text by topic ID and topic-local floor number. Cursor pages contain 12000 characters; use next_cursor to continue, or read_tool_result with result_id. refresh=True explicitly bypasses cached results.
@@ -213,6 +247,10 @@ class ShuiyuanToolsWrapper:
         after_date: Optional[str] = None,
         before_date: Optional[str] = None,
         refresh: bool = False,
+        gap_id: str = "",
+        scope_reason: str = "",
+        page: int = 0,
+        limit: int = 10,
     ) -> List[PostShort] | str:
         """
         Search post summaries within a topic and date range; results may not exhaust the range. Use get_post for full text. refresh=True bypasses cached results.
@@ -263,7 +301,12 @@ class ShuiyuanToolsWrapper:
 
     @cached_read
     async def get_post_by_id(
-        self, post_id: int, refresh: bool = False, cursor: int = 0
+        self,
+        post_id: int,
+        refresh: bool = False,
+        cursor: int = 0,
+        gap_id: str = "",
+        scope_reason: str = "",
     ):
         """Read a complete post by GLOBAL post ID (not topic-local floor number).
 
