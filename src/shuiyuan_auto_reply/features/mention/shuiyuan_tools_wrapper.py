@@ -18,6 +18,11 @@ from .mention_multimodal import extract_image_urls
 from .shuiyuan_tools_objects import PostShort, UserShort
 
 
+class CursorConflictError(ValueError):
+    code = "cursor_conflict"
+    retryable = False
+
+
 class ShuiyuanToolsWrapper:
     """
     A wrapper around the ShuiyuanModel to provide tool functions for LLM agents.
@@ -52,7 +57,9 @@ class ShuiyuanToolsWrapper:
     def _error(exc: Exception) -> dict:
         value = tool_error(exc)
         code = value["error"]
-        if isinstance(exc, ValueError):
+        if getattr(exc, "code", None):
+            code = exc.code
+        elif isinstance(exc, ValueError):
             code = "invalid_arguments"
         elif isinstance(exc, PermissionError):
             code = "operation_disabled"
@@ -81,6 +88,30 @@ class ShuiyuanToolsWrapper:
         return value
 
     @staticmethod
+    def _check_cursor_arguments(
+        state: dict, supplied: dict, *, defaults: dict | None = None
+    ) -> None:
+        """Accept repeated cursor locators when they match the bound request."""
+        request = state.get("request", {})
+        defaults = defaults or {}
+        for key, value in supplied.items():
+            if value in (None, "", []):
+                continue
+            if key in defaults and value == defaults[key] and request.get(key) != value:
+                # Function defaults are indistinguishable from omitted arguments.
+                continue
+            expected = request.get(key)
+            if key == "username" and isinstance(value, str):
+                value = value.strip().lstrip("@").casefold()
+                expected = str(expected or "").strip().lstrip("@").casefold()
+            elif key == "query" and isinstance(value, str):
+                value, expected = value.strip(), str(expected or "").strip()
+            if value != expected:
+                raise CursorConflictError(
+                    f"cursor is bound to a different {key}; continue with the cursor alone"
+                )
+
+    @staticmethod
     def _search_query(
         query: str,
         *,
@@ -102,7 +133,10 @@ class ShuiyuanToolsWrapper:
                 try:
                     date.fromisoformat(value)
                 except ValueError as exc:
-                    raise ValueError("Dates must use YYYY-MM-DD") from exc
+                    raise ValueError(
+                        "Dates must use YYYY-MM-DD, for example 2026-09-14; "
+                        "use forum_read cursor for sequential topic reading"
+                    ) from exc
         if after_date and before_date and after_date >= before_date:
             raise ValueError("after_date must be earlier than before_date")
         for name, wanted in structured.items():
@@ -152,26 +186,41 @@ class ShuiyuanToolsWrapper:
     ) -> dict:
         """Search Shuiyuan posts or topics with Discourse filters; returns concise snippets and an opaque continuation cursor."""
         try:
-            if not 1 <= limit <= 20:
-                raise ValueError("limit must be between 1 and 20")
+            if limit < 1:
+                raise ValueError("limit must be at least 1")
+            limit = min(limit, 20)
             if topic_id is not None and topic_id <= 0:
                 raise ValueError("topic_id must be positive")
             if cursor:
                 state = self._resume(cursor, "forum_search")
-                if (
-                    any((query, topic_id, username, after_date, before_date))
-                    or sort != "relevance"
-                    or (kind is not None and kind != state["result_kind"])
-                ):
-                    raise ValueError(
-                        "Use only cursor and limit when continuing a search"
-                    )
+                self._check_cursor_arguments(
+                    state,
+                    {
+                        "kind": kind,
+                        "query": query,
+                        "topic_id": topic_id,
+                        "username": username,
+                        "after_date": after_date,
+                        "before_date": before_date,
+                        "sort": sort,
+                    },
+                    defaults={"sort": "relevance"},
+                )
                 search_query = state["query"]
                 page = state["page"]
                 offset = state["offset"]
                 kind = state["result_kind"]
             else:
                 kind = kind or "posts"
+                request = {
+                    "kind": kind,
+                    "query": query.strip(),
+                    "topic_id": topic_id,
+                    "username": username,
+                    "after_date": after_date,
+                    "before_date": before_date,
+                    "sort": sort,
+                }
                 search_query = self._search_query(
                     query,
                     topic_id=topic_id,
@@ -246,6 +295,7 @@ class ShuiyuanToolsWrapper:
                         "page": page if next_offset < len(source) else page + 1,
                         "offset": next_offset if next_offset < len(source) else 0,
                         "result_kind": kind,
+                        "request": state.get("request", {}) if cursor else request,
                     }
                 )
             return self._ok(items, query=search_query, next_cursor=next_cursor)
@@ -266,20 +316,25 @@ class ShuiyuanToolsWrapper:
     ) -> tuple[str, list[PostShort]]:
         """Read exact posts or a topic window. Exact reads attach up to four images for multimodal understanding; topic lists stay text-only."""
         try:
-            if not 1 <= limit <= 20:
-                raise ValueError("limit must be between 1 and 20")
+            if limit < 1:
+                raise ValueError("limit must be at least 1")
+            limit = min(limit, 20)
             for locator in (post_id, topic_id, post_number):
                 if locator is not None and locator <= 0:
                     raise ValueError("post and topic locators must be positive")
             if cursor:
                 state = self._resume(cursor, "forum_read")
-                if any(
-                    value is not None
-                    for value in (post_id, topic_id, post_number, username)
-                ):
-                    raise ValueError(
-                        "Use only cursor, limit and image options when continuing"
-                    )
+                self._check_cursor_arguments(
+                    state,
+                    {
+                        "post_id": post_id,
+                        "topic_id": topic_id,
+                        "post_number": post_number,
+                        "username": username,
+                        "order": order,
+                    },
+                    defaults={"order": "latest"},
+                )
                 post_id, topic_id, post_number = (
                     state.get("post_id"),
                     state.get("topic_id"),
@@ -289,6 +344,13 @@ class ShuiyuanToolsWrapper:
                 offset = state.get("offset", 0)
             else:
                 offset = 0
+                request = {
+                    "post_id": post_id,
+                    "topic_id": topic_id,
+                    "post_number": post_number,
+                    "username": username,
+                    "order": order,
+                }
             exact = post_id is not None or post_number is not None
             self._require_operation("forum_read", "exact" if exact else "topic")
             if exact and username is not None:
@@ -368,6 +430,7 @@ class ShuiyuanToolsWrapper:
                         "kind": "forum_read",
                         "post_id": short[0].id,
                         "offset": page_end,
+                        "request": state.get("request", {}) if cursor else request,
                     }
                 )
             elif not exact and has_more:
@@ -378,6 +441,7 @@ class ShuiyuanToolsWrapper:
                         "username": username,
                         "order": order,
                         "offset": next_offset,
+                        "request": state.get("request", {}) if cursor else request,
                     }
                 )
             payload = self._ok(items, topic=title, next_cursor=next_cursor)

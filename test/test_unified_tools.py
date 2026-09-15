@@ -7,6 +7,10 @@ from shuiyuan_auto_reply.application.tool_results import TurnResults, current_tu
 from shuiyuan_auto_reply.features.mention.shuiyuan_tools_wrapper import (
     ShuiyuanToolsWrapper,
 )
+from shuiyuan_auto_reply.features.mention.tool_catalog import (
+    legacy_forum_operations,
+    migrate_tool_names,
+)
 
 
 def _post(*, post_id=10, number=3, raw="正文", image=""):
@@ -83,6 +87,78 @@ async def _forum_search_rejects_conflicting_structured_filter():
     }
 
 
+async def _cursor_accepts_matching_arguments_and_rejects_conflicts():
+    model = SimpleNamespace(
+        search_forum=AsyncMock(
+            return_value={
+                "posts": [
+                    {
+                        "topic_id": 42,
+                        "post_number": number,
+                        "username": "alice",
+                        "blurb": f"正文 {number}",
+                    }
+                    for number in range(1, 4)
+                ],
+                "topics": [{"id": 42, "title": "测试话题"}],
+                "more_posts": False,
+            }
+        )
+    )
+    token = current_turn.set(TurnResults())
+    try:
+        tools = ShuiyuanToolsWrapper(model)
+        first = await tools.forum_search(
+            kind="posts", query="测试", sort="latest", limit=2
+        )
+        continued = await tools.forum_search(
+            cursor=first["next_cursor"],
+            kind="posts",
+            query="测试",
+            sort="latest",
+            limit=60,
+        )
+        assert [item["ref"] for item in continued["items"]] == ["forum:42/3"]
+        conflict = await tools.forum_search(
+            cursor=first["next_cursor"], query="另一个查询"
+        )
+        assert conflict["code"] == "cursor_conflict"
+    finally:
+        current_turn.reset(token)
+
+
+async def _forum_read_cursor_accepts_matching_topic_locator():
+    model = SimpleNamespace(
+        read_topic_post_page=AsyncMock(
+            side_effect=[
+                ("Topic", [_post(number=1)], 1, True),
+                ("Topic", [_post(post_id=11, number=2)], 2, False),
+            ]
+        )
+    )
+    token = current_turn.set(TurnResults())
+    try:
+        tools = ShuiyuanToolsWrapper(model)
+        content, _ = await tools.forum_read(topic_id=42, order="oldest")
+        cursor = json.loads(content)["next_cursor"]
+        continued, _ = await tools.forum_read(
+            cursor=cursor, topic_id=42, order="oldest", limit=60
+        )
+        assert json.loads(continued)["items"][0]["ref"] == "forum:42/2"
+        conflict, _ = await tools.forum_read(cursor=cursor, topic_id=43)
+        assert json.loads(conflict)["code"] == "cursor_conflict"
+    finally:
+        current_turn.reset(token)
+
+
+async def _dates_report_the_supported_format_and_topic_read_path():
+    tools = ShuiyuanToolsWrapper(SimpleNamespace(search_forum=AsyncMock()))
+    result = await tools.forum_search(topic_id=42, after_date="2026-09-14T16:03:20")
+    assert result["code"] == "invalid_arguments"
+    assert "YYYY-MM-DD" in result["message"]
+    assert "forum_read" in result["message"]
+
+
 async def _forum_read_attaches_images_only_for_exact_reads():
     exact = _post(image="upload://one.png")
     model = SimpleNamespace(
@@ -151,6 +227,18 @@ def test_forum_search_rejects_conflicting_structured_filter():
     asyncio.run(_forum_search_rejects_conflicting_structured_filter())
 
 
+def test_cursor_accepts_matching_arguments_and_rejects_conflicts():
+    asyncio.run(_cursor_accepts_matching_arguments_and_rejects_conflicts())
+
+
+def test_forum_read_cursor_accepts_matching_topic_locator():
+    asyncio.run(_forum_read_cursor_accepts_matching_topic_locator())
+
+
+def test_dates_report_the_supported_format_and_topic_read_path():
+    asyncio.run(_dates_report_the_supported_format_and_topic_read_path())
+
+
 def test_forum_read_attaches_images_only_for_exact_reads():
     asyncio.run(_forum_read_attaches_images_only_for_exact_reads())
 
@@ -161,3 +249,13 @@ def test_users_preserves_batch_order_and_item_status():
 
 def test_old_allowlist_maps_without_opening_other_merged_operations():
     asyncio.run(_old_allowlist_maps_without_opening_other_merged_operations())
+
+
+def test_legacy_capabilities_map_to_equivalent_unified_operations():
+    names = ["search_posts", "search_user_by_id"]
+    assert migrate_tool_names(names) == ["forum_search", "users"]
+    assert legacy_forum_operations(names) == {
+        "forum_search": {"posts", "topics"},
+        "forum_read": set(),
+        "users": {"user_id"},
+    }

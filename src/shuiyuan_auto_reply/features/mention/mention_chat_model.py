@@ -73,7 +73,11 @@ from .mention_multimodal import (
 )
 from .shuiyuan_tools_objects import PostShort
 from .shuiyuan_tools_wrapper import ShuiyuanToolsWrapper
-from .tool_catalog import FORUM_TOOL_NAMES, migrate_tool_names
+from .tool_catalog import (
+    FORUM_TOOL_NAMES,
+    legacy_forum_operations,
+    migrate_tool_names,
+)
 
 
 def describe_model_failure(error: BaseException) -> str:
@@ -241,34 +245,7 @@ class MentionChatModel:
             if enabled_tools is not None
             else None
         )
-        self._forum_operations: dict[str, set[str]] = {}
-        if original_enabled is not None:
-            if "forum_search" not in original_enabled:
-                operations = set()
-                if {"search_posts", "search_posts_by_time"} & original_enabled:
-                    operations.add("posts")
-                self._forum_operations["forum_search"] = operations
-            if "forum_read" not in original_enabled:
-                operations = set()
-                if {
-                    "get_post",
-                    "read_tool_result",
-                    "inspect_images",
-                    "inspect_image",
-                } & original_enabled:
-                    operations.add("exact")
-                if "recent_posts" in original_enabled:
-                    operations.add("topic")
-                self._forum_operations["forum_read"] = operations
-            if "users" not in original_enabled:
-                operations = set()
-                if "get_user" in original_enabled:
-                    operations.add("username")
-                if "get_users" in original_enabled:
-                    operations.add("usernames")
-                if "search_user" in original_enabled:
-                    operations.update({"query", "user_id"})
-                self._forum_operations["users"] = operations
+        self._forum_operations = legacy_forum_operations(original_enabled)
         self.disabled_mcp_tools = set(disabled_mcp_tools or ())
         self._web_search_kinds = {"text", "news", "images"}
         if "web_search" in self.disabled_mcp_tools:
@@ -1401,6 +1378,36 @@ class MentionChatModel:
                 )
                 for c in calls
             ]
+        seen_errors = {}
+        for index, (call, message) in enumerate(zip(calls, responses)):
+            if message.status != "error":
+                continue
+            try:
+                payload = json.loads(message.content)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict) or payload.get("retryable") is not False:
+                continue
+            key = (call["name"], payload.get("code"), payload.get("message"))
+            if key not in seen_errors:
+                seen_errors[key] = True
+                continue
+            responses[index] = message.model_copy(
+                update={
+                    "content": json.dumps(
+                        {
+                            "status": "error",
+                            "code": "duplicate_error",
+                            "message": (
+                                "Same non-retryable error as an earlier call; "
+                                "correct it once"
+                            ),
+                            "retryable": False,
+                        },
+                        ensure_ascii=False,
+                    )
+                }
+            )
         turn = current_turn.get()
         if turn:
             added = set()
