@@ -230,7 +230,10 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             self.requests[0],
             {
                 "model": "test-image-model",
-                "prompt": "参考图编辑测试生图功能验证",
+                "prompt": (
+                    "参考图编辑测试生图功能验证\n\n"
+                    "【实际参考素材对应关系】\n参考图1：原参考图1"
+                ),
                 "size": "1024x1360",
                 "image_count": 1,
                 "image_field_names": ["image[]"],

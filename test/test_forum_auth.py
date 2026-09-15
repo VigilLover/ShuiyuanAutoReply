@@ -103,22 +103,24 @@ class ForumAuthTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TimeRangeSearchTests(unittest.IsolatedAsyncioTestCase):
-    async def test_time_range_search_delegates_to_the_retrying_helper(self):
-        # The public helper used to call a removed _retry_wrapper, so every
-        # search_posts_by_time call failed with AttributeError.
+    async def test_native_search_uses_q_and_page(self):
         model = ShuiyuanModel.__new__(ShuiyuanModel)
-        calls = []
-
-        async def fake_search(topic_id, after_date=None, before_date=None):
-            calls.append((topic_id, after_date, before_date))
-            return {"标题": []}
-
-        model._search_post_details_by_time_range_and_topic = fake_search
-        result = await model.search_post_details_by_time_range_and_topic(
-            7, "2026-01-01", "2026-01-02"
+        response = SimpleNamespace(
+            status=200,
+            json=AsyncMock(return_value={"posts": [], "topics": []}),
         )
-        self.assertEqual(result, {"标题": []})
-        self.assertEqual(calls, [(7, "2026-01-01", "2026-01-02")])
+        model._rate_limited_request = AsyncMock(return_value=response)
+        result = await model.search_forum(
+            "topic:7 after:2026-01-01 before:2026-01-02", page=2
+        )
+        self.assertEqual(result, {"posts": [], "topics": []})
+        self.assertEqual(
+            model._rate_limited_request.await_args.kwargs["params"],
+            {
+                "q": "topic:7 after:2026-01-01 before:2026-01-02",
+                "page": 2,
+            },
+        )
 
 
 class CookieJarDistributionTests(unittest.IsolatedAsyncioTestCase):

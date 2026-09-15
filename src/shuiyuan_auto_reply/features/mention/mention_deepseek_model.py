@@ -20,7 +20,7 @@ from .mention_chat_model import MentionChatModel, MentionGraphState
 from .mention_multimodal import extract_image_urls
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash-vision-exp"
+DEEPSEEK_DEFAULT_MODEL = "deepseek-flash"
 DEEPSEEK_DEFAULT_MAX_RETRIES = 3
 DEEPSEEK_DEFAULT_THINKING = "enabled"
 DEEPSEEK_DEFAULT_REASONING_EFFORT = "max"
@@ -201,9 +201,9 @@ class MentionDeepSeekModel(MentionChatModel):
     def _get_multimodal_prompt_rules(self) -> str:
         return (
             "【原生视觉理解规则】\n"
-            "1. 当前用户附带图片自动作为视觉输入；普通读帖仅返回图片地址，需要看图时使用已启用的 inspect_images。\n"
-            "2. 只有实际出现的图片可用于判断；工具结果没有图片时不要猜测画面。\n"
-            "3. 图片标签只用于区分来源，回答时结合图片本身和相邻文字。\n\n"
+            "1. 当前用户附带图片和 forum_read 精读结果中的图片会自动作为视觉输入。\n"
+            "2. forum_search 只返回媒体引用；需要看图时用 forum_read 精读对应帖子。\n"
+            "3. 只有实际载入的图片可用于判断；图片标签只用于区分来源。\n\n"
         )
 
     def __init__(
@@ -245,7 +245,6 @@ class MentionDeepSeekModel(MentionChatModel):
             self.provider_tool_choice = "auto"
         self.supports_multimodal = True
         self.multimodal_search_image_limit = MAX_IMAGES_PER_TURN
-        self.uses_inspect_image_tool = False
         self.vision_media = DeepSeekVisionMediaManager(
             state_store=state_store,
             forum_model=model,
@@ -329,7 +328,30 @@ class MentionDeepSeekModel(MentionChatModel):
     async def _load_replied_post_images(
         self, state: MentionGraphState
     ) -> MentionGraphState:
-        return {"image_inputs": list(state.get("image_inputs", []) or [])}
+        existing = list(state.get("image_inputs", []) or [])
+        target = state.get("target_post")
+        if target is None or len(existing) >= MAX_IMAGES_PER_TURN:
+            return {"image_inputs": existing}
+        images = await self.vision_media.prepare_tool_output(
+            [
+                ToolMessage(
+                    content="",
+                    tool_call_id="internal-target-post",
+                    name="forum_read",
+                    artifact=[target],
+                )
+            ],
+            conversation_id=state.get("conversation_id"),
+            existing_urls={image.source_url for image in existing},
+            limit=min(4, MAX_IMAGES_PER_TURN - len(existing)),
+        )
+        return {
+            "image_inputs": existing + images,
+            "input_visual_artifacts": list(
+                state.get("input_visual_artifacts", []) or []
+            )
+            + [image.artifact for image in images],
+        }
 
     async def _prepare_messages(self, state: MentionGraphState) -> MentionGraphState:
         text = (
@@ -348,7 +370,7 @@ class MentionDeepSeekModel(MentionChatModel):
         self, state: MentionGraphState
     ) -> MentionGraphState:
         existing = list(state.get("image_inputs", []) or [])
-        remaining = MAX_IMAGES_PER_TURN - len(existing)
+        remaining = min(4, MAX_IMAGES_PER_TURN - len(existing))
         if remaining <= 0:
             return {"image_inputs": existing[:MAX_IMAGES_PER_TURN]}
         tool_messages: list[ToolMessage] = []
@@ -358,9 +380,7 @@ class MentionDeepSeekModel(MentionChatModel):
             tool_messages.append(message)
         tool_messages.reverse()
         tool_messages = [
-            m
-            for m in tool_messages
-            if m.name in {"inspect_images", "inspect_image", "image_search"}
+            m for m in tool_messages if m.name in {"forum_read", "users", "web_read"}
         ]
         if not tool_messages:
             return {"image_inputs": existing}

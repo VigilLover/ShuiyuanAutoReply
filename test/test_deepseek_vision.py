@@ -86,7 +86,7 @@ class VisionContractTests(unittest.TestCase):
 
         payload = model._get_request_payload([HumanMessage(content=content)])
 
-        self.assertEqual(payload["model"], "deepseek-v4-flash-vision-exp")
+        self.assertEqual(payload["model"], "deepseek-flash")
         self.assertEqual(payload["messages"][0]["role"], "user")
         self.assertEqual(payload["messages"][0]["content"], content)
 
@@ -187,7 +187,7 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
             {"type": "file", "file_id": "file_asset_public"},
         )
 
-    async def test_json_escaped_tool_image_is_cached_with_normalized_url(self):
+    async def test_json_escaped_tool_image_in_text_is_not_loaded(self):
         artifact = VisualMediaArtifact(
             artifact_id="asset-json",
             mime_type="image/jpeg",
@@ -225,16 +225,10 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
             limit=4,
         )
 
-        self.assertEqual(result, [image])
-        manager.prepare_public_url.assert_awaited_once_with(
-            "https://safebooru.org/images/1/a.jpg",
-            conversation_id="conversation-1",
-            source_kind="web_search",
-            description="来自 fetch_webpage_content",
-            referer="https://safebooru.org/api/posts",
-        )
+        self.assertEqual(result, [])
+        manager.prepare_public_url.assert_not_awaited()
 
-    async def test_nested_mcp_content_passes_source_page_as_image_referer(self):
+    async def test_nested_mcp_text_does_not_trigger_image_loading(self):
         artifact = VisualMediaArtifact(
             artifact_id="asset-referer",
             mime_type="image/webp",
@@ -277,14 +271,8 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
             limit=4,
         )
 
-        self.assertEqual(result, [image])
-        manager.prepare_public_url.assert_awaited_once_with(
-            "https://media.example/result.webp",
-            conversation_id="conversation-1",
-            source_kind="web_search",
-            description="来自 fetch_webpage_content",
-            referer="https://news.example/article",
-        )
+        self.assertEqual(result, [])
+        manager.prepare_public_url.assert_not_awaited()
 
     async def test_tool_images_are_appended_as_synthetic_user_message(self):
         artifact = VisualMediaArtifact(
@@ -309,7 +297,10 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
             "image_inputs": [],
             "messages": [
                 ToolMessage(
-                    content="result", tool_call_id="call-1", name="image_search"
+                    content="result",
+                    tool_call_id="call-1",
+                    name="web_read",
+                    artifact=SimpleNamespace(image_urls=["https://cdn.example/a.png"]),
                 )
             ],
             "conversation_id": "conversation-1",

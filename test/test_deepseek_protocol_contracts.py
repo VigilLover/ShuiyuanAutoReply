@@ -253,7 +253,7 @@ class DeepSeekToolImageContractTests(unittest.IsolatedAsyncioTestCase):
 
         bound_tools = model.llm.bind_tools.call_args.args[0]
         self.assertEqual(bound_tools[-1], {"type": "web_search"})
-        self.assertEqual([tool.name for tool in model.tools], ["update_task_progress"])
+        self.assertEqual([tool.name for tool in model.tools], [])
         model.state_store.replace_tool_catalog.assert_awaited_once_with("web", [])
 
     async def test_tool_image_replaces_matching_tool_message_not_user_message(self):
@@ -261,7 +261,7 @@ class DeepSeekToolImageContractTests(unittest.IsolatedAsyncioTestCase):
         original = ToolMessage(
             content="tool text",
             tool_call_id="call_1",
-            name="inspect_images",
+            name="forum_read",
             artifact={"source": "fixture"},
             status="success",
         )
@@ -284,7 +284,7 @@ class DeepSeekToolImageContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(replacement, ToolMessage)
         self.assertEqual(replacement.id, original.id)
         self.assertEqual(replacement.tool_call_id, "call_1")
-        self.assertEqual(replacement.name, "inspect_images")
+        self.assertEqual(replacement.name, "forum_read")
         self.assertEqual(replacement.status, "success")
         self.assertEqual(replacement.artifact, {"source": "fixture"})
         self.assertEqual(

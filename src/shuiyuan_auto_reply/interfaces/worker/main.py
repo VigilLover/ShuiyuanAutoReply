@@ -26,7 +26,7 @@ from shuiyuan_auto_reply.infrastructure.persistence.model_configs import (
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
-DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
+DEEPSEEK_VISION_MODEL = "deepseek-flash"
 
 
 def _forum_profile_defaults(settings: AppSettings, persona: str) -> dict:

@@ -1,8 +1,11 @@
 import asyncio
-import inspect
 import json
-from functools import wraps
-from typing import List, Optional
+import re
+import secrets
+from datetime import date
+from typing import Literal
+
+from bs4 import BeautifulSoup
 
 from shuiyuan_auto_reply.application.tool_results import (
     cached_query,
@@ -11,78 +14,8 @@ from shuiyuan_auto_reply.application.tool_results import (
 )
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
-from .shuiyuan_tools_objects import PostSearchResults, PostShort, UserShort
-
-
-def cached_read(func):
-    @wraps(func)
-    async def wrapped(self, *args, **kwargs):
-        bound = inspect.signature(func).bind(self, *args, **kwargs)
-        bound.apply_defaults()
-        values = dict(bound.arguments)
-        values.pop("self")
-        refresh = values.pop("refresh", False)
-        cursor = values.pop("cursor", 0)
-        values.pop("gap_id", None)
-        values.pop("scope_reason", None)
-        if cursor < 0 or any(
-            values.get(name, 1) <= 0
-            for name in ("post_id", "post_number")
-            if values.get(name) is not None
-        ):
-            return {
-                "status": "error",
-                "error": "invalid_post_locator_or_cursor",
-                "retryable": False,
-            }
-        for name in ("username", "term"):
-            if isinstance(values.get(name), str):
-                values[name] = values[name].strip()
-        if func.__name__ == "get_post_by_id":
-            key = "post:" + str(values["post_id"])
-        elif func.__name__ == "get_post_details_by_post_number":
-            key = f"post_number:{values['topic_id']}:{values['post_number']}"
-        else:
-            key = func.__name__ + json.dumps(values, sort_keys=True, ensure_ascii=False)
-        if "page" in values and values["page"] != 0:
-            return {
-                "status": "error",
-                "error": "pagination_unsupported",
-                "retryable": False,
-                "message": "This backend does not expose reliable pagination; refine the query",
-            }
-        if "limit" in values and not 1 <= values["limit"] <= 20:
-            return {
-                "status": "error",
-                "error": "limit_must_be_1_to_20",
-                "message": "limit must be between 1 and 20",
-                "retryable": False,
-            }
-        turn = current_turn.get()
-        old = turn.cache.get(key) if turn else None
-        if refresh and isinstance(old, PostShort):
-            turn.cache.pop(f"post:{old.id}", None)
-            turn.cache.pop(f"post_number:{old.topic_id}:{old.post_number}", None)
-        result = await cached_query(
-            key, lambda: func(self, *args, **kwargs), refresh=refresh
-        )
-        if isinstance(result, PostSearchResults):
-            result = PostSearchResults(
-                result[: values.get("limit", 10)],
-                query=values,
-                truncated=len(result) > values.get("limit", 10),
-            )
-        if cursor and isinstance(result, PostShort):
-            if cursor < 0 or cursor > result.to_dict()["total_chars"]:
-                return {
-                    "status": "error",
-                    "error": "invalid_cursor",
-                    "retryable": False,
-                }
-            return result.to_dict(cursor=cursor)
-        return result
-
-    return wrapped
+from .mention_multimodal import extract_image_urls
+from .shuiyuan_tools_objects import PostShort, UserShort
 
 
 class ShuiyuanToolsWrapper:
@@ -90,371 +23,484 @@ class ShuiyuanToolsWrapper:
     A wrapper around the ShuiyuanModel to provide tool functions for LLM agents.
     """
 
-    def __init__(self, shuiyuan_model: ShuiyuanModel):
+    def __init__(
+        self,
+        shuiyuan_model: ShuiyuanModel,
+        allowed_operations: dict[str, set[str]] | None = None,
+    ):
         self.shuiyuan_model = shuiyuan_model
+        self.allowed_operations = allowed_operations or {}
 
-    @cached_read
-    async def search_user_by_term(
-        self,
-        term: str = "",
-        user_id: Optional[int] = None,
-        include_avatar: bool = False,
-        refresh: bool = False,
-    ) -> List[UserShort] | UserShort | None | str:
-        """
-        Find users: give a NON-EMPTY term to search by username or nickname, or give a user_id to resolve that single ID.
+    def _require_operation(self, tool: str, operation: str) -> None:
+        allowed = self.allowed_operations.get(tool)
+        if allowed is not None and operation not in allowed:
+            raise PermissionError(f"{tool} operation is disabled: {operation}")
 
-        Search matches are not exhaustive; prefer get_user when the exact username is known.
-        A user_id result of nothing does NOT prove the user is absent.
+    @staticmethod
+    def _ok(items: list[dict], **metadata) -> dict:
+        return {
+            "status": "ok",
+            "items": items,
+            **{
+                key: value
+                for key, value in metadata.items()
+                if value not in (None, "", [], {})
+            },
+        }
 
-        :param term: The search term to use for finding users.
-        :param user_id: The ID of a single user to resolve; takes precedence when no term is given.
-        :param include_avatar: Whether to include each user's avatar. Default is False.
-            Set to True only if the avatar is needed for image generation or editing.
-        :return: A list of UserShort instances matching the search term, one UserShort for
-            a user_id lookup, or an error message.
-        """
-        try:
-            if user_id is not None and not term.strip():
-                return await self.search_user_by_user_id(
-                    user_id, include_avatar=include_avatar, refresh=refresh
-                )
-            if not term.strip():
-                return {
-                    "status": "error",
-                    "error": "provide_a_search_term_or_user_id",
-                    "message": "Pass a non-empty term, or a user_id",
-                    "retryable": False,
-                }
-            users = await self.shuiyuan_model.search_user_by_term(term)
-            return [UserShort(user, include_avatar=include_avatar) for user in users]
-        except Exception as e:
-            return tool_error(e)
+    @staticmethod
+    def _error(exc: Exception) -> dict:
+        value = tool_error(exc)
+        code = value["error"]
+        if isinstance(exc, ValueError):
+            code = "invalid_arguments"
+        elif isinstance(exc, PermissionError):
+            code = "operation_disabled"
+        return {
+            "status": "error",
+            "code": code,
+            "message": value["message"],
+            "retryable": value["retryable"],
+        }
 
-    @cached_read
-    async def search_user_by_user_id(
-        self,
-        user_id: int,
-        include_avatar: bool = False,
-        refresh: bool = False,
-    ) -> UserShort | None | str:
-        """
-        Resolve a user ID through their post history; no result does NOT prove the user is absent. Prefer get_user when the username is known.
-
-        :param user_id: The ID of the user to search for.
-        :param include_avatar: Whether to include each user's avatar. Default is False.
-            Set to True only if the avatar is needed for image generation or editing.
-        :return: An instance of UserShort for the user with the given ID or error message.
-        """
-        try:
-            user = await self.shuiyuan_model.search_user_by_user_id(user_id)
-            if user and include_avatar and user.avatar_template is None:
-                full_user = await self.shuiyuan_model.get_user_by_username(
-                    user.username
-                )
-                if full_user:
-                    user = full_user
-            return UserShort(user, include_avatar=include_avatar) if user else None
-        except Exception as e:
-            return tool_error(e)
-
-    @cached_read
-    async def search_post_details_by_optional_username_topic(
-        self,
-        term: str = "",
-        latest: bool = False,
-        username: Optional[str] = None,
-        topic_id: Optional[int] = None,
-        refresh: bool = False,
-        gap_id: str = "",
-        scope_reason: str = "",
-        limit: int = 10,
-    ) -> List[PostShort] | str:
-        """
-        Search posts and return summaries (up to 800 characters each); limit is 1-20. Use get_post for full content. Results may not exhaust the topic; do not assume complete coverage. refresh=True explicitly bypasses cached results.
-
-        :param term: Optional search term to use for finding posts. Default is empty.
-        :param latest: Whether to sort the results by created_at in descending order. Default is False.
-        :param username: An optional username to filter posts by. Default is None.
-        :param topic_id: An optional topic ID to filter posts by. Default is None.
-        :param limit: Maximum number of summaries to return, 1-20. Default is 10.
-        :return: A list of PostShort instances matching the search criteria or error message.
-        """
-        try:
-            posts_dict = await self.shuiyuan_model.search_post_details_by_optional_username_topic(
-                term,
-                latest,
-                username,
-                topic_id,
-            )
-            return PostSearchResults(
-                [
-                    PostShort(post, title)
-                    for title, post_list in posts_dict.items()
-                    for post in post_list
-                ]
-            )
-        except Exception as e:
-            return tool_error(e)
-
-    @cached_read
-    async def query_recent_posts_by_topic_id(
-        self,
-        topic_id: int,
-        limit: int = 10,
-        refresh: bool = False,
-        gap_id: str = "",
-        scope_reason: str = "",
-    ) -> List[PostShort] | str:
-        """
-        Read the newest post summaries of a topic, in order, up to 800 characters each; limit is 1-20. Use get_post for full text and reply relations. Start small; expand only for a specific information gap. refresh=True bypasses cached results.
-
-        :param topic_id: The ID of the topic to query.
-        :param limit: The maximum number of recent posts to retrieve, 1-20. Default is 10.
-        :return: A list of PostShort instances for the recent posts in the topic or error message.
-        """
-        try:
-            title, posts = await self.shuiyuan_model.query_recent_posts_by_topic_id(
-                topic_id, limit
-            )
-            return PostSearchResults([PostShort(post, title) for post in posts])
-        except Exception as e:
-            return tool_error(e)
-
-    @cached_read
-    async def get_post_details_by_post_number(
-        self,
-        topic_id: Optional[int] = None,
-        post_number: Optional[int] = None,
-        post_id: Optional[int] = None,
-        refresh: bool = False,
-        cursor: int = 0,
-        gap_id: str = "",
-        scope_reason: str = "",
-    ) -> PostShort | str:
-        """
-        Read one post's full raw text. Identify the post either by topic_id + post_number (the
-        topic-local floor number) or by its global post_id.
-
-        Cursor pages contain 12000 characters; use next_cursor to continue, or read_tool_result with result_id. refresh=True explicitly bypasses cached results.
-        If a user give you a url like "https://shuiyuan.sjtu.edu.cn/t/topic_id/post_number",
-        you can extract the topic_id and post_number from the url and use this function to get the post details.
-        Also, for any post you've retrieved using tool, if the `topic_id` and `reply_to_post_number` are both not None,
-        you can use this function to get the details of the post being replied to.
-
-        :param topic_id: The ID of the topic the post belongs to.
-        :param post_number: The post number within the topic.
-        :param post_id: The global post ID, when a tool returned post_id instead of a floor number.
-        :return: An instance of PostShort containing the post information or error message.
-        """
-        try:
-            if post_id is not None:
-                return await self.get_post_by_id(
-                    post_id, refresh=refresh, cursor=cursor
-                )
-            if topic_id is None or post_number is None:
-                return {
-                    "status": "error",
-                    "error": "provide_topic_id_and_post_number_or_post_id",
-                    "message": "Pass topic_id + post_number, or post_id",
-                    "retryable": False,
-                }
-            turn = current_turn.get()
-            key = f"post_number:{topic_id}:{post_number}"
-            if turn and not refresh and key in turn.cache:
-                return turn.cache[key]
-            post = await self.shuiyuan_model.get_post_details_by_post_number(
-                topic_id,
-                post_number,
-            )
-            if post.topic_id != topic_id or post.post_number != post_number:
-                raise ValueError("Post identity mismatch")
-            return await self._full_post(post, refresh=refresh)
-        except Exception as e:
-            return tool_error(e)
-
-    @cached_read
-    async def search_post_details_by_time_range_and_topic(
-        self,
-        topic_id: int,
-        after_date: Optional[str] = None,
-        before_date: Optional[str] = None,
-        refresh: bool = False,
-        gap_id: str = "",
-        scope_reason: str = "",
-        limit: int = 10,
-    ) -> List[PostShort] | str:
-        """
-        List summaries of one topic's posts, optionally narrowed to a date range; limit is 1-20.
-        This is how to reach floors that recent_posts (newest posts only) does not cover; results may not exhaust the range.
-
-        Date bounds are exclusive: for posts on exactly 2026-03-18 pass after_date=2026-03-18 and before_date=2026-03-19.
-        Use get_post for full text. refresh=True bypasses cached results.
-
-        :param topic_id: The ID of the topic to search in.
-        :param after_date: An optional start date (format: YYYY-MM-DD).
-        :param before_date: An optional end date (format: YYYY-MM-DD).
-        :param limit: Maximum number of summaries to return, 1-20. Default is 10.
-        :return: A list of PostShort instances matching the criteria or error message.
-        """
-        try:
-            posts_dict = (
-                await self.shuiyuan_model.search_post_details_by_time_range_and_topic(
-                    topic_id, after_date, before_date
-                )
-            )
-            return PostSearchResults(
-                [
-                    PostShort(post, title)
-                    for title, post_list in posts_dict.items()
-                    for post in post_list
-                ]
-            )
-        except Exception as e:
-            return tool_error(e)
-
-    async def _full_post(self, post, *, refresh=False, supplement=True):
-        warnings = []
-        if post.raw is None and supplement:
-            try:
-                original = post
-                post = await self.shuiyuan_model.get_post_details(post.id)
-                if (post.id, post.topic_id, post.post_number) != (
-                    original.id,
-                    original.topic_id,
-                    original.post_number,
-                ):
-                    raise ValueError("Post identity mismatch")
-            except Exception as exc:
-                post = original
-                warnings.append(tool_error(exc))
-        result = PostShort(post, full=True)
-        result.warnings = warnings
+    @staticmethod
+    def _cursor(value: dict) -> str | None:
         turn = current_turn.get()
-        if turn and not warnings and post.raw is not None:
-            turn.cache["post:" + str(post.id)] = result
-            turn.cache[f"post_number:{post.topic_id}:{post.post_number}"] = result
-        return result
+        if turn is None:
+            return None
+        token = "c_" + secrets.token_urlsafe(12)
+        turn.cursors[token] = value
+        return token
 
-    @cached_read
-    async def get_post_by_id(
+    @staticmethod
+    def _resume(cursor: str, kind: str) -> dict:
+        turn = current_turn.get()
+        value = turn.cursors.get(cursor) if turn else None
+        if not value or value.get("kind") != kind:
+            raise ValueError("Unknown or incompatible cursor")
+        return value
+
+    @staticmethod
+    def _search_query(
+        query: str,
+        *,
+        topic_id: int | None,
+        username: str | None,
+        after_date: str | None,
+        before_date: str | None,
+        sort: str,
+    ) -> str:
+        query = query.strip()
+        structured = {
+            "topic": str(topic_id) if topic_id else None,
+            "user": username.strip().lstrip("@") if username else None,
+            "after": after_date,
+            "before": before_date,
+        }
+        for value in (after_date, before_date):
+            if value:
+                try:
+                    date.fromisoformat(value)
+                except ValueError as exc:
+                    raise ValueError("Dates must use YYYY-MM-DD") from exc
+        if after_date and before_date and after_date >= before_date:
+            raise ValueError("after_date must be earlier than before_date")
+        for name, wanted in structured.items():
+            matches = re.findall(rf"(?<!\S){name}:([^\s]+)", query, re.I)
+            if (
+                wanted
+                and matches
+                and any(value.casefold() != wanted.casefold() for value in matches)
+            ):
+                raise ValueError(f"Conflicting {name} filter")
+            if wanted and not matches:
+                query += f" {name}:{wanted}"
+        if sort != "relevance":
+            query += f" order:{sort}"
+        if not query.strip():
+            raise ValueError("Provide a query or at least one filter")
+        return query.strip()
+
+    @staticmethod
+    def _snippet(value: str, limit: int = 240) -> str:
+        soup = BeautifulSoup(value or "", "html.parser")
+        text = " ".join(soup.get_text(" ", strip=True).split())
+        return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+    @staticmethod
+    def _text_page(content: str, offset: int, limit: int = 5200) -> tuple[str, int]:
+        end = min(len(content), offset + limit)
+        if end < len(content):
+            boundary = content.rfind("\n\n", offset + limit // 2, end)
+            if boundary < 0:
+                boundary = content.rfind("\n", offset + limit // 2, end)
+            if boundary >= 0:
+                end = boundary
+        return content[offset:end], end
+
+    async def forum_search(
         self,
-        post_id: int,
-        refresh: bool = False,
-        cursor: int = 0,
-        gap_id: str = "",
-        scope_reason: str = "",
-    ):
-        """Read a complete post by GLOBAL post ID (not topic-local floor number).
-
-        Returns raw text, reply relation, mentions and media. Long text includes
-        result_id/next_cursor for read_tool_result or cursor on this tool. refresh bypasses this turn's cache.
-        """
+        kind: Literal["posts", "topics"] | None = None,
+        query: str = "",
+        topic_id: int | None = None,
+        username: str | None = None,
+        after_date: str | None = None,
+        before_date: str | None = None,
+        sort: Literal["relevance", "latest", "oldest"] = "relevance",
+        limit: int = 8,
+        cursor: str | None = None,
+    ) -> dict:
+        """Search Shuiyuan posts or topics with Discourse filters; returns concise snippets and an opaque continuation cursor."""
         try:
-            turn = current_turn.get()
-            if turn and not refresh and "post:" + str(post_id) in turn.cache:
-                return turn.cache["post:" + str(post_id)]
-            post = await self.shuiyuan_model.get_post_details(post_id)
-            if post.id != post_id:
-                raise ValueError("Post identity mismatch")
-            return await self._full_post(post, refresh=refresh, supplement=False)
+            if not 1 <= limit <= 20:
+                raise ValueError("limit must be between 1 and 20")
+            if topic_id is not None and topic_id <= 0:
+                raise ValueError("topic_id must be positive")
+            if cursor:
+                state = self._resume(cursor, "forum_search")
+                if (
+                    any((query, topic_id, username, after_date, before_date))
+                    or sort != "relevance"
+                    or (kind is not None and kind != state["result_kind"])
+                ):
+                    raise ValueError(
+                        "Use only cursor and limit when continuing a search"
+                    )
+                search_query = state["query"]
+                page = state["page"]
+                offset = state["offset"]
+                kind = state["result_kind"]
+            else:
+                kind = kind or "posts"
+                search_query = self._search_query(
+                    query,
+                    topic_id=topic_id,
+                    username=username,
+                    after_date=after_date,
+                    before_date=before_date,
+                    sort=sort,
+                )
+                page, offset = 1, 0
+            self._require_operation("forum_search", kind)
+            data = await cached_query(
+                f"forum_search:{search_query}:{page}",
+                lambda: self.shuiyuan_model.search_forum(search_query, page=page),
+            )
+            topics = {
+                int(row["id"]): row for row in data.get("topics", []) if row.get("id")
+            }
+            if kind == "topics":
+                source = list(topics.values())
+                items = [
+                    {
+                        "ref": f"topic:{row['id']}",
+                        "title": self._snippet(str(row.get("title", "")), 160),
+                        "posts": row.get("posts_count"),
+                        "last_posted_at": row.get("last_posted_at"),
+                    }
+                    for row in source[offset : offset + limit]
+                ]
+            else:
+                source = data.get("posts", [])
+                items = []
+                for row in source[offset : offset + limit]:
+                    topic = topics.get(int(row.get("topic_id", 0)), {})
+                    blurb = str(row.get("blurb", ""))
+                    item = {
+                        "ref": f"forum:{row.get('topic_id')}/{row.get('post_number')}",
+                        "author": row.get("username"),
+                        "text": self._snippet(blurb),
+                        "created_at": row.get("created_at"),
+                        "media": [
+                            {
+                                "ref": f"{row.get('topic_id')}/{row.get('post_number')}#image-{index}",
+                                "url": url,
+                            }
+                            for index, url in enumerate(extract_image_urls(blurb), 1)
+                        ],
+                    }
+                    if topic_id is None and topic.get("title"):
+                        item["topic"] = self._snippet(str(topic["title"]), 160)
+                    items.append(
+                        {k: v for k, v in item.items() if v not in (None, "", [], {})}
+                    )
+            next_cursor = None
+            next_offset = offset + len(items)
+            more = next_offset < len(source) or bool(data.get("more_posts"))
+            if more and page >= 10 and next_offset >= len(source):
+                return {
+                    "status": "partial",
+                    "items": items,
+                    "query": search_query,
+                    "error": {
+                        "code": "search_limit_reached",
+                        "message": "Discourse search page limit reached",
+                        "retryable": False,
+                    },
+                }
+            if more:
+                next_cursor = self._cursor(
+                    {
+                        "kind": "forum_search",
+                        "query": search_query,
+                        "page": page if next_offset < len(source) else page + 1,
+                        "offset": next_offset if next_offset < len(source) else 0,
+                        "result_kind": kind,
+                    }
+                )
+            return self._ok(items, query=search_query, next_cursor=next_cursor)
         except Exception as exc:
-            return tool_error(exc)
+            return self._error(exc)
 
-    async def get_user(
-        self, username: str, include_avatar: bool = False, refresh: bool = False
-    ):
-        """Get exactly one user by username. Never substitutes nickname/fuzzy matches.
+    async def forum_read(
+        self,
+        post_id: int | None = None,
+        topic_id: int | None = None,
+        post_number: int | None = None,
+        username: str | None = None,
+        order: Literal["latest", "oldest"] = "latest",
+        limit: int = 10,
+        cursor: str | None = None,
+        images: Literal["auto", "none", "selected"] = "auto",
+        image_refs: list[str] | None = None,
+    ) -> tuple[str, list[PostShort]]:
+        """Read exact posts or a topic window. Exact reads attach up to four images for multimodal understanding; topic lists stay text-only."""
+        try:
+            if not 1 <= limit <= 20:
+                raise ValueError("limit must be between 1 and 20")
+            for locator in (post_id, topic_id, post_number):
+                if locator is not None and locator <= 0:
+                    raise ValueError("post and topic locators must be positive")
+            if cursor:
+                state = self._resume(cursor, "forum_read")
+                if any(
+                    value is not None
+                    for value in (post_id, topic_id, post_number, username)
+                ):
+                    raise ValueError(
+                        "Use only cursor, limit and image options when continuing"
+                    )
+                post_id, topic_id, post_number = (
+                    state.get("post_id"),
+                    state.get("topic_id"),
+                    state.get("post_number"),
+                )
+                username, order = state.get("username"), state.get("order", order)
+                offset = state.get("offset", 0)
+            else:
+                offset = 0
+            exact = post_id is not None or post_number is not None
+            self._require_operation("forum_read", "exact" if exact else "topic")
+            if exact and username is not None:
+                raise ValueError("username is available only for topic list reads")
+            if images == "selected" and not image_refs:
+                raise ValueError("selected image mode requires image_refs")
+            if images != "selected" and image_refs:
+                raise ValueError("image_refs requires images=selected")
+            if post_id is not None and (
+                topic_id is not None or post_number is not None
+            ):
+                raise ValueError("Use post_id or topic_id + post_number, not both")
+            if post_number is not None and topic_id is None:
+                raise ValueError("post_number requires topic_id")
+            if post_id is not None:
+                post = await cached_query(
+                    f"forum_read:post:{post_id}",
+                    lambda: self.shuiyuan_model.get_post_details(post_id),
+                )
+                posts, title = [post], ""
+            elif post_number is not None:
+                post = await cached_query(
+                    f"forum_read:floor:{topic_id}:{post_number}",
+                    lambda: self.shuiyuan_model.get_post_details_by_post_number(
+                        topic_id, post_number
+                    ),
+                )
+                posts, title = [post], ""
+            elif topic_id is not None:
+                fetch_limit = min(limit, 5)
+                (
+                    title,
+                    posts,
+                    next_offset,
+                    has_more,
+                ) = await cached_query(
+                    f"forum_read:topic:{topic_id}:{username}:{order}:{offset}:{fetch_limit}",
+                    lambda: self.shuiyuan_model.read_topic_post_page(
+                        topic_id,
+                        offset=offset,
+                        limit=fetch_limit,
+                        username=username,
+                        ascending=order == "oldest",
+                    ),
+                )
+            else:
+                raise ValueError("Provide post_id, topic_id, or a cursor")
+            if exact:
+                has_more = False
+            short = [PostShort(post, title, full=True) for post in posts]
+            items = []
+            for value in short:
+                text_offset = offset if exact else 0
+                text_limit = 900
+                page_end = text_offset + text_limit
+                if exact:
+                    page, page_end = self._text_page(
+                        value._data["content"], text_offset
+                    )
+                    text_limit = len(page)
+                data = value.to_compact_dict(
+                    text_limit=text_limit,
+                    text_offset=text_offset,
+                )
+                if images == "none":
+                    data.pop("media", None)
+                elif images == "selected" and image_refs:
+                    data["media"] = [
+                        m for m in data.get("media", []) if m["ref"] in image_refs
+                    ]
+                    value.image_urls = [m["url"] for m in data["media"]]
+                items.append(data)
+            next_cursor = None
+            if exact and short and len(short[0]._data["content"]) > page_end:
+                next_cursor = self._cursor(
+                    {
+                        "kind": "forum_read",
+                        "post_id": short[0].id,
+                        "offset": page_end,
+                    }
+                )
+            elif not exact and has_more:
+                next_cursor = self._cursor(
+                    {
+                        "kind": "forum_read",
+                        "topic_id": topic_id,
+                        "username": username,
+                        "order": order,
+                        "offset": next_offset,
+                    }
+                )
+            payload = self._ok(items, topic=title, next_cursor=next_cursor)
+            artifacts = short if exact and images != "none" else []
+            return json.dumps(payload, ensure_ascii=False), artifacts
+        except Exception as exc:
+            return json.dumps(self._error(exc), ensure_ascii=False), []
 
-        Set include_avatar only when needed. refresh requests current data again.
-        Not found is an explicit error; use search_user only to resolve ambiguity.
-        """
-        username = username.strip().lstrip("@")
+    async def users(
+        self,
+        query: str | None = None,
+        username: str | None = None,
+        usernames: list[str] | None = None,
+        user_id: int | None = None,
+        include_avatar: bool = False,
+    ) -> dict:
+        """Resolve one exact username, search names, resolve one numeric ID, or resolve up to 50 exact usernames."""
+        try:
+            modes = sum(
+                value not in (None, "", [])
+                for value in (query, username, usernames, user_id)
+            )
+            if modes != 1:
+                raise ValueError(
+                    "Provide exactly one of query, username, usernames, or user_id"
+                )
+            if user_id is not None and user_id <= 0:
+                raise ValueError("user_id must be positive")
+            operation = (
+                "query"
+                if query is not None
+                else (
+                    "username"
+                    if username is not None
+                    else "usernames" if usernames is not None else "user_id"
+                )
+            )
+            self._require_operation("users", operation)
+            if usernames is not None:
+                if not usernames or len(usernames) > 50:
+                    raise ValueError("Provide 1 to 50 usernames")
+                gate = asyncio.Semaphore(4)
 
-        async def fetch():
-            try:
-                if not username or any(c in username for c in "/?#"):
-                    raise ValueError("Invalid username")
-                user = await self.shuiyuan_model.get_user_by_username(username)
+                async def resolve(name: str) -> dict:
+                    async with gate:
+                        return await self._exact_user(name, include_avatar)
+
+                tasks: dict[str, asyncio.Task] = {}
+                for name in usernames:
+                    key = name.strip().lstrip("@").casefold()
+                    if key not in tasks:
+                        tasks[key] = asyncio.create_task(resolve(name))
+                await asyncio.gather(*tasks.values())
+                items = [
+                    {
+                        "input": name,
+                        **tasks[name.strip().lstrip("@").casefold()].result(),
+                    }
+                    for name in usernames
+                ]
+                return {
+                    "status": (
+                        "ok"
+                        if all(item.get("status") == "ok" for item in items)
+                        else "partial"
+                    ),
+                    "items": items,
+                }
+            if username:
+                result = await self._exact_user(username, include_avatar)
+                if result.get("status") == "ok":
+                    return self._ok(
+                        [
+                            {
+                                key: value
+                                for key, value in result.items()
+                                if key != "status" and value not in (None, "", [], {})
+                            }
+                        ]
+                    )
+                return {
+                    "status": "error",
+                    "code": result.get("error", "not_found"),
+                    "message": result.get("message", "User was not found"),
+                    "retryable": bool(result.get("retryable")),
+                }
+            if user_id is not None:
+                user = await self.shuiyuan_model.search_user_by_user_id(user_id)
                 if user is None:
                     return {
                         "status": "error",
-                        "error": "not_found",
-                        "username": username,
+                        "code": "unresolved",
+                        "message": "No public post establishes this user ID",
                         "retryable": False,
                     }
-                if user.username.casefold() != username.casefold():
-                    raise ValueError("User identity mismatch")
-                value = UserShort(user, include_avatar=True)
+                value = UserShort(user, include_avatar=include_avatar)
+                return self._ok([value.to_compact_dict()])
+            found = await self.shuiyuan_model.search_user_by_term(query or "")
+            return self._ok(
+                [UserShort(user, include_avatar).to_compact_dict() for user in found]
+            )
+        except Exception as exc:
+            return self._error(exc)
+
+    async def _exact_user(self, username: str, include_avatar: bool) -> dict:
+        username = username.strip().lstrip("@")
+        if not username or any(char in username for char in "/?#"):
+            raise ValueError("Invalid username")
+
+        async def fetch() -> dict:
+            user = await self.shuiyuan_model.get_user_by_username(username)
+            if user is None:
                 return {
-                    "status": "ok",
-                    "user_id": value.id,
-                    "username": value.username,
-                    "name": value.name,
-                    "avatar": value.avatar,
+                    "status": "error",
+                    "code": "not_found",
+                    "message": "User was not found",
+                    "retryable": False,
                 }
-            except Exception as exc:
-                return tool_error(exc)
-
-        result = await cached_query(
-            "user:" + username.casefold(), fetch, refresh=refresh
-        )
-        return (
-            dict(result)
-            if include_avatar
-            else {k: v for k, v in result.items() if k != "avatar"}
-        )
-
-    async def get_users(
-        self, usernames: list[str], include_avatar: bool = False, refresh: bool = False
-    ):
-        """Resolve up to 50 exact usernames, preserving input order and per-item errors.
-
-        Prefer this to separate calls for a list of known usernames. Successful
-        items are cached within this turn; retries only refetch failed items.
-        """
-        if not usernames or len(usernames) > 50:
+            if user.username.casefold() != username.casefold():
+                raise ValueError("User identity mismatch")
             return {
-                "status": "error",
-                "error": "Provide 1 to 50 usernames",
-                "retryable": False,
+                "status": "ok",
+                **UserShort(user, include_avatar=include_avatar).to_compact_dict(),
             }
-        gate = asyncio.Semaphore(4)
-        tasks = {}
 
-        async def fetch(name):
-            async with gate:
-                return await self.get_user(name, include_avatar, refresh)
-
-        for name in usernames:
-            key = name.strip().lstrip("@").casefold()
-            if key not in tasks:
-                tasks[key] = asyncio.create_task(fetch(name))
-        await asyncio.gather(*tasks.values())
-        items = [
-            {"input": name, **tasks[name.strip().lstrip("@").casefold()].result()}
-            for name in usernames
-        ]
-        return {
-            "status": "ok" if all(i["status"] == "ok" for i in items) else "partial",
-            "items": items,
-        }
-
-    async def read_tool_result(
-        self,
-        result_id: str,
-        cursor: int = 0,
-        field: str | None = None,
-        limit: int = 1500,
-    ):
-        """Read saved result or evidence ID, optionally one top-level field. Default 1500 characters, maximum 12000.
-
-        Use the exact result_id and next_cursor returned by a tool or context summary.
-        Results are not available in later turns.
-        """
-        turn = current_turn.get()
-        return (
-            turn.read(result_id, cursor, field=field, limit=limit)
-            if turn
-            else {"status": "error", "error": "no_active_turn"}
-        )
+        return await cached_query("user:" + username.casefold(), fetch)

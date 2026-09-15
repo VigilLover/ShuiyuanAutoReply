@@ -1,11 +1,10 @@
-import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from shuiyuan_auto_reply.application.tool_results import TurnResults, current_turn
 from shuiyuan_auto_reply.features.mention.context_budget import project_messages
 
 
-def test_sources_deduplicate_and_validate_scope():
+def test_sources_deduplicate_without_model_written_scope_ledger():
     turn = TurnResults()
     post = {
         "post_id": 42,
@@ -13,21 +12,10 @@ def test_sources_deduplicate_and_validate_scope():
         "author": {"username": "Alice"},
         "content": "likes music",
     }
-    first = turn.observe({"posts": [post]}, tool="search_posts")
+    first = turn.observe({"items": [post]}, tool="forum_search")
     assert len(first) == 1
-    assert not turn.observe({"posts": [post]}, tool="search_posts")
+    assert not turn.observe({"items": [post]}, tool="forum_search")
     key = next(iter(first))
-    turn.progress.update(
-        goal="preferences",
-        gaps={},
-        findings=[{"text": "likes music", "evidence_ids": [key]}],
-        authors=["Alice"],
-        evidence=turn.evidence,
-    )
-    with pytest.raises(ValueError):
-        turn.progress.update(
-            goal="x", gaps={}, findings=[], authors=["Bob"], evidence=turn.evidence
-        )
     assert turn.read(key, field="content")["content"] == "likes music"
     assert turn.read(key, field="missing")["status"] == "error"
 
@@ -41,9 +29,9 @@ def test_readback_survives_projection_and_index_is_not_recursive():
             HumanMessage(content="goal"),
             AIMessage(
                 content="",
-                tool_calls=[{"id": "a", "name": "read_tool_result", "args": {}}],
+                tool_calls=[{"id": "a", "name": "forum_read", "args": {}}],
             ),
-            ToolMessage(content="x" * 1000, tool_call_id="a", name="read_tool_result"),
+            ToolMessage(content="x" * 1000, tool_call_id="a", name="forum_read"),
         ]
         messages.insert(1, HumanMessage(content="long " * 5000))
         first = project_messages(messages, 2000)

@@ -54,7 +54,7 @@ class OfflineChat(MentionChatModel):
                 tool_calls=[
                     {
                         "id": "first",
-                        "name": "get_user",
+                        "name": "users",
                         "args": {"username": "Alice", "include_avatar": True},
                     }
                 ],
@@ -65,7 +65,7 @@ class OfflineChat(MentionChatModel):
                 tool_calls=[
                     {
                         "id": "again",
-                        "name": "get_user",
+                        "name": "users",
                         "args": {"username": "Alice", "include_avatar": True},
                     }
                 ],
@@ -91,7 +91,7 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         model = SimpleNamespace(
             get_post_details_by_post_number=AsyncMock(return_value=post),
-            query_recent_posts_by_topic_id=AsyncMock(return_value=("Topic", [post])),
+            read_topic_post_page=AsyncMock(return_value=("Topic", [post], 1, False)),
             get_user_by_username=AsyncMock(
                 return_value=SimpleNamespace(
                     id=9, username="Alice", name=None, avatar_template="/a/{size}.png"
@@ -125,28 +125,37 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         first = "\n".join(str(m.content) for m in runtime.prompts[0])
         self.assertIn("名单：@Alice", first)
-        self.assertIn("reply_to_post_number", first)
+        self.assertIn('"reply_to": "forum:42/3"', first)
         self.assertIsNone(current_turn.get())
 
     async def test_new_tools_expose_parameters_and_managed_description(self):
         runtime = OfflineChat(SimpleNamespace())
         catalog = {tool.name: tool for tool in runtime.tools}
-        properties = catalog["get_post"].args_schema.model_json_schema()["properties"]
+        properties = catalog["forum_read"].args_schema.model_json_schema()["properties"]
         self.assertIn("cursor", properties)
         # get_post absorbs the global-id lookup; search_user absorbs the id lookup.
         self.assertIn("post_id", properties)
         self.assertIn(
             "user_id",
-            catalog["search_user"].args_schema.model_json_schema()["properties"],
+            catalog["users"].args_schema.model_json_schema()["properties"],
         )
         self.assertIn(
-            "reference_set_id",
+            "references",
             catalog["generate_image"].args_schema.model_json_schema()["properties"],
         )
-        self.assertIn("prepare_image_references", catalog["generate_image"].description)
+        self.assertNotIn(
+            "prepare_image_references", catalog["generate_image"].description
+        )
         # One entry point per capability: near-synonym tools made the model retry the
         # same read through a different name instead of using the result it had.
-        for removed in ("get_post_by_id", "get_users", "search_user_by_id"):
+        for removed in (
+            "get_post",
+            "recent_posts",
+            "search_posts",
+            "search_user",
+            "inspect_images",
+            "read_tool_result",
+        ):
             self.assertNotIn(removed, catalog)
 
     async def test_settings_tool_list_has_no_stale_names(self):
@@ -160,7 +169,7 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
         # the memory model, neither of which this harness registers.
         self.assertEqual(
             set(RUNTIME_TOOL_NAMES) - registered,
-            {"inspect_images", "search_mention_memory", "manage_mention_memory"},
+            {"search_mention_memory", "manage_mention_memory"},
         )
 
     async def test_generated_artifact_is_delivered_with_missing_reference_notice(self):
@@ -182,3 +191,15 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("未纳入：Bob", result["final_text"])
         finally:
             current_turn.reset(token)
+
+    async def test_tool_markup_is_not_accepted_as_final_text(self):
+        runtime = OfflineChat(SimpleNamespace())
+        result = await runtime._finalize_response(
+            {
+                "messages": [
+                    AIMessage(content='<tool_call>{"name":"forum_search"}</tool_call>')
+                ],
+                "generated_artifacts": [],
+            }
+        )
+        self.assertEqual(result["final_text"], "")

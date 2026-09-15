@@ -819,7 +819,9 @@ class ShuiyuanModel:
         # Only one of username and user_id can be provided
         # If both are provided, username will be used
 
-        query = f"{term} order:{'latest' if latest else 'none'}"
+        query = term.strip()
+        if latest:
+            query += " order:latest"
         if username:
             query += f" @{username}"
         elif user_id:
@@ -849,140 +851,88 @@ class ShuiyuanModel:
         return result
 
     @async_retry(log_traceback=True)
-    async def search_post_details_by_optional_username_topic(
+    async def search_forum(
         self,
-        term: str = "",
-        latest: bool = False,
-        username: Optional[str] = None,
-        topic_id: Optional[int] = None,
-    ) -> Dict[str, List[PostDetails]]:
-        """
-        Search for posts by a search term, an optional username and an optional topic ID, and return detailed information.
-
-        :param term: Optional search term to use for finding posts. Default is empty.
-        :param latest: Whether to sort the results by created_at in descending order. Default is False.
-        :param username: An optional username to filter posts by. Default is None.
-        :param topic_id: An optional topic ID to filter posts by. Default is None.
-        :return: A dictionary mapping topic titles to lists of detailed post information.
-        """
-        post_search_results = await self._search_post_by_options(
-            term=term, latest=latest, username=username, topic_id=topic_id
-        )
-
-        routines = []
-        for topic_title, posts in post_search_results.items():
-            topic_id = posts[0].topic_id
-            routines.append(
-                self.get_post_details_batch_by_topic_id(
-                    topic_id, [post.id for post in posts]
-                )
-            )
-
-        result = {}
-        details_lists = await asyncio.gather(*routines)
-        for topic_title, details_list in zip(post_search_results.keys(), details_lists):
-            result[topic_title] = details_list
-
-        return result
-
-    @async_retry(log_traceback=True)
-    async def query_recent_posts_by_topic_id(
-        self, topic_id: int, limit: int
-    ) -> Tuple[str, List[PostDetails]]:
-        """
-        Query recent posts in a topic by its ID.
-
-        :param topic_id: The ID of the topic to query.
-        :param limit: The maximum number of recent posts to retrieve.
-        :return: A tuple containing the topic title and a list of PostDetails instances for the recent posts in the topic.
-        """
-        if limit <= 0:
-            raise ValueError("Limit must be a positive integer")
-
-        topic_details = await self.get_topic_details(topic_id)
-        recent_posts = topic_details.post_stream.stream[-limit:]
-
-        batch_size = 100
-        routines = []
-        for i in range(0, len(recent_posts), batch_size):
-            batch_post_ids = recent_posts[i : i + batch_size]
-            routines.append(
-                self.get_post_details_batch_by_topic_id(topic_id, batch_post_ids)
-            )
-
-        post_details = []
-        for details in await asyncio.gather(*routines):
-            post_details.extend(details)
-
-        return topic_details.title, post_details[:limit]
-
-    @async_retry(log_traceback=True)
-    async def _search_post_details_by_time_range_and_topic(
-        self,
-        topic_id: int,
-        after_date: Optional[str] = None,
-        before_date: Optional[str] = None,
-    ) -> Dict[str, List[PostDetails]]:
-        """
-        Search for posts within a specific topic and time range, and return detailed information.
-
-        :param topic_id: The ID of the topic to search in.
-        :param after_date: An optional start date (format: YYYY-MM-DD).
-        :param before_date: An optional end date (format: YYYY-MM-DD).
-        :return: A dictionary mapping topic titles to lists of detailed post information.
-        """
-        term = f"topic:{topic_id}"
-        if after_date:
-            term += f" after:{after_date}"
-        if before_date:
-            term += f" before:{before_date}"
-
-        params = {"term": term.strip()}
+        query: str,
+        *,
+        page: int = 1,
+    ) -> dict:
+        """Return one native Discourse search page without fetching post details."""
+        if not query.strip():
+            raise ValueError("Search query must not be empty")
+        if not 1 <= page <= 10:
+            raise ValueError("Search page must be between 1 and 10")
         response = await self._rate_limited_request(
-            "get", f"{post_search_url}", params=params
+            "get", post_search_url, params={"q": query.strip(), "page": page}
         )
         if response.status != 200:
             raise ReadFailure(response.status)
-
         data = await response.json()
-        post_list = [
-            from_dict(PostSearchResult, post) for post in data.get("posts", [])
-        ]
-        if not post_list:
-            return {}
+        if not isinstance(data, dict) or not isinstance(data.get("posts", []), list):
+            raise ReadFailure(502)
+        return data
 
-        # Get post details in batch (all posts share the same topic_id)
-        post_ids = [post.id for post in post_list]
-        details_list = await self.get_post_details_batch_by_topic_id(topic_id, post_ids)
-        topic_title = (
-            data.get("topics", [{}])[0].get("title", str(topic_id))
-            if data.get("topics")
-            else str(topic_id)
-        )
-        return {topic_title: details_list}
-
-    async def search_post_details_by_time_range_and_topic(
+    async def read_topic_posts(
         self,
         topic_id: int,
-        after_date: Optional[str] = None,
-        before_date: Optional[str] = None,
-    ) -> Dict[str, List[PostDetails]]:
-        """
-        Search for posts within a specific topic and time range, and return detailed information.
-        Note for AI Agents: The search API is exclusive of the dates provided.
-        If you want to search for posts exactly ON a single day (e.g., todays posts on 2026-03-18),
-        you MUST set after_date to the start day (2026-03-18) AND set before_date to the NEXT day (2026-03-19).
-
-        :param topic_id: The ID of the topic to search in.
-        :param after_date: An optional start date (format: YYYY-MM-DD).
-        :param before_date: An optional end date (format: YYYY-MM-DD).
-        :return: A dictionary mapping topic titles to lists of detailed post information.
-        """
-        return await self._search_post_details_by_time_range_and_topic(
-            topic_id,
-            after_date,
-            before_date,
+        *,
+        post_number: int | None = None,
+        username: str | None = None,
+        ascending: bool = False,
+    ) -> tuple[str, list[PostDetails]]:
+        """Read one native Discourse topic-post window."""
+        params: dict[str, object] = {
+            "include_raw": "true",
+            "asc": "true" if ascending else "false",
+        }
+        if post_number is not None:
+            params["post_number"] = post_number
+        if username:
+            params["username_filters"] = username
+        response = await self._rate_limited_request(
+            "get", f"{get_topic_url}/{topic_id}/posts.json", params=params
         )
+        if response.status != 200:
+            raise ReadFailure(response.status)
+        data = await response.json()
+        stream = data.get("post_stream", {}) if isinstance(data, dict) else {}
+        rows = stream.get("posts", [])
+        if not isinstance(rows, list):
+            raise ReadFailure(502)
+        title = str(data.get("title", ""))
+        return title, [from_dict(PostDetails, row) for row in rows]
+
+    async def read_topic_post_page(
+        self,
+        topic_id: int,
+        *,
+        offset: int,
+        limit: int,
+        username: str | None = None,
+        ascending: bool = False,
+    ) -> tuple[str, list[PostDetails], int, bool]:
+        """Read a stable page from a topic's post-ID stream, tolerating gaps."""
+        topic = await self.get_topic_details(topic_id)
+        post_ids = list(topic.post_stream.stream)
+        if not ascending:
+            post_ids.reverse()
+
+        matched: list[PostDetails] = []
+        position = offset
+        batch_size = max(limit, 20)
+        while position < len(post_ids) and len(matched) < limit:
+            selected = post_ids[position : position + batch_size]
+            position += len(selected)
+            rows = await self.get_post_details_batch_by_topic_id(topic_id, selected)
+            by_id = {post.id: post for post in rows}
+            ordered = [by_id[post_id] for post_id in selected if post_id in by_id]
+            if username:
+                wanted = username.strip().lstrip("@").casefold()
+                ordered = [
+                    post for post in ordered if post.username.casefold() == wanted
+                ]
+            matched.extend(ordered)
+        return topic.title, matched[:limit], position, position < len(post_ids)
 
 
 def _global_ignore_illegal_cookies() -> None:

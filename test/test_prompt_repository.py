@@ -15,7 +15,7 @@ class PromptRepositoryTests(unittest.TestCase):
         bundle = FilePromptRepository().load("wolf_lumine", set())
         self.assertEqual(
             sha256(bundle.system_prompt.encode()).hexdigest(),
-            "f0d688a66f3e88ec86504fb991edb9bc3fb426575223577ad0f7856d06b0162c",
+            "6bdac6be83795b872f8c5759ee61dd8f884ea44ba82b52a4305a510163c432d4",
         )
 
     def test_unknown_persona_falls_back_to_wolf(self):
@@ -23,7 +23,7 @@ class PromptRepositoryTests(unittest.TestCase):
         self.assertEqual(bundle.persona_id, "wolf_lumine")
         self.assertEqual(
             sha256(bundle.system_prompt.encode()).hexdigest(),
-            "f8670657f756a336be0e0f6483520af3eddf45e5333e9b367360b35da291896b",
+            "d97ebf6d8e76a1ee51e2f47deb77eea45a41e4df48e7168bec0f2359da106245",
         )
 
     def test_archive_and_multimodal_v2_snapshots(self):
@@ -32,11 +32,11 @@ class PromptRepositoryTests(unittest.TestCase):
         multimodal = repository.load("wolf_lumine", {"multimodal"}).system_prompt
         self.assertEqual(
             sha256(archive.encode()).hexdigest(),
-            "07b9c88d4cb35888048baca3bfe14e41ec8f0d3c0acbdd7881ae9db5c8c274fa",
+            "2b188bd636eac63acd904d4a1836d42895534c63ead4faf067292ed5dc08030e",
         )
         self.assertEqual(
             sha256(multimodal.encode()).hexdigest(),
-            "bace2ee7ccb4f474f03e2de5fc3d9010cf82762a148ed03a15a010843b27835e",
+            "02d4fc27877bc0dd422db2f6c11bb8e5bef3774e8eb6a17a82b72a601cb7f4d7",
         )
 
     def test_web_prompt_keeps_shared_rules_without_forum_write_capabilities(self):

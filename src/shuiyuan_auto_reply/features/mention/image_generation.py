@@ -753,6 +753,8 @@ def create_image_generation_tool(model, *, state_store=None):
         reference_images: str | list[str] | None = None,
         output_dir: str | None = None,
         reference_set_id: str | None = None,
+        references: list[dict[str, str]] | None = None,
+        allow_partial: bool = False,
     ) -> str:
         """
         根据用户的文字描述生成图片并返回可展示结果；网页仅保存本地 Artifact，论坛由发布流程上传。
@@ -842,13 +844,34 @@ def create_image_generation_tool(model, *, state_store=None):
         from .image_references import prepare_references
 
         turn = current_turn.get()
-        if reference_set_id and reference_images:
-            return "图片生成失败: reference_set_id 与 reference_images 互斥."
+        if (
+            sum(
+                bool(value)
+                for value in (reference_set_id, reference_images, references)
+            )
+            > 1
+        ):
+            return "图片生成失败: references、reference_images 与 reference_set_id 只能使用一个."
         prepared = None
         if reference_set_id:
             prepared = turn.references.get(reference_set_id) if turn else None
             if prepared is None:
                 return "图片生成失败: 素材集不存在或不属于本轮，请重新 prepare_image_references."
+        elif references:
+            prepared = await prepare_references(
+                references,
+                model=model,
+                strict_remote=state_store is not None,
+            )
+            if prepared["status"] == "partial" and not allow_partial:
+                public = {
+                    k: v
+                    for k, v in prepared.items()
+                    if k not in {"data_urls", "reference_set_id"}
+                }
+                return "部分参考素材读取失败，尚未生成：" + json.dumps(
+                    public, ensure_ascii=False
+                )
         elif reference_images:
             prepared = await prepare_references(
                 [
@@ -858,19 +881,19 @@ def create_image_generation_tool(model, *, state_store=None):
                 model=model,
                 strict_remote=state_store is not None,
             )
-            if prepared["status"] == "partial":
+            if prepared["status"] == "partial" and not allow_partial:
                 public = {k: v for k, v in prepared.items() if k != "data_urls"}
-                return "部分参考素材读取失败，尚未生成。请按成功素材标签调整描述，再用 reference_set_id 生成：" + json.dumps(
+                return "部分参考素材读取失败，尚未生成：" + json.dumps(
                     public, ensure_ascii=False
                 )
         reference_data_urls = prepared["data_urls"] if prepared else []
-        use_edit_endpoint = bool(reference_images or reference_set_id)
+        use_edit_endpoint = bool(reference_images or reference_set_id or references)
         if use_edit_endpoint and not reference_data_urls:
             return "图片生成失败: 未能读取可用的参考图片. " + json.dumps(
                 prepared.get("items", []) if prepared else [], ensure_ascii=False
             )
         reference_notice = ""
-        if prepared and reference_set_id:
+        if prepared:
             good = [item for item in prepared["items"] if item["status"] == "ok"]
             missing = [item for item in prepared["items"] if item["status"] != "ok"]
             mapping = "\n".join(
@@ -1116,25 +1139,21 @@ class ImageGenerationService:
         self,
         prompt: str,
         aspect_ratio: str = "1:1",
-        image_size: str = "1K",
-        reference_images: str | list[str] | None = None,
-        output_dir: str | None = None,
-        reference_set_id: str | None = None,
+        references: list[dict[str, str]] | None = None,
+        allow_partial: bool = False,
     ) -> tuple[str, GeneratedImageArtifact | None]:
-        """Return the two-part result required by ``content_and_artifact``.
+        """Generate an image from a prompt and optional labeled references.
 
-        The legacy generator returns a plain error string on validation, network,
-        and persistence failures.  Managed runtimes expose this method through a
-        LangChain tool whose response format is ``content_and_artifact``, so those
-        strings must be normalized as ``(content, None)`` as well.
+        ``references`` contains objects with stable ``key``, image ``url``, and a
+        descriptive ``label``. Reference loading, validation, deduplication, and
+        ordering happen internally. By default, any failed reference prevents
+        generation; set ``allow_partial`` only when a successful subset is valid.
         """
         result = await self._generate(
             prompt=prompt,
             aspect_ratio=aspect_ratio,
-            image_size=image_size,
-            reference_images=reference_images,
-            output_dir=output_dir,
-            reference_set_id=reference_set_id,
+            references=references,
+            allow_partial=allow_partial,
         )
         if isinstance(result, tuple) and len(result) == 2:
             return result
