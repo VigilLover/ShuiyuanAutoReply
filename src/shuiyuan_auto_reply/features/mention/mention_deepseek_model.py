@@ -200,7 +200,7 @@ class MentionDeepSeekModel(MentionChatModel):
     def _get_multimodal_prompt_rules(self) -> str:
         return (
             "【原生视觉理解规则】\n"
-            "1. 用户图片和工具结果图片会自动作为视觉输入附加，不要调用独立识图工具。\n"
+            "1. 当前用户附带图片自动作为视觉输入；普通读帖仅返回图片地址，需要看图时使用已启用的 inspect_images。\n"
             "2. 只有实际出现的图片可用于判断；工具结果没有图片时不要猜测画面。\n"
             "3. 图片标签只用于区分来源，回答时结合图片本身和相邻文字。\n\n"
         )

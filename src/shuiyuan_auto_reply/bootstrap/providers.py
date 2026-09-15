@@ -50,12 +50,37 @@ class MentionProviderFactory:
             state_store=state_store,
             system_prompt_override=system_prompt_override,
         )
-        from shuiyuan_auto_reply.infrastructure.prompts.profiles import profile_metadata
+        from langchain_core.prompts import (
+            ChatPromptTemplate,
+            MessagesPlaceholder,
+            SystemMessagePromptTemplate,
+        )
 
+        from shuiyuan_auto_reply.infrastructure.prompts.profiles import (
+            fingerprint,
+            profile_metadata,
+        )
+
+        if prompt_profile and prompt_profile.get("prompt_mode") == "managed":
+            effective_prompt = render_profile(
+                prompt_profile,
+                prompt_scope.value,
+                multimodal=bool(model._get_multimodal_prompt_rules()),
+            )
+            model.prompt = ChatPromptTemplate.from_messages(
+                [
+                    SystemMessagePromptTemplate.from_template(effective_prompt),
+                    MessagesPlaceholder("chat_history"),
+                    MessagesPlaceholder("messages"),
+                ]
+            )
+        else:
+            effective_prompt = model.prompt.messages[0].prompt.template
         model.runtime_profile_metadata = profile_metadata(
-            prompt_profile or {"system_prompt": system_prompt_override or ""},
+            prompt_profile or {"system_prompt": effective_prompt},
             prompt_scope.value,
         )
+        model.runtime_profile_metadata["prompt_hash"] = fingerprint(effective_prompt)
         model.runtime_profile_metadata["profile_revision"] = (prompt_profile or {}).get(
             "profile_revision"
         )
@@ -89,12 +114,37 @@ class MentionProviderFactory:
             state_store=state_store,
             system_prompt_override=system_prompt_override,
         )
-        from shuiyuan_auto_reply.infrastructure.prompts.profiles import profile_metadata
+        from langchain_core.prompts import (
+            ChatPromptTemplate,
+            MessagesPlaceholder,
+            SystemMessagePromptTemplate,
+        )
 
+        from shuiyuan_auto_reply.infrastructure.prompts.profiles import (
+            fingerprint,
+            profile_metadata,
+        )
+
+        if prompt_profile and prompt_profile.get("prompt_mode") == "managed":
+            effective_prompt = render_profile(
+                prompt_profile,
+                prompt_scope.value,
+                multimodal=bool(model._get_multimodal_prompt_rules()),
+            )
+            model.prompt = ChatPromptTemplate.from_messages(
+                [
+                    SystemMessagePromptTemplate.from_template(effective_prompt),
+                    MessagesPlaceholder("chat_history"),
+                    MessagesPlaceholder("messages"),
+                ]
+            )
+        else:
+            effective_prompt = model.prompt.messages[0].prompt.template
         model.runtime_profile_metadata = profile_metadata(
-            prompt_profile or {"system_prompt": system_prompt_override or ""},
+            prompt_profile or {"system_prompt": effective_prompt},
             prompt_scope.value,
         )
+        model.runtime_profile_metadata["prompt_hash"] = fingerprint(effective_prompt)
         model.runtime_profile_metadata["profile_revision"] = (prompt_profile or {}).get(
             "profile_revision"
         )

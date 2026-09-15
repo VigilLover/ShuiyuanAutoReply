@@ -38,9 +38,13 @@ def cached_media_attempt(func):
             else url
         )
         if key in turn.image_failures:
+            if func.__name__ == "_download_and_encode" and not bound.arguments.get(
+                "raise_errors", False
+            ):
+                return None
             raise turn.image_failures[key]
         cache_key = "prepared_media:" + func.__name__ + ":" + key
-        if cache_key in turn.cache:
+        if func.__name__ == "_download_and_encode" and cache_key in turn.cache:
             return turn.cache[cache_key]
         try:
             result = await func(*args, **kwargs)
@@ -67,7 +71,8 @@ def cached_media_attempt(func):
                 import base64
 
                 remember_media(url, base64.b64decode(result.split(",", 1)[1]))
-            turn.cache[cache_key] = result
+            if func.__name__ == "_download_and_encode":
+                turn.cache[cache_key] = result
         return result
 
     return wrapped

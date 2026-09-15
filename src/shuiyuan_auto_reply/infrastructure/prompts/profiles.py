@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import os
 from importlib import resources
+from importlib.metadata import PackageNotFoundError, version
 
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 
@@ -22,6 +24,14 @@ def normalize_profile(value: dict, scope: str) -> dict:
         .joinpath("legacy_defaults.json")
         .read_text()
     )
+    repo = FilePromptRepository()
+    for persona in repo._personas:
+        for capabilities in (set(), {"multimodal"}):
+            known[
+                fingerprint(
+                    repo.load(persona, capabilities, PromptScope(scope)).system_prompt
+                )
+            ] = {"persona_id": persona, "scope": scope}
     match = known.get(fingerprint(result.get("system_prompt", "")))
     result["prompt_mode"] = "managed" if match and match["scope"] == scope else "legacy"
     result.setdefault("persona_id", match["persona_id"] if match else "wolf_lumine")
@@ -55,7 +65,24 @@ def render_profile(profile: dict, scope: str, *, multimodal: bool = True) -> str
 
 
 def profile_metadata(profile: dict, scope: str) -> dict:
+    try:
+        package_version = version("shuiyuan-auto-reply")
+    except PackageNotFoundError:
+        package_version = "development"
+    root = resources.files("shuiyuan_auto_reply")
+    code_hash = fingerprint(
+        "".join(
+            root.joinpath(name).read_text()
+            for name in (
+                "application/retrieval_control.py",
+                "application/task_progress.py",
+                "features/mention/mention_chat_model.py",
+            )
+        )
+    )
     return {
+        "code_version": os.getenv("SHUIYUAN_RELEASE_VERSION", package_version),
+        "code_hash": code_hash,
         "prompt_mode": profile.get("prompt_mode", "legacy"),
         "rules_version": FilePromptRepository()._version,
         "prompt_hash": fingerprint(render_profile(profile, scope)),

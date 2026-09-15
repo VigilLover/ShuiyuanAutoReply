@@ -706,33 +706,7 @@ class MentionChatModel:
                 if str(tool.get("type", "")) in self.enabled_tools
             ]
 
-        async def update_task_progress(
-            goal: str,
-            gaps: dict[str, str],
-            findings: list[dict],
-            authors: list[str],
-            strategy: str = "",
-        ) -> dict:
-            """Maintain this turn's investigation goal, unresolved gap IDs and source-grounded findings.
-
-            Each finding needs text and evidence_ids from the evidence index. Authors must
-            be confirmed by retrieved sources. Before expanding search, describe a specific
-            gap; during review supply a genuinely different strategy. This does not reset budgets.
-            """
-            turn = current_turn.get()
-            if turn is None:
-                return {"status": "error", "error": "no_active_turn"}
-            result = turn.progress.update(
-                goal=goal,
-                gaps=gaps,
-                findings=findings,
-                authors=authors,
-                strategy=strategy,
-                evidence=turn.evidence,
-            )
-            if turn.progress.phase == "review":
-                turn.control.continue_after_review(turn.progress)
-            return result
+        from shuiyuan_auto_reply.application.task_progress import update_task_progress
 
         all_function_like_tools = (
             enabled_mcp_tools
@@ -1057,12 +1031,31 @@ class MentionChatModel:
         by_name = {tool.name: tool for tool in self.tools}
         turn = current_turn.get()
         prior_pages = len(turn.read_pages) if turn else 0
+        read_count = sum(call["name"] == "read_tool_result" for call in calls)
+        page_budget = max(1, 6000 // max(1, read_count))
         pending_signatures = set()
         prepared = {}
+        updates = {}
+        # Apply controller state updates first, even when the model batches them with reads.
+        for call in calls:
+            if call["name"] == "update_task_progress" and call["id"] not in errors:
+                try:
+                    updates[call["id"]] = await by_name[call["name"]].ainvoke(
+                        {**call, "type": "tool_call"}
+                    )
+                except Exception as exc:
+                    updates[call["id"]] = ToolMessage(
+                        content=str(exc)[:500],
+                        tool_call_id=call["id"],
+                        name=call["name"],
+                        status="error",
+                    )
         for call in calls:
             name, args = call["name"], dict(call["args"])
+            if name == "read_tool_result":
+                args["limit"] = min(args.get("limit", 1500), page_budget)
             error = errors.get(call["id"])
-            cached = None
+            cached = updates.get(call["id"])
             if turn and not error:
                 control, progress = turn.control, turn.progress
                 if name in SEARCH_TOOLS:
@@ -1116,7 +1109,7 @@ class MentionChatModel:
                             for x in turn.evidence.values()
                         )
                     )
-                    if not known and not args.get("scope_reason"):
+                    if not known and not (args.get("scope_reason") and progress.gaps):
                         error = "Unknown post locator: use an observed source/reply relation or supply scope_reason; do not guess adjacent floors"
                 sig = signature(name, args)
                 if (
@@ -1132,9 +1125,9 @@ class MentionChatModel:
                     control.repeats += 1
                     control.review(progress, "repeated_read")
                 elif (
-                    progress.phase in {"review", "final"}
-                    and name != "update_task_progress"
-                ):
+                    progress.phase == "final"
+                    or (progress.phase == "review" and name in READ_TOOLS)
+                ) and name != "update_task_progress":
                     error = "Investigation paused: summarize findings and gaps before continuing, or answer"
                 elif name in READ_TOOLS and name != "read_tool_result":
                     if control.queries >= control.query_limit:
@@ -1167,6 +1160,10 @@ class MentionChatModel:
                     status="error",
                 )
             try:
+                if turn:
+                    await emit_event(
+                        "tool.execution", {"name": call["name"], "arguments": args}
+                    )
                 message = await by_name[call["name"]].ainvoke(
                     {**call, "type": "tool_call"}
                 )
@@ -1543,6 +1540,12 @@ class MentionChatModel:
             response = AIMessage(
                 content="目前已有资料仍不足以形成可靠的完整结论；本次查询已停止。"
             )
+        if (
+            turn
+            and not getattr(response, "tool_calls", None)
+            and getattr(response, "content", None)
+        ):
+            turn.control.stop(turn.progress, turn.control.stop_reason or "answered")
         if turn:
             await emit_event(
                 "retrieval.progress",
@@ -1550,6 +1553,9 @@ class MentionChatModel:
                     **turn.control.metrics(),
                     "phase": turn.progress.phase,
                     "external_requests": turn.external_requests,
+                    "forum_http_requests": turn.forum_http_requests,
+                    "image_downloads": len(turn.media_digests),
+                    "image_failures": len(turn.image_failures),
                     "cache_hits": turn.cache_hits,
                 },
             )
@@ -1598,6 +1604,20 @@ class MentionChatModel:
             if artifact.uri not in final_clean_text:
                 final_clean_text += f"\n\n![生成图片]({artifact.uri})"
         final_clean_text = final_clean_text.strip()
+        turn = current_turn.get()
+        if turn:
+            import time
+
+            await emit_event(
+                "retrieval.finished",
+                {
+                    **turn.control.metrics(),
+                    "external_requests": turn.external_requests,
+                    "forum_http_requests": turn.forum_http_requests,
+                    "image_downloads": len(turn.media_digests),
+                    "elapsed_seconds": round(time.monotonic() - turn.started_at, 3),
+                },
+            )
         turn = current_turn.get()
         if turn:
             for notice in dict.fromkeys(turn.notices):

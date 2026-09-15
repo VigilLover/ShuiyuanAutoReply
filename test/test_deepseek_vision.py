@@ -308,7 +308,9 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
         state = {
             "image_inputs": [],
             "messages": [
-                ToolMessage(content="result", tool_call_id="call-1", name="web_search")
+                ToolMessage(
+                    content="result", tool_call_id="call-1", name="image_search"
+                )
             ],
             "conversation_id": "conversation-1",
         }

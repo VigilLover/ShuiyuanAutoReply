@@ -110,17 +110,58 @@ def source_records(value):
             )
             yield "web:" + url, value
             return
-        for key in ("posts", "results", "users", "user", "output", "text"):
+        for key in ("posts", "results", "items", "users", "user", "output", "text"):
             if key in value:
                 yield from source_records(value[key])
 
 
 def content_digest(record: dict) -> str:
     content = {
-        k: v
-        for k, v in record.items()
-        if k not in {"result_id", "next_cursor", "read_full", "evidence_id", "warnings"}
+        k: record[k]
+        for k in (
+            "content",
+            "snippet",
+            "author",
+            "username",
+            "avatar",
+            "image_urls",
+            "reply_to_post_number",
+        )
+        if k in record
     }
+    if not content:
+        content = {"title": record.get("title", "")}
     return sha256(
         json.dumps(content, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
+
+
+async def update_task_progress(
+    goal: str,
+    gaps: dict[str, str],
+    findings: list[dict],
+    authors: list[str],
+    strategy: str = "",
+) -> dict:
+    """Maintain this turn's investigation goal, unresolved gap IDs and source-grounded findings.
+
+    Each finding needs text and evidence_ids from the evidence index. Authors must
+    be confirmed by retrieved sources. Before expanding search, describe a specific
+    gap; during review supply a genuinely different strategy. This does not reset budgets.
+    """
+    from .tool_results import current_turn
+
+    turn = current_turn.get()
+    if turn is None:
+        return {"status": "error", "error": "no_active_turn"}
+    result = turn.progress.update(
+        goal=goal,
+        gaps=gaps,
+        findings=findings,
+        authors=authors,
+        strategy=strategy,
+        evidence=turn.evidence,
+    )
+    if turn.progress.phase == "review":
+        turn.control.continue_after_review(turn.progress)
+    return turn.progress.view()

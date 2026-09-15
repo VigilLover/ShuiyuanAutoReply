@@ -39,6 +39,7 @@ async function loadScopeSettings() {
 
 async function changeScope(value: 'web' | 'forum') {
   scope.value = value
+  promptPreview.value = ''
   await loadScopeSettings()
 }
 
@@ -94,6 +95,7 @@ async function previewPrompt() {
 }
 
 async function migratePrompt() {
+  await save(false)
   await api(`/api/settings/profiles/${scope.value}/prompt-migrate`, { method: 'POST' })
   await load()
   await previewPrompt()
@@ -198,7 +200,8 @@ onMounted(load)
           <div v-else-if="activeSection === 'prompt'" class="settings-section prompt-section">
             <p class="section-intro">执行规则随版本升级；人设与补充要求单独保存。修改后点击“应用并热切换”。</p>
             <p>规则版本 {{ current().prompt_metadata?.rules_version }} · {{ current().draft_changed ? '有未应用草稿' : '草稿与生效配置一致' }}</p>
-            <p>最近任务实际使用：{{ current().last_runtime_used?.profile_revision ? 'r' + current().last_runtime_used.profile_revision : '尚无使用记录' }}</p>
+            <p>最近任务实际使用：{{ current().last_runtime_used?.profile_revision ? 'r' + current().last_runtime_used.profile_revision : '尚无使用记录' }} · 规则 {{ current().last_runtime_used?.rules_version || '—' }}</p>
+            <p v-if="current().last_runtime_used?.prompt_hash !== current().prompt_metadata?.prompt_hash">当前提示词尚待新任务验证。</p>
             <template v-if="current().draft.prompt_mode === 'managed'">
               <label>人设（留空文本与使用默认人设不同；恢复按钮使用内置人设）</label>
               <textarea v-model="current().draft.persona_text" placeholder="使用内置默认人设" spellcheck="false"></textarea>

@@ -1187,16 +1187,25 @@ class SQLiteStateStore:
             active = normalize_profile(
                 {**defaults, **json.loads(row["active_json"])}, scope
             )
-            # Preserve active/draft independently and keep the legacy full prompt for rollback.
-            await db.execute(
-                "UPDATE runtime_profiles SET draft_json=?, active_json=? WHERE scope=?",
-                (
-                    json.dumps(draft, ensure_ascii=False),
-                    json.dumps(active, ensure_ascii=False),
-                    scope,
-                ),
-            )
-            await db.commit()
+            # Migrate once, with compare-and-swap so concurrent saves cannot be overwritten.
+            encoded_draft = json.dumps(draft, ensure_ascii=False)
+            encoded_active = json.dumps(active, ensure_ascii=False)
+            if draft != json.loads(row["draft_json"]) or active != json.loads(
+                row["active_json"]
+            ):
+                updated = await db.execute(
+                    "UPDATE runtime_profiles SET draft_json=?, active_json=? WHERE scope=? AND draft_json=? AND active_json=?",
+                    (
+                        encoded_draft,
+                        encoded_active,
+                        scope,
+                        row["draft_json"],
+                        row["active_json"],
+                    ),
+                )
+                await db.commit()
+                if updated.rowcount == 0:
+                    return await self.get_profile(scope, defaults)
             active["profile_revision"] = row["active_revision"]
             used = await (
                 await db.execute(
@@ -1240,7 +1249,11 @@ class SQLiteStateStore:
             ).fetchone()
             if profile is None:
                 raise LookupError("profile not found")
-            prompt = json.loads(profile["draft_json"]).get("system_prompt", "")
+            from shuiyuan_auto_reply.infrastructure.prompts.profiles import (
+                render_profile,
+            )
+
+            prompt = render_profile(json.loads(profile["draft_json"]), scope)
             version_row = await (
                 await db.execute(
                     "SELECT COALESCE(MAX(version), 0) AS version FROM prompt_versions WHERE scope=? AND persona_id=?",

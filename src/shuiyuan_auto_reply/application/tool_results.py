@@ -23,6 +23,8 @@ class TurnResults:
     execution_ids: set[str] = field(default_factory=set)
     read_pages: set[tuple] = field(default_factory=set)
     external_requests: int = 0
+    forum_http_requests: int = 0
+    started_at: float = field(default_factory=time.monotonic)
     media_bytes: dict[str, bytes] = field(default_factory=dict)
     media_digests: dict[str, int] = field(default_factory=dict)
     image_failures: dict[str, Any] = field(default_factory=dict)
@@ -86,7 +88,12 @@ class TurnResults:
                 or self.evidence[key]["username"].casefold()
                 in {a.casefold() for a in self.progress.authors}
             ):
-                added.add(key)
+                if (
+                    not self.progress.topic_id
+                    or not record.get("topic_id")
+                    or record.get("topic_id") == self.progress.topic_id
+                ):
+                    added.add(key)
         return added
 
     def read(
@@ -108,7 +115,6 @@ class TurnResults:
                 return {"status": "error", "error": "unknown_field", "retryable": False}
         if not 1 <= limit <= PAGE_CHARS:
             return {"status": "error", "error": "invalid_limit", "retryable": False}
-        self.read_pages.add((result_id, field, cursor))
         text = (
             value
             if isinstance(value, str)
@@ -117,10 +123,13 @@ class TurnResults:
         if cursor < 0 or cursor > len(text):
             return {"status": "error", "error": "invalid_cursor", "retryable": False}
         end = min(cursor + limit, len(text))
+        if result_id not in self.index_ids and end > cursor:
+            self.read_pages.add((sha256(text[cursor:end].encode()).hexdigest(),))
         return {
             "result_id": result_id,
             "content": text[cursor:end],
             "total_chars": len(text),
+            "page_limit": limit,
             "truncated": end < len(text),
             "next_cursor": end if end < len(text) else None,
         }

@@ -254,6 +254,11 @@ class ShuiyuanModel:
             if wait_time > 0:
                 await asyncio.sleep(wait_time)
 
+            from shuiyuan_auto_reply.application.tool_results import current_turn
+
+            turn = current_turn.get()
+            if turn and method.lower() == "get":
+                turn.forum_http_requests += 1
             # Make the actual request
             request_coro = getattr(cls._shared_session, method)
             response = await request_coro(*args, **kwargs)

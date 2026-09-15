@@ -455,10 +455,15 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
 
 class TestMentionProviderSelection(unittest.TestCase):
     def test_mimo_provider_selects_mimo_model(self):
+        from types import SimpleNamespace
+
         from shuiyuan_auto_reply.bootstrap.providers import MentionProviderFactory
         from shuiyuan_auto_reply.bootstrap.settings import AppSettings
 
         mimo_cls = MagicMock()
+        mimo_cls.return_value.prompt.messages = [
+            SimpleNamespace(prompt=SimpleNamespace(template="test persona"))
+        ]
         with (
             patch.dict(
                 os.environ,
