@@ -23,6 +23,11 @@ from release import VERSION, validate
 
 ROOT = Path("/opt/shuiyuan")
 MAX_BUNDLE = 20 * 1024 * 1024
+# Ordinary compose steps (stop, migrate, up) are local and fast; only the image
+# download is at the mercy of this host's link to the registry.
+RUN_TIMEOUT_SECONDS = 600
+PULL_ATTEMPTS = 3
+PULL_TIMEOUT_SECONDS = 1200
 
 
 def atomic_json(path, value):
@@ -202,9 +207,9 @@ class Deployer:
         self.root = root
         self.record = {}
 
-    def run(self, command, *, env=None):
+    def run(self, command, *, env=None, timeout=RUN_TIMEOUT_SECONDS):
         result = subprocess.run(
-            command, env=env, capture_output=True, text=True, timeout=600
+            command, env=env, capture_output=True, text=True, timeout=timeout
         )
         if result.returncode:
             # Container output can contain cookies/provider errors. Never propagate raw logs.
@@ -213,7 +218,7 @@ class Deployer:
             )
         return result.stdout
 
-    def compose(self, manifest, arguments):
+    def compose(self, manifest, arguments, *, timeout=RUN_TIMEOUT_SECONDS):
         env = dict(os.environ)
         env.update(
             SHUIYUAN_CONFIG=str(self.root / "shared/deployment.toml"),
@@ -235,7 +240,39 @@ class Deployer:
                 *arguments,
             ],
             env=env,
+            timeout=timeout,
         )
+
+    def pull(self, manifest):
+        """Download release images, giving a slow link several bounded attempts.
+
+        The registry link from this host is unstable, so one attempt can spend
+        its whole budget on the same layers. Docker keeps every layer it already
+        stored, so a retry resumes with strictly less left to fetch, and each
+        attempt reports itself so the caller is never left in the dark.
+        """
+        for attempt in range(1, PULL_ATTEMPTS + 1):
+            try:
+                self.compose(
+                    manifest,
+                    ["pull", "bot", "postgres", "mcp"],
+                    timeout=PULL_TIMEOUT_SECONDS,
+                )
+                return
+            except (subprocess.TimeoutExpired, RuntimeError):
+                if attempt == PULL_ATTEMPTS:
+                    raise
+                print(
+                    json.dumps(
+                        {
+                            "pull_attempt": attempt,
+                            "attempts": PULL_ATTEMPTS,
+                            "timeout_seconds": PULL_TIMEOUT_SECONDS,
+                            "retrying": True,
+                        }
+                    ),
+                    flush=True,
+                )
 
     def ops(self, manifest, args, *, extra=(), service="bot"):
         try:
@@ -319,7 +356,7 @@ class Deployer:
             stopped = False
             try:
                 self.save("pull")
-                self.compose(target, ["pull", "bot", "postgres", "mcp"])
+                self.pull(target)
                 fingerprint = self.fingerprint(target)
                 if fingerprint != baseline["fingerprint"]:
                     raise ValueError("Vector space changes require maintenance")
