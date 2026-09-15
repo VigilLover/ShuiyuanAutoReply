@@ -274,6 +274,37 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, [])
         manager.prepare_public_url.assert_not_awaited()
 
+    async def test_forum_emoji_is_not_loaded_as_public_tool_image(self):
+        manager = DeepSeekVisionMediaManager.__new__(DeepSeekVisionMediaManager)
+        manager.prepare_public_url = AsyncMock()
+        manager.prepare_forum_url = AsyncMock()
+        artifact = SimpleNamespace(
+            raw=":wolf:",
+            cooked=(
+                '<img class="emoji" '
+                'src="https://shuiyuan.sjtu.edu.cn/images/emoji/noto/wolf.png">'
+            ),
+            image_urls=[],
+        )
+
+        result = await manager.prepare_tool_output(
+            [
+                ToolMessage(
+                    content="post",
+                    tool_call_id="call-emoji",
+                    name="forum_read",
+                    artifact=[artifact],
+                )
+            ],
+            conversation_id="conversation-1",
+            existing_urls=set(),
+            limit=4,
+        )
+
+        self.assertEqual(result, [])
+        manager.prepare_forum_url.assert_not_awaited()
+        manager.prepare_public_url.assert_not_awaited()
+
     async def test_tool_images_are_appended_as_synthetic_user_message(self):
         artifact = VisualMediaArtifact(
             artifact_id="asset-1",
