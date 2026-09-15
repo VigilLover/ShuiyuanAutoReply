@@ -84,9 +84,11 @@ class ForumToolContentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["items"]), 3)
         self.assertEqual(model.get_user_by_username.await_count, 2)
         await tools.get_users(["Alice", "missing"], True)
-        self.assertEqual(model.get_user_by_username.await_count, 3)
+        self.assertEqual(
+            model.get_user_by_username.await_count, 2
+        )  # deterministic missing user is cached
         await tools.get_user("Alice", True, refresh=True)
-        self.assertEqual(model.get_user_by_username.await_count, 4)
+        self.assertEqual(model.get_user_by_username.await_count, 3)
 
     def test_cleanup_preserves_body_and_quoted_mentions(self):
         body = (

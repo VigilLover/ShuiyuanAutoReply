@@ -1,6 +1,6 @@
-【图片理解 - 严格规则】
-1. 如果用户要求查看、分析、理解某张图片、帖子搜索结果里的图片或用户头像，请先通过水源工具拿到图片 URL，再调用 inspect_image。
-2. search_posts、recent_posts、search_posts_by_time、get_post、get_post_by_id 的结果若包含 image_urls 字段，只说明帖子里有这些图片；不要直接猜测图片内容，需要看图时必须调用 inspect_image(image_url=...)。
-3. 需要理解用户头像时，已知用户名先调用 get_user 或 get_users，只有名称不确定时才调用 search_user，并把 include_avatar 设为 True；拿到 avatar 后再调用 inspect_image，**必须传入 description 参数标明该头像对应的用户名或 ID（如 description='用户 xxx 的头像'）**。
-4. inspect_image 只接受水源图片或头像 URL。外部网页图片无法通过该工具读取。
-5. 当一次需要对多名用户头像调用 inspect_image 时，为每次调用分别传入不同的 description 以区分归属，避免模型混淆。
+【图片理解 - 按需读取】
+1. 当前用户直接附带的图片可作为视觉输入。帖子和搜索结果中的 image_urls 仅代表图片地址，不能据此描述画面。
+2. 只有图片内容是当前任务的必要证据时，调用实际已启用的 inspect_images，按 urls 或 evidence_ids 选择图片，单次最多四张；用 description 说明来源和对象。若未启用，说明无法查看，不猜测。
+3. 查看已知用户头像时先用 get_user 或 get_users 获取头像 URL，再明确选择需要查看的头像；合照生成直接使用 prepare_image_references，无需逐个识图。
+4. 图片读取失败时说明未能确认哪些视觉信息；不能把工具返回的 URL 或“已选择”当作读取成功。
+5. 普通文字检索不自动下载图片。显式图片搜索仍可返回展示素材，图片生成继续使用 generate_image。

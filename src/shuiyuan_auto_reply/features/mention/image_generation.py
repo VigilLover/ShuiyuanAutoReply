@@ -21,7 +21,9 @@ from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.domain import GeneratedImageArtifact
 from shuiyuan_auto_reply.infrastructure.image_transport import (
     ImageDownloadError,
+    cached_media_attempt,
     encoded_image_url,
+    remembered_media,
 )
 from shuiyuan_auto_reply.infrastructure.persistence.state import state_directory
 
@@ -385,6 +387,7 @@ async def _request_image_bytes_multipart(
         return image_bytes
 
 
+@cached_media_attempt
 async def _download_and_encode(
     session: aiohttp.ClientSession | None,
     url: str,
@@ -396,6 +399,9 @@ async def _download_and_encode(
     raise_errors: bool = False,
 ) -> str | None:
     """下载图片并转为 base64 data URL，整合了水源认证下载。"""
+    cached_bytes = remembered_media(url)
+    if cached_bytes is not None:
+        return _encode_bytes(cached_bytes, url, max_bytes)
     if url.startswith("data:"):
         match = _DATA_URL_RE.match(url)
         if match:

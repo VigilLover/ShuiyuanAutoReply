@@ -1,0 +1,59 @@
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from shuiyuan_auto_reply.application.tool_results import TurnResults, current_turn
+from shuiyuan_auto_reply.features.mention.context_budget import project_messages
+
+
+def test_sources_deduplicate_and_validate_scope():
+    turn = TurnResults()
+    post = {
+        "post_id": 42,
+        "topic_id": 3,
+        "author": {"username": "Alice"},
+        "content": "likes music",
+    }
+    first = turn.observe({"posts": [post]}, tool="search_posts")
+    assert len(first) == 1
+    assert not turn.observe({"posts": [post]}, tool="search_posts")
+    key = next(iter(first))
+    turn.progress.update(
+        goal="preferences",
+        gaps={},
+        findings=[{"text": "likes music", "evidence_ids": [key]}],
+        authors=["Alice"],
+        evidence=turn.evidence,
+    )
+    with pytest.raises(ValueError):
+        turn.progress.update(
+            goal="x", gaps={}, findings=[], authors=["Bob"], evidence=turn.evidence
+        )
+    assert turn.read(key, field="content")["content"] == "likes music"
+    assert turn.read(key, field="missing")["status"] == "error"
+
+
+def test_readback_survives_projection_and_index_is_not_recursive():
+    turn = TurnResults()
+    token = current_turn.set(turn)
+    try:
+        turn.observe({"post_id": 42, "content": "evidence"})
+        messages = [
+            HumanMessage(content="goal"),
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "a", "name": "read_tool_result", "args": {}}],
+            ),
+            ToolMessage(content="x" * 1000, tool_call_id="a", name="read_tool_result"),
+        ]
+        messages.insert(1, HumanMessage(content="long " * 5000))
+        first = project_messages(messages, 2000)
+        second = project_messages(messages, 2000)
+        assert (
+            next(m for m in second if isinstance(m, ToolMessage)).content == "x" * 1000
+        )
+        assert len(turn.evidence) == 1
+        assert all(
+            "results_index" not in item["preview"] for item in turn.evidence.values()
+        )
+    finally:
+        current_turn.reset(token)

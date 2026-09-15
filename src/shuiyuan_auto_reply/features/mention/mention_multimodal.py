@@ -118,6 +118,10 @@ def normalize_shuiyuan_image_url(url: str) -> str | None:
             filename = parsed.path[len(UPLOAD_SHORT_PATH_PREFIX) :]
             normalized = "upload://" + filename
             return normalized if _is_probable_image_url(normalized) else None
+        if parsed.path.startswith(
+            ("/uploads/original/", "/secure-uploads/", "/uploads/default/original/")
+        ):
+            return candidate if _is_probable_image_url(candidate) else None
         if parsed.path.startswith(USER_AVATAR_PATH_PREFIX):
             return parsed.path if _is_probable_image_url(parsed.path) else None
 

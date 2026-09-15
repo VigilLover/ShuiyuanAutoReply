@@ -16,6 +16,7 @@ import {
 import { api } from '../api'
 
 const profiles = ref<any[]>([])
+const promptPreview = ref('')
 const scope = ref<'web' | 'forum'>('web')
 const status = ref('')
 const statusError = ref(false)
@@ -38,6 +39,7 @@ async function loadScopeSettings() {
 
 async function changeScope(value: 'web' | 'forum') {
   scope.value = value
+  promptPreview.value = ''
   await loadScopeSettings()
 }
 
@@ -87,7 +89,26 @@ async function testProvider() {
   }
 }
 
+async function previewPrompt() {
+  const result: any = await api(`/api/settings/profiles/${scope.value}/prompt-preview`, { method: 'POST', body: JSON.stringify(current().draft) })
+  promptPreview.value = result.template
+}
+
+async function migratePrompt() {
+  await save(false)
+  await api(`/api/settings/profiles/${scope.value}/prompt-migrate`, { method: 'POST' })
+  await load()
+  await previewPrompt()
+  setStatus('已创建托管规则草稿；旧完整提示词保留在下方，请审阅后应用')
+}
+
+async function restorePersona() {
+  current().draft.persona_text = null
+  setStatus('已恢复默认人设，应用后生效')
+}
+
 async function restoreDefault() {
+  if (!window.confirm('将重置当前应用的模型、API 格式、提示词及工具开关草稿。已保存的密钥不变。继续？')) return
   await api(`/api/settings/profiles/${scope.value}/restore-default`, { method: 'POST' })
   setStatus('已恢复默认草稿，应用后生效')
   await load()
@@ -177,11 +198,29 @@ onMounted(load)
           </div>
 
           <div v-else-if="activeSection === 'prompt'" class="settings-section prompt-section">
-            <p class="section-intro">网页和论坛使用相互独立的完整 System Prompt。修改后需要应用 Runtime。</p>
-            <textarea v-model="current().draft.system_prompt" spellcheck="false"></textarea>
+            <p class="section-intro">执行规则随版本升级；人设与补充要求单独保存。修改后点击“应用并热切换”。</p>
+            <p>规则版本 {{ current().prompt_metadata?.rules_version }} · {{ current().draft_changed ? '有未应用草稿' : '草稿与生效配置一致' }}</p>
+            <p>最近任务实际使用：{{ current().last_runtime_used?.profile_revision ? 'r' + current().last_runtime_used.profile_revision : '尚无使用记录' }} · 规则 {{ current().last_runtime_used?.rules_version || '—' }}</p>
+            <p v-if="current().last_runtime_used?.prompt_hash !== current().prompt_metadata?.prompt_hash">当前提示词尚待新任务验证。</p>
+            <template v-if="current().draft.prompt_mode === 'managed'">
+              <label>人设（留空文本与使用默认人设不同；恢复按钮使用内置人设）</label>
+              <textarea v-model="current().draft.persona_text" placeholder="使用内置默认人设" spellcheck="false"></textarea>
+              <label>补充要求</label>
+              <textarea v-model="current().draft.additional_instructions" spellcheck="false"></textarea>
+              <button class="outline-action" @click="restorePersona">恢复默认人设</button>
+            </template>
+            <template v-else>
+              <p>旧完整提示词模式：程序执行规则不会自动升级。请迁移并审阅。</p>
+              <textarea v-model="current().draft.system_prompt" spellcheck="false"></textarea>
+              <button class="outline-action" @click="migratePrompt">迁移提示词草稿</button>
+            </template>
+            <details v-if="current().draft.prompt_mode === 'managed'"><summary>归档的旧完整提示词</summary><pre>{{ current().draft.system_prompt }}</pre></details>
+            <button class="outline-action" @click="previewPrompt">预览最终提示词模板</button>
+            <pre v-if="promptPreview" style="white-space: pre-wrap">{{ promptPreview }}</pre>
           </div>
 
           <div v-else class="settings-section tool-settings">
+            <p v-if="current().suggested_tools?.length">新增能力尚未启用：{{ current().suggested_tools.join('、') }}</p>
             <p class="section-intro">内置工具使用启用列表；MCP 使用独立禁用列表，新发现的 MCP 工具默认启用。</p>
             <div class="tool-group">
               <div class="tool-group-title"><div><h3>内置工具</h3><p>论坛只读查询、图片生成与长期记忆</p></div><span>{{ tools.filter(tool => tool.enabled).length }}/{{ tools.length }} enabled</span></div>
@@ -212,7 +251,7 @@ onMounted(load)
       </div>
 
       <footer class="settings-footer">
-        <button class="text-action" @click="restoreDefault"><PhArrowsClockwise :size="16" />恢复默认</button>
+        <button class="text-action" @click="restoreDefault"><PhArrowsClockwise :size="16" />重置整个配置</button>
         <div><button class="outline-action" @click="save()"><PhFloppyDisk :size="16" />保存草稿</button><button class="primary-action" @click="apply"><PhRocketLaunch :size="16" />应用并热切换</button></div>
       </footer>
     </div>

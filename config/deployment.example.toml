@@ -1,6 +1,12 @@
 # Copy to config/deployment.toml. Paths are relative to this file.
 [common.runtime]
 context_token_budget = 24000
+no_progress_batches = 3
+continuation_limit = 1
+continuation_batch_limit = 2
+query_limit = 40
+model_limit = 24
+final_reserve_seconds = 60
 concurrency = 3
 queue_limit = 100
 timeout = 900

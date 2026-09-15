@@ -1,0 +1,6 @@
+[
+  {"id":"music","request":"查看本楼楼主发言，判断楼主喜欢什么歌。","expected":"区分楼主与其他用户，引用明确偏好，不猜相邻楼层。","posts":[{"number":1,"author":"Alice","text":"这是我的日记。"},{"number":5,"author":"Alice","text":"最近最喜欢《晨光》，也常听《小路》。"},{"number":8,"author":"Bob","text":"我喜欢《大海》，这不是楼主的偏好。"},{"number":9,"author":"Alice","text":"今天买了面包。"}]},
+  {"id":"rewrite","request":"参考本话题主楼写一份简短的新主楼文案，不需要查其他背景。","expected":"精准读取主楼后完成文案，不扩展无关搜索。","posts":[{"number":1,"author":"Alice","text":"在这里记录周末散步、读书和做饭的小事。"},{"number":2,"author":"Bob","text":"欢迎！"}]},
+  {"id":"avatars","request":"按照主楼名单，用这些用户的头像生成一张合照。","expected":"批量解析名单，保留映射并使用准备后的素材集。生成工具为模拟器，不生成真实图片。","posts":[{"number":1,"author":"Alice","text":"合照名单：@Alice @Bob @Carol"}]},
+  {"id":"research","request":"整理本话题大家对三个方案的观点，给出有证据的比较，可以做必要的深入调查。","expected":"广泛研究有新证据时继续，不因任务类型固定次数提前终止。","posts":[{"number":1,"author":"Alice","text":"比较方案 A、B、C 的成本与可靠性。"},{"number":4,"author":"Alice","text":"方案 A 成本低，但需要人工维护。"},{"number":7,"author":"Bob","text":"方案 B 成本高，故障恢复快。"},{"number":10,"author":"Carol","text":"方案 C 维护方便，但还没有长期验证。"}]}
+]

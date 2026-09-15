@@ -33,7 +33,7 @@ class PromptRepositoryTests(unittest.TestCase):
         )
         self.assertEqual(
             sha256(multimodal.encode()).hexdigest(),
-            "1523e8c3209b83ec226af3e1778f4e68a13dd395bfb3da82632019d10c14a1aa",
+            "9b0674dd47c6d78ec25c5246693be9f08ee13a4e494efb4425f053ec68cdbd6c",
         )
 
     def test_web_prompt_keeps_shared_rules_without_forum_write_capabilities(self):

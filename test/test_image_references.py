@@ -65,7 +65,9 @@ class ReferencePreparationTests(unittest.IsolatedAsyncioTestCase):
                 result["data_urls"], [data_image("red"), data_image("blue")]
             )
             await prepare_references(refs, model=SimpleNamespace())
-            self.assertEqual(mock.await_count, 4)
+            self.assertEqual(
+                mock.await_count, 3
+            )  # deterministic missing image is cached
 
     async def test_retry_transient_only(self):
         with (

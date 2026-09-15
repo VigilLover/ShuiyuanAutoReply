@@ -403,7 +403,8 @@ class McpConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
         bound_tools = model.llm.bind_tools.call_args.args[0]
         self.assertEqual(
-            [tool.name for tool in bound_tools], ["get_system_time", "builtin"]
+            [tool.name for tool in bound_tools],
+            ["get_system_time", "builtin", "update_task_progress"],
         )
 
     async def test_disabled_mcp_tool_is_not_bound(self):
@@ -424,7 +425,10 @@ class McpConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
         await model.initialize_agent()
 
-        self.assertEqual(model.llm.bind_tools.call_args.args[0], [])
+        self.assertEqual(
+            [tool.name for tool in model.llm.bind_tools.call_args.args[0]],
+            ["update_task_progress"],
+        )
 
 
 class PromptInspectionTests(unittest.IsolatedAsyncioTestCase):
