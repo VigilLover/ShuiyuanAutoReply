@@ -3,6 +3,39 @@ import unittest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
+from shuiyuan_auto_reply.shuiyuan.objects import PostDetails
+
+
+def _post_details(raw: str = "hello") -> PostDetails:
+    return PostDetails(
+        id=1,
+        name="奇诺",
+        user_id=113224,
+        username="Kino",
+        user_cakedate=None,
+        created_at="2026-01-01T00:00:00Z",
+        cooked=f"<p>{raw}</p>",
+        raw=raw,
+        post_number=7,
+        post_type=1,
+        updated_at="2026-01-01T00:00:00Z",
+        reply_count=0,
+        reply_to_post_number=None,
+        reply_to_user=None,
+        polls=None,
+        yours=False,
+        topic_id=99,
+        can_edit=False,
+        can_delete=False,
+        can_recover=False,
+        can_wiki=False,
+        can_retort=False,
+        can_remove_retort=False,
+        can_accept_answer=False,
+        can_unaccept_answer=False,
+        can_see_hidden_post=False,
+        can_view_edit_history=False,
+    )
 
 
 def _assert_valid_tool_sequence(testcase, messages):
@@ -184,5 +217,57 @@ class EvidenceProjectionTests(unittest.TestCase):
             self.assertTrue({"105", "106"} <= ids)
             self.assertTrue(any("results_index" in str(m.content) for m in projected))
             self.assertTrue(any("post 50 " in text for text in turn.results.values()))
+        finally:
+            current_turn.reset(token)
+
+    def test_projection_renders_cached_post_objects_as_json(self):
+        import json
+
+        from shuiyuan_auto_reply.application.tool_results import (
+            TurnResults,
+            current_turn,
+        )
+        from shuiyuan_auto_reply.features.mention.context_budget import project_messages
+        from shuiyuan_auto_reply.features.mention.shuiyuan_tools_objects import (
+            PostShort,
+        )
+
+        turn = TurnResults()
+        token = current_turn.set(turn)
+        try:
+            # get_post/get_post_by_id cache PostShort objects under post: keys.
+            turn.cache["post:1"] = PostShort(
+                _post_details(raw="我也很喜欢这首歌"), "随性更日记", full=True
+            )
+            messages = [HumanMessage(content="判断楼主喜欢什么歌")]
+            for i in range(60):
+                messages.append(
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": str(i),
+                                "name": "get_post",
+                                "args": {"topic_id": 42, "post_number": i + 1},
+                            }
+                        ],
+                    )
+                )
+                messages.append(
+                    ToolMessage(
+                        content="post body " * 400, tool_call_id=str(i), name="get_post"
+                    )
+                )
+            projected = project_messages(messages, 4000)
+            _assert_valid_tool_sequence(self, projected)
+            evidence = next(
+                message
+                for message in projected
+                if isinstance(message, HumanMessage)
+                and "known_entities" in str(message.content)
+            )
+            payload = json.loads(evidence.content)
+            self.assertIn("随性更日记", payload["known_entities"])
+            self.assertIn("我也很喜欢这首歌", payload["known_entities"])
         finally:
             current_turn.reset(token)

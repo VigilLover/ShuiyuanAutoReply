@@ -25,6 +25,9 @@
   --purple: #a487d6;
   --green: #31c979;
   --red: #e66e77;
+  --warn: #d8a45b;
+  --warn-soft: #d8a45b1a;
+  --warn-line: #d8a45b4d;
   --code: #1c1c1e;
   --shadow: #0008;
   --brand-filter: invert(1);
@@ -284,8 +287,50 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
 .outline-action { margin-top: 18px; padding: 8px 11px; border: 1px solid var(--line-strong); border-radius: 8px; }
 .outline-action:hover { background: var(--hover); color: var(--text); }
 .outline-action.compact { margin: 0; padding: 6px 9px; font-size: 11px; }
-.prompt-section { min-height: 100%; display: flex; flex-direction: column; }
-.prompt-section textarea { min-height: 420px; flex: 1; resize: vertical; padding: 16px; font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.prompt-section { min-height: 100%; }
+.prompt-status { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.prompt-status-card { min-width: 0; padding: 12px 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-soft); }
+.prompt-status-card .eyebrow { display: block; margin-bottom: 8px; }
+.prompt-status-value { display: flex; align-items: center; gap: 7px; color: var(--text); font-size: 15px; font-weight: 650; }
+.prompt-status-value::before { content: ""; width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--faint); }
+.prompt-status-card.ok .prompt-status-value::before { background: var(--green); }
+.prompt-status-card.pending .prompt-status-value { color: var(--warn); }
+.prompt-status-card.pending .prompt-status-value::before { background: var(--warn); }
+.prompt-status-card small { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.prompt-notice { display: flex; align-items: flex-start; gap: 9px; margin: 0 0 16px; padding: 10px 12px; border: 1px solid var(--warn-line); border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 11px; line-height: 1.6; }
+.prompt-notice svg { margin-top: 1px; }
+.prompt-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.prompt-mode { min-width: 0; display: flex; align-items: center; gap: 9px; }
+.prompt-mode > svg { color: var(--green); }
+.prompt-mode.pending > svg { color: var(--warn); }
+.prompt-mode div { min-width: 0; }
+.prompt-mode strong { display: block; color: var(--text); font-size: 12px; font-weight: 600; }
+.prompt-mode small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+.prompt-view-tabs { display: flex; flex: none; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); }
+.prompt-view-tabs button { padding: 6px 13px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 11px; @apply transition-colors duration-150; }
+.prompt-view-tabs button:hover { color: var(--text); }
+.prompt-view-tabs button.active { background: var(--selected); color: var(--text); }
+.prompt-editor { display: flex; flex-direction: column; gap: 18px; }
+.prompt-editor .prompt-notice { margin: 0; }
+.prompt-field { display: flex; flex-direction: column; gap: 8px; }
+.prompt-field-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.prompt-field-head label { color: var(--text); font-size: 12px; font-weight: 600; }
+.prompt-field-head span { color: var(--faint); font-size: 10px; text-align: right; }
+.prompt-field textarea { min-height: 200px; padding: 13px 14px; border-radius: 11px; font-size: 13px; line-height: 1.75; resize: vertical; }
+.prompt-field.compact textarea { min-height: 150px; }
+.prompt-field.tall textarea { min-height: 400px; }
+.prompt-field.mono textarea { font: 11.5px/1.75 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.prompt-field textarea::placeholder { color: var(--faint); }
+.prompt-field-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.prompt-field-foot small { color: var(--faint); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.prompt-field-foot .text-action { min-height: 0; margin: 0; padding: 4px 2px; gap: 5px; color: var(--muted); font-size: 11px; }
+.prompt-field-foot .text-action:hover { color: var(--text); }
+.prompt-view { display: flex; flex-direction: column; gap: 12px; }
+.prompt-panel-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; }
+.prompt-panel-head strong { display: block; color: var(--text); font-size: 12px; font-weight: 600; }
+.prompt-panel-head small { display: block; margin-top: 5px; color: var(--faint); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.prompt-pre { max-height: min(50vh, 470px); overflow: auto; margin: 0; padding: 14px 15px; border: 1px solid var(--line); border-radius: 11px; background: var(--code); color: var(--text-soft); font: 11px/1.75 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-pre.empty { display: grid; min-height: 180px; place-items: center; color: var(--faint); }
 .tool-group { margin-bottom: 30px; }
 .tool-group + .tool-group { padding-top: 26px; border-top: 1px solid var(--line-strong); }
 .tool-group-title { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 15px; }
@@ -382,7 +427,9 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
   .settings-window { grid-template-rows: 68px minmax(0, 1fr) 68px; }
   .settings-header { padding: 0 15px; }
   .settings-content { padding: 21px 15px 36px; }
-  .provider-grid, .api-format-grid, .tool-card-grid, .form-grid { grid-template-columns: 1fr; }
+  .provider-grid, .api-format-grid, .tool-card-grid, .form-grid, .prompt-status { grid-template-columns: 1fr; }
+  .prompt-field-head { flex-direction: column; gap: 4px; }
+  .prompt-field-head span { text-align: left; }
   .full-field { grid-column: auto; }
   .settings-footer { padding: 0 13px; }
   .settings-footer button { font-size: 11px; }
@@ -412,6 +459,9 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
     --purple: #7658a7;
     --green: #16ad63;
     --red: #d14f5a;
+    --warn: #a8721c;
+    --warn-soft: #a8721c12;
+    --warn-line: #a8721c3d;
     --code: #f4f5f7;
     --shadow: #26334a1c;
     --brand-filter: none;

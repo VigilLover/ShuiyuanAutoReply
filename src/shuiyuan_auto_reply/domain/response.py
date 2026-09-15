@@ -46,3 +46,15 @@ class ReplyResult:
     text: str
     attachments: tuple[AttachmentRef, ...] = ()
     input_attachments: tuple[AttachmentRef, ...] = ()
+
+
+class ReplyGenerationError(Exception):
+    """Generation failed after a user-facing fallback text was already chosen.
+
+    Raising this instead of swallowing the failure keeps the run record honest:
+    callers mark the run failed while still publishing ``fallback_text`` verbatim.
+    """
+
+    def __init__(self, message: str, *, fallback_text: str = "") -> None:
+        super().__init__(message)
+        self.fallback_text = fallback_text
