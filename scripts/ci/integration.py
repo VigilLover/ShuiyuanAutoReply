@@ -34,6 +34,23 @@ def probe(path):
     return result.stdout.strip()
 
 
+def wait_for_probe(path, *, decoder=None, ready=None, timeout=120):
+    """Wait for a restarted container endpoint instead of assuming startup time."""
+    decoder = decoder or (lambda value: value)
+    ready = ready or (lambda value: bool(value))
+    deadline = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() <= deadline:
+        try:
+            value = decoder(probe(path))
+            if ready(value):
+                return value
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+            last_error = exc
+        time.sleep(2)
+    raise RuntimeError(f"Bot endpoint did not become ready: {path}") from last_error
+
+
 def main():
     reports = ROOT / "reports"
     reports.mkdir(exist_ok=True)
@@ -159,17 +176,15 @@ port=11451
                     )
                     compatibility[version] = image
             run(["up", "-d", "--wait", "bot"])
-            deadline = time.monotonic() + 120
-            while True:
-                health = json.loads(probe("/api/runtime-health"))
-                # Forum login must fail here by design: the validation network is
-                # internal-only and the cookie is synthetic, so the worker never
-                # polls and forum health stays "stale"/"unknown" forever.
-                if health.get("database") == "ok" and health.get("state") == "ok":
-                    break
-                if time.monotonic() > deadline:
-                    raise RuntimeError("Bot did not become ready")
-                time.sleep(3)
+            health = wait_for_probe(
+                "/api/runtime-health",
+                decoder=json.loads,
+                ready=lambda value: value.get("database") == "ok"
+                and value.get("state") == "ok",
+            )
+            # Forum login must fail here by design: the validation network is
+            # internal-only and the cookie is synthetic, so the worker never
+            # polls and forum health stays "stale"/"unknown" forever.
             # The management interface must stay online despite the forum login
             # failure (see docs: "login-failure-web").
             assert health.get("forum") != "ok"
@@ -179,12 +194,10 @@ port=11451
             embedding_script = "import asyncio; from shuiyuan_auto_reply.bootstrap.deployment import load_deployment; from shuiyuan_auto_reply.infrastructure.embedding import get_embeddings; load_deployment('/validation/config.toml','remote'); assert len(asyncio.run(get_embeddings().aembed_query('synthetic'))) == 1024"
             run(["exec", "-T", "bot", "python", "-c", embedding_script])
             run(["restart", "bot"])
-            time.sleep(5)
-            assert json.loads(probe("/api/live"))
+            wait_for_probe("/api/live", decoder=json.loads)
             (root / "deny").touch()
             run(["restart", "bot"])
-            time.sleep(5)
-            assert "html" in probe("/").lower()
+            wait_for_probe("/", ready=lambda value: "html" in value.lower())
             run(["stop", "bot"])
             run(["run", "--rm", "backup-check"])
             (reports / "integration.json").write_text(
