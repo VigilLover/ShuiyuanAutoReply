@@ -12,6 +12,46 @@ from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import (
 )
 
 
+class ForumRequestChainTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_cancelled_waiter_does_not_wedge_later_requests(self):
+        import asyncio
+
+        calls = []
+
+        class FakeSession:
+            def __init__(self):
+                self.headers = {}
+
+            async def get(self, *args, **kwargs):
+                calls.append(args[0])
+                await asyncio.sleep(0.05)
+                return SimpleNamespace(release=Mock())
+
+        with (
+            patch.object(ShuiyuanModel, "_shared_session", FakeSession()),
+            patch.object(ShuiyuanModel, "_request_chain", None),
+            patch.object(ShuiyuanModel, "_last_request_ts", 0.0),
+            patch.object(ShuiyuanModel, "_request_interval", 0.01),
+        ):
+            first = asyncio.create_task(
+                ShuiyuanModel._rate_limited_request("get", "https://example.test/1")
+            )
+            await asyncio.sleep(0.01)  # the first request is in flight
+            second = asyncio.create_task(
+                ShuiyuanModel._rate_limited_request("get", "https://example.test/2")
+            )
+            await asyncio.sleep(0.01)  # the second one waits behind it
+            second.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await second
+            await first
+            third = await asyncio.wait_for(
+                ShuiyuanModel._rate_limited_request("get", "https://example.test/3"), 1
+            )
+        self.assertIsNotNone(third)
+        self.assertEqual(calls, ["https://example.test/1", "https://example.test/3"])
+
+
 class ForumAuthTests(unittest.IsolatedAsyncioTestCase):
     async def check_response(self, url, status, html):
         response = SimpleNamespace(

@@ -711,3 +711,83 @@ def test_timeline_messages_are_scoped_and_refresh_without_duplicates(tmp_path):
         assert not page["has_more"]
 
     asyncio.run(run())
+
+
+def test_poll_round_stops_walking_and_rebaselines_a_missing_cursor(
+    tmp_path, monkeypatch
+):
+    """A cursor that left the feed must not turn every round into a full walk."""
+
+    async def run():
+        model, store = await setup(tmp_path)
+        monkeypatch.setenv("SHUIYUAN_STATE_DIR", str(tmp_path))
+        queue = ForumQueue(tmp_path / "state.sqlite3", "bot")
+        await queue.initialize()
+        await queue.enqueue([], 1)  # an old post id that is no longer in the feed
+        offsets = []
+
+        async def get_actions(username, action_type, offset=0):
+            offsets.append(offset)
+            base = 10_000 - offset
+            return SimpleNamespace(
+                user_actions=[action(post_id=base - i) for i in range(30)]
+            )
+
+        model.model.get_actions = get_actions
+        await model._poll_new_actions(queue, await queue.cursor(), 100)
+        assert offsets == [0, 30, 60, 90]  # bounded by the queue capacity
+        assert await queue.cursor() == 10_000  # re-baselined onto the newest action
+        queued = await queue.pending()
+        assert len(queued) == 100
+        assert max(post_id for post_id, _ in queued) == 10_000
+
+        offsets.clear()
+        await model._poll_new_actions(queue, await queue.cursor(), 100)
+        assert offsets == [0]  # the next round is a single page again
+
+    asyncio.run(run())
+
+
+def test_hung_poll_request_is_cancelled_and_retried(tmp_path, monkeypatch):
+    """A poll request that never answers must not park the worker forever."""
+
+    async def run():
+        from contextlib import suppress
+
+        from shuiyuan_auto_reply.bootstrap import deployment
+        from shuiyuan_auto_reply.shuiyuan import user_action_model
+
+        model, store = await setup(tmp_path)
+        monkeypatch.setenv("SHUIYUAN_STATE_DIR", str(tmp_path))
+        real = deployment.get_deployment()
+        fast = {**real.section("runtime"), "poll_interval": 0.05}
+        monkeypatch.setattr(
+            deployment,
+            "get_deployment",
+            lambda: SimpleNamespace(
+                section=lambda name: fast if name == "runtime" else real.section(name)
+            ),
+        )
+        monkeypatch.setattr(user_action_model, "POLL_REQUEST_TIMEOUT_SECONDS", 0.2)
+        attempts = []
+
+        async def get_actions(username, action_type, offset=0):
+            attempts.append(offset)
+            if len(attempts) == 1:
+                await asyncio.Event().wait()  # never answers
+            return SimpleNamespace(user_actions=[])
+
+        model.model.get_actions = get_actions
+        task = asyncio.create_task(model.watch_new_action_routine())
+        try:
+            for _ in range(100):
+                if len(attempts) >= 2:
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        assert len(attempts) >= 2  # the loop survived the hung request and retried
+
+    asyncio.run(run())
