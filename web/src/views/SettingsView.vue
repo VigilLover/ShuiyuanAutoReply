@@ -1,22 +1,39 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
   PhArrowsClockwise,
   PhChatCircleText,
   PhCheck,
+  PhCopy,
   PhCpu,
   PhFloppyDisk,
   PhGlobe,
   PhPlugsConnected,
   PhRocketLaunch,
+  PhShieldCheck,
   PhTextT,
+  PhWarningCircle,
+  PhWarningDiamond,
   PhX,
 } from '@phosphor-icons/vue'
 import { api } from '../api'
+import {
+  draftCard,
+  effectiveCard,
+  hasArchivedPrompt,
+  lastUsedCard,
+  promptModeState,
+  shortHash,
+  verificationNotice,
+} from '../prompt'
 
 const profiles = ref<any[]>([])
 const promptPreview = ref('')
+const promptPreviewMeta = ref<any>({})
+const promptView = ref<'edit' | 'preview' | 'archive'>('edit')
+const promptBusy = ref(false)
+const draftSnapshots = ref<Record<string, string>>({})
 const scope = ref<'web' | 'forum'>('web')
 const status = ref('')
 const statusError = ref(false)
@@ -26,9 +43,50 @@ const mcpLoading = ref(false)
 const activeSection = ref<'model' | 'prompt' | 'tools'>('model')
 
 const current = () => profiles.value.find(item => item.scope === scope.value)
+const mode = computed(() => promptModeState(current()))
+const draftDirty = computed(() => {
+  const item = current()
+  if (!item) return false
+  return JSON.stringify(item.draft) !== (draftSnapshots.value[item.scope] ?? '')
+})
+const promptCards = computed(() => [
+  effectiveCard(current()),
+  draftCard(current(), draftDirty.value),
+  lastUsedCard(current()),
+])
+const promptNotice = computed(() => verificationNotice(current()))
+const previewHint = computed(() => {
+  const meta = promptPreviewMeta.value || {}
+  return [
+    meta.rules_version ? `规则 v${meta.rules_version}` : '',
+    meta.prompt_hash ? `指纹 ${shortHash(meta.prompt_hash)}` : '',
+    draftDirty.value ? '含未保存编辑' : '',
+  ].filter(Boolean).join(' · ')
+})
+const promptTabs = computed(() => {
+  const tabs: { id: 'edit' | 'preview' | 'archive'; label: string }[] = [
+    { id: 'edit', label: '编辑' },
+    { id: 'preview', label: '预览' },
+  ]
+  if (mode.value.managed && hasArchivedPrompt(current())) {
+    tabs.push({ id: 'archive', label: '归档' })
+  }
+  return tabs
+})
+
+function snapshotDrafts() {
+  draftSnapshots.value = Object.fromEntries(
+    profiles.value.map(item => [item.scope, JSON.stringify(item.draft)]),
+  )
+}
+
+function countText(value: unknown) {
+  return `${String(value ?? '').length} 字`
+}
 
 async function load() {
   profiles.value = await api('/api/settings/profiles')
+  snapshotDrafts()
   await loadScopeSettings()
 }
 
@@ -40,6 +98,7 @@ async function loadScopeSettings() {
 async function changeScope(value: 'web' | 'forum') {
   scope.value = value
   promptPreview.value = ''
+  promptView.value = 'edit'
   await loadScopeSettings()
 }
 
@@ -65,6 +124,8 @@ async function save(showStatus = true) {
     item.draft.disabled_mcp_tools = mcp.value.tools.filter((tool: any) => !tool.enabled).map((tool: any) => tool.name)
   }
   await api(`/api/settings/profiles/${scope.value}/draft`, { method: 'PUT', body: JSON.stringify(item.draft) })
+  snapshotDrafts()
+  if (promptView.value === 'preview') await previewPrompt()
   if (showStatus) setStatus('草稿已保存')
 }
 
@@ -90,21 +151,39 @@ async function testProvider() {
 }
 
 async function previewPrompt() {
-  const result: any = await api(`/api/settings/profiles/${scope.value}/prompt-preview`, { method: 'POST', body: JSON.stringify(current().draft) })
-  promptPreview.value = result.template
+  promptBusy.value = true
+  try {
+    const result: any = await api(`/api/settings/profiles/${scope.value}/prompt-preview`, { method: 'POST', body: JSON.stringify(current().draft) })
+    promptPreview.value = result.template
+    promptPreviewMeta.value = result
+  } catch (error) {
+    promptPreview.value = ''
+    setStatus(String(error), true)
+  } finally {
+    promptBusy.value = false
+  }
 }
 
 async function migratePrompt() {
   await save(false)
   await api(`/api/settings/profiles/${scope.value}/prompt-migrate`, { method: 'POST' })
   await load()
-  await previewPrompt()
-  setStatus('已创建托管规则草稿；旧完整提示词保留在下方，请审阅后应用')
+  promptView.value = 'edit'
+  setStatus('已切换到托管规则草稿；旧完整提示词已归档，请审阅后应用')
 }
 
-async function restorePersona() {
+async function copyArchived() {
+  try {
+    await navigator.clipboard.writeText(current().draft.system_prompt ?? '')
+    setStatus('已复制归档提示词')
+  } catch {
+    setStatus('复制失败，请手动选择文本', true)
+  }
+}
+
+function restorePersona() {
   current().draft.persona_text = null
-  setStatus('已恢复默认人设，应用后生效')
+  setStatus('已恢复内置人设，保存草稿后生效')
 }
 
 async function restoreDefault() {
@@ -122,6 +201,10 @@ function setStatus(message: string, error = false) {
 function setApiFormat(value: 'chat_completions' | 'responses') {
   current().draft.api_format = value
 }
+
+watch(promptView, view => {
+  if (view === 'preview') previewPrompt()
+})
 
 onMounted(load)
 </script>
@@ -198,25 +281,95 @@ onMounted(load)
           </div>
 
           <div v-else-if="activeSection === 'prompt'" class="settings-section prompt-section">
-            <p class="section-intro">执行规则随版本升级；人设与补充要求单独保存。修改后点击“应用并热切换”。</p>
-            <p>规则版本 {{ current().prompt_metadata?.rules_version }} · {{ current().draft_changed ? '有未应用草稿' : '草稿与生效配置一致' }}</p>
-            <p>最近任务实际使用：{{ current().last_runtime_used?.profile_revision ? 'r' + current().last_runtime_used.profile_revision : '尚无使用记录' }} · 规则 {{ current().last_runtime_used?.rules_version || '—' }}</p>
-            <p v-if="current().last_runtime_used?.prompt_hash !== current().prompt_metadata?.prompt_hash">当前提示词尚待新任务验证。</p>
-            <template v-if="current().draft.prompt_mode === 'managed'">
-              <label>人设（留空文本与使用默认人设不同；恢复按钮使用内置人设）</label>
-              <textarea v-model="current().draft.persona_text" placeholder="使用内置默认人设" spellcheck="false"></textarea>
-              <label>补充要求</label>
-              <textarea v-model="current().draft.additional_instructions" spellcheck="false"></textarea>
-              <button class="outline-action" @click="restorePersona">恢复默认人设</button>
-            </template>
-            <template v-else>
-              <p>旧完整提示词模式：程序执行规则不会自动升级。请迁移并审阅。</p>
-              <textarea v-model="current().draft.system_prompt" spellcheck="false"></textarea>
-              <button class="outline-action" @click="migratePrompt">迁移提示词草稿</button>
-            </template>
-            <details v-if="current().draft.prompt_mode === 'managed'"><summary>归档的旧完整提示词</summary><pre>{{ current().draft.system_prompt }}</pre></details>
-            <button class="outline-action" @click="previewPrompt">预览最终提示词模板</button>
-            <pre v-if="promptPreview" style="white-space: pre-wrap">{{ promptPreview }}</pre>
+            <p class="section-intro">执行规则随版本升级；人设与补充要求单独保存。修改后先保存草稿，再“应用并热切换”。</p>
+
+            <div class="prompt-status">
+              <div v-for="card in promptCards" :key="card.label" class="prompt-status-card" :class="card.tone">
+                <span class="eyebrow">{{ card.label }}</span>
+                <strong class="prompt-status-value">{{ card.value }}</strong>
+                <small>{{ card.hint }}</small>
+              </div>
+            </div>
+
+            <p v-if="promptNotice" class="prompt-notice">
+              <PhWarningCircle :size="15" weight="fill" /><span>{{ promptNotice }}</span>
+            </p>
+
+            <div class="prompt-toolbar">
+              <div class="prompt-mode" :class="mode.tone">
+                <PhShieldCheck v-if="mode.managed" :size="18" weight="fill" />
+                <PhWarningDiamond v-else :size="18" weight="fill" />
+                <div><strong>{{ mode.label }}</strong><small>{{ mode.hint }}</small></div>
+              </div>
+              <div class="prompt-view-tabs" role="tablist" aria-label="提示词视图">
+                <button
+                  v-for="tab in promptTabs"
+                  :key="tab.id"
+                  type="button"
+                  role="tab"
+                  :aria-selected="promptView === tab.id"
+                  :class="{ active: promptView === tab.id }"
+                  @click="promptView = tab.id"
+                >{{ tab.label }}</button>
+              </div>
+            </div>
+
+            <div v-if="promptView === 'edit'" class="prompt-editor">
+              <template v-if="mode.managed">
+                <div class="prompt-field">
+                  <div class="prompt-field-head">
+                    <label for="prompt-persona">人设</label>
+                    <span>留空文本即为空人设；恢复按钮使用内置人设</span>
+                  </div>
+                  <textarea id="prompt-persona" v-model="current().draft.persona_text" placeholder="使用内置默认人设" spellcheck="false"></textarea>
+                  <div class="prompt-field-foot">
+                    <small>{{ countText(current().draft.persona_text) }}</small>
+                    <button class="text-action" @click="restorePersona"><PhArrowsClockwise :size="14" />恢复内置人设</button>
+                  </div>
+                </div>
+
+                <div class="prompt-field compact">
+                  <div class="prompt-field-head">
+                    <label for="prompt-instructions">补充要求</label>
+                    <span>追加在托管规则之后，用于本应用的额外约束</span>
+                  </div>
+                  <textarea id="prompt-instructions" v-model="current().draft.additional_instructions" placeholder="例如：回答尽量简短，不要使用颜文字" spellcheck="false"></textarea>
+                  <div class="prompt-field-foot">
+                    <small>{{ countText(current().draft.additional_instructions) }}</small>
+                  </div>
+                </div>
+              </template>
+
+              <template v-else>
+                <div class="prompt-field mono tall">
+                  <div class="prompt-field-head">
+                    <label for="prompt-legacy">完整 System Prompt</label>
+                    <span>旧文本会直接作为系统提示词使用，请确认仍然适用</span>
+                  </div>
+                  <textarea id="prompt-legacy" v-model="current().draft.system_prompt" spellcheck="false"></textarea>
+                  <div class="prompt-field-foot">
+                    <small>{{ countText(current().draft.system_prompt) }}</small>
+                    <button class="outline-action compact" @click="migratePrompt"><PhArrowsClockwise :size="14" />迁移到托管规则</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <div v-else-if="promptView === 'preview'" class="prompt-view">
+              <div class="prompt-panel-head">
+                <div><strong>最终提示词模板</strong><small>{{ previewHint || '按当前草稿渲染' }}</small></div>
+                <button class="outline-action compact" :disabled="promptBusy" @click="previewPrompt"><PhArrowsClockwise :size="14" />{{ promptBusy ? '生成中…' : '重新生成' }}</button>
+              </div>
+              <pre class="prompt-pre" :class="{ empty: !promptPreview }">{{ promptPreview || (promptBusy ? '正在生成预览…' : '点击“重新生成”查看最终模板。') }}</pre>
+            </div>
+
+            <div v-else class="prompt-view">
+              <div class="prompt-panel-head">
+                <div><strong>归档的旧完整提示词</strong><small>迁移前使用的原文，只读保留</small></div>
+                <button class="outline-action compact" @click="copyArchived"><PhCopy :size="14" />复制</button>
+              </div>
+              <pre class="prompt-pre">{{ current().draft.system_prompt }}</pre>
+            </div>
           </div>
 
           <div v-else class="settings-section tool-settings">
