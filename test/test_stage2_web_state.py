@@ -204,7 +204,7 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         )
         defaults = ApplicationContainer._profile_defaults(settings)
         self.assertEqual(defaults["provider"], "deepseek")
-        self.assertEqual(defaults["model"], "deepseek-v4-flash-vision-exp")
+        self.assertEqual(defaults["model"], "deepseek-flash")
         self.assertEqual(defaults["api_format"], "responses")
         self.assertIsNone(defaults["fallback_model"])
         container = ApplicationContainer(
@@ -230,7 +230,7 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
     async def test_old_profiles_default_to_chat_and_scopes_switch_independently(self):
         old_defaults = {
             "provider": "deepseek",
-            "model": "deepseek-v4-flash-vision-exp",
+            "model": "deepseek-flash",
             "system_prompt": "fixture",
         }
         await self.store.get_profile("web", old_defaults)
@@ -404,7 +404,7 @@ class McpConfigurationTests(unittest.IsolatedAsyncioTestCase):
         bound_tools = model.llm.bind_tools.call_args.args[0]
         self.assertEqual(
             [tool.name for tool in bound_tools],
-            ["get_system_time", "builtin", "update_task_progress"],
+            ["builtin"],
         )
 
     async def test_disabled_mcp_tool_is_not_bound(self):
@@ -427,7 +427,7 @@ class McpConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [tool.name for tool in model.llm.bind_tools.call_args.args[0]],
-            ["update_task_progress"],
+            [],
         )
 
 
@@ -543,10 +543,10 @@ class ManagedApiTests(unittest.TestCase):
                 self.assertEqual(
                     web_profile["active"]["api_format"], "chat_completions"
                 )
-                # Hardware状态与对话和检索无关，新配置默认关闭它。
+                # Reply-irrelevant MCP utilities are removed from the catalog.
                 self.assertEqual(
                     web_profile["active"]["disabled_mcp_tools"],
-                    ["get_hardware_status"],
+                    [],
                 )
                 response_draft = {
                     **web_profile["draft"],
@@ -599,8 +599,7 @@ class ManagedApiTests(unittest.TestCase):
                     mcp = client.get("/api/settings/mcp/web").json()
                 self.assertTrue(mcp["connected"])
                 self.assertEqual(mcp["url"], "http://localhost:58000/sse")
-                self.assertEqual(mcp["tools"][0]["name"], "get_system_time")
-                self.assertTrue(mcp["tools"][0]["enabled"])
+                self.assertEqual(mcp["tools"], [])
                 create_response = client.post("/api/conversations", json={})
                 self.assertEqual(create_response.status_code, 200)
                 created = create_response.json()

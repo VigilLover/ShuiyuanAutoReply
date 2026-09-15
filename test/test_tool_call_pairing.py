@@ -104,7 +104,7 @@ class RepeatedReadTests(unittest.IsolatedAsyncioTestCase):
                     tool_calls=[
                         {
                             "id": "call-1",
-                            "name": "get_user",
+                            "name": "users",
                             "args": {"username": "Alice"},
                         }
                     ],
@@ -120,7 +120,7 @@ class RepeatedReadTests(unittest.IsolatedAsyncioTestCase):
                         tool_calls=[
                             {
                                 "id": "call-2",
-                                "name": "get_user",
+                                "name": "users",
                                 "args": {"username": "Alice"},
                             }
                         ],

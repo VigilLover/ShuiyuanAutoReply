@@ -45,7 +45,7 @@ class SQLiteExecutionObserver:
             for key in ("input_tokens", "output_tokens", "total_tokens"):
                 value = payload.get(key)
                 if isinstance(value, int):
-                    self.usage[key] = value
+                    self.usage[key] = self.usage.get(key, 0) + value
         if self.run_id:
             await self.store.append_event(self.run_id, event_type, payload)
 

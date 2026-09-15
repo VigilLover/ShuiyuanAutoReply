@@ -526,11 +526,12 @@ class DeepSeekVisionMediaManager:
             artifact_value = getattr(message, "artifact", None)
             source_kind = (
                 "forum_search"
-                if name
-                in {"search_posts", "recent_posts", "search_posts_by_time", "get_post"}
+                if name in {"forum_search", "forum_read", "users"}
                 else "web_search"
             )
-            for data, _claimed_mime, filename in extract_inline_images(content):
+            # Only structured artifacts may trigger image loading. Tool prose and
+            # arbitrary URLs in excerpts are untrusted text, not media requests.
+            for data, _claimed_mime, filename in extract_inline_images(artifact_value):
                 if len(results) >= limit:
                     return results
                 image = await self.prepare_inline(
@@ -543,7 +544,7 @@ class DeepSeekVisionMediaManager:
                     existing_urls.add(image.source_url)
                     results.append(image)
 
-            combined = [content, artifact_value]
+            combined = [artifact_value]
             referer = extract_tool_page_url(combined)
             private_urls: list[str] = []
             for item in combined:
@@ -568,7 +569,7 @@ class DeepSeekVisionMediaManager:
                     )
                 except Exception as exc:
                     turn = current_turn.get()
-                    if turn and name in {"inspect_images", "inspect_image"}:
+                    if turn and name in {"forum_read", "users", "web_read"}:
                         turn.notices.append(
                             "部分请求查看的图片读取失败，不能据此确认图片内容。"
                         )
@@ -601,7 +602,7 @@ class DeepSeekVisionMediaManager:
                     )
                 except Exception as exc:
                     turn = current_turn.get()
-                    if turn and name in {"inspect_images", "inspect_image"}:
+                    if turn and name in {"forum_read", "users", "web_read"}:
                         turn.notices.append(
                             "部分请求查看的图片读取失败，不能据此确认图片内容。"
                         )

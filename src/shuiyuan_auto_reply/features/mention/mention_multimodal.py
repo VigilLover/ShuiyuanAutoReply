@@ -63,7 +63,7 @@ class MentionImageInput:
 @dataclass(frozen=True)
 class ImageInspectResult:
     image_urls: list[str]
-    source: str = "inspect_image"
+    source: str = "forum_read"
     description: str = ""
 
 

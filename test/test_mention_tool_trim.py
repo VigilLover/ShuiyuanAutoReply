@@ -140,7 +140,7 @@ if __name__ == "__main__":
 
 
 class EvidenceProjectionTests(unittest.TestCase):
-    def test_large_parallel_batch_keeps_all_responses_and_readable_evidence(self):
+    def test_large_parallel_batch_keeps_all_responses_without_public_result_ids(self):
         from shuiyuan_auto_reply.application.tool_results import (
             TurnResults,
             current_turn,
@@ -169,8 +169,9 @@ class EvidenceProjectionTests(unittest.TestCase):
             projected = project_messages(messages, 4000)
             _assert_valid_tool_sequence(self, projected)
             self.assertEqual(sum(isinstance(m, ToolMessage) for m in projected), 30)
-            self.assertGreaterEqual(len(turn.results), 30)
-            self.assertTrue(any("evidence-29" in str(v) for v in turn.results.values()))
+            self.assertFalse(
+                any("result_id" in str(message.content) for message in projected)
+            )
             self.assertEqual(
                 turn.cache["user:alice"]["avatar"], "https://example.org/a.png"
             )
@@ -215,14 +216,11 @@ class EvidenceProjectionTests(unittest.TestCase):
             self.assertTrue(any(m.name == "target_post" for m in projected))
             ids = {m.tool_call_id for m in projected if isinstance(m, ToolMessage)}
             self.assertTrue({"105", "106"} <= ids)
-            self.assertTrue(any("results_index" in str(m.content) for m in projected))
-            self.assertTrue(any("post 50 " in text for text in turn.results.values()))
+            self.assertFalse(any("results_index" in str(m.content) for m in projected))
         finally:
             current_turn.reset(token)
 
-    def test_projection_renders_cached_post_objects_as_json(self):
-        import json
-
+    def test_projection_does_not_inject_cached_objects_into_model_context(self):
         from shuiyuan_auto_reply.application.tool_results import (
             TurnResults,
             current_turn,
@@ -260,14 +258,8 @@ class EvidenceProjectionTests(unittest.TestCase):
                 )
             projected = project_messages(messages, 4000)
             _assert_valid_tool_sequence(self, projected)
-            evidence = next(
-                message
-                for message in projected
-                if isinstance(message, HumanMessage)
-                and "known_entities" in str(message.content)
+            self.assertFalse(
+                any("known_entities" in str(message.content) for message in projected)
             )
-            payload = json.loads(evidence.content)
-            self.assertIn("随性更日记", payload["known_entities"])
-            self.assertIn("我也很喜欢这首歌", payload["known_entities"])
         finally:
             current_turn.reset(token)

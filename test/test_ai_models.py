@@ -34,6 +34,7 @@ from langchain_community.chat_models.tongyi import ChatTongyi
 from langchain_openai import ChatOpenAI
 from openai import AsyncOpenAI
 
+from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 from shuiyuan_auto_reply.features.mention.mention_chat_model import FallbackLLM
 
 logging.basicConfig(
@@ -249,7 +250,7 @@ class TestMentionDeepSeekVisionModel(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(model.llm, ChatOpenAI)
         self.assertNotIsInstance(model.llm, FallbackLLM)
-        self.assertEqual(model.llm.model_name, "deepseek-v4-flash-vision-exp")
+        self.assertEqual(model.llm.model_name, ProviderSettings().deepseek_model)
         self.assertTrue(model.supports_multimodal)
 
 

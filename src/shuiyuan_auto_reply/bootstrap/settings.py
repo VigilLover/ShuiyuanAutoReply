@@ -68,9 +68,7 @@ class ProviderSettings:
     )
     mimo_api_key: str | None = field(default_factory=lambda: _value("MIMO_API_KEY"))
     deepseek_model: str = field(
-        default_factory=lambda: _text(
-            "DEEPSEEK_MENTION_MODEL", "deepseek-v4-flash-vision-exp"
-        )
+        default_factory=lambda: _text("DEEPSEEK_MENTION_MODEL", "deepseek-flash")
     )
     deepseek_api_format: DeepSeekApiFormat = field(
         default_factory=lambda: DeepSeekApiFormat(

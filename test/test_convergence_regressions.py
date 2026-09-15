@@ -10,7 +10,6 @@ from langchain_core.tools import StructuredTool
 from test_forum_agent_flow import OfflineChat
 
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
-from shuiyuan_auto_reply.application.task_progress import update_task_progress
 from shuiyuan_auto_reply.application.tool_results import TurnResults, current_turn
 from shuiyuan_auto_reply.infrastructure.persistence.state import SQLiteStateStore
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
@@ -47,7 +46,7 @@ class ConvergenceRegressions(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(profile["active_revision"], 2)
             self.assertEqual(profile["active"]["system_prompt"], draft["system_prompt"])
 
-    async def test_changed_keywords_with_same_posts_trigger_review_without_rewriting_query(
+    async def test_changed_keywords_with_same_posts_stop_after_no_new_evidence(
         self,
     ):
         post = SimpleNamespace(
@@ -62,15 +61,25 @@ class ConvergenceRegressions(unittest.IsolatedAsyncioTestCase):
             cooked="<p>I like song A</p>",
         )
         model = SimpleNamespace(
-            search_post_details_by_optional_username_topic=AsyncMock(
-                return_value={"title": [post]}
+            search_forum=AsyncMock(
+                return_value={
+                    "posts": [
+                        {
+                            "id": 10,
+                            "topic_id": 42,
+                            "post_number": 1,
+                            "username": "Alice",
+                            "blurb": "I like song A",
+                        }
+                    ],
+                    "topics": [{"id": 42, "title": "title"}],
+                    "more_posts": False,
+                }
             )
         )
         runtime = OfflineChat(model)
         turn = TurnResults()
         turn.progress.topic_id = 42
-        turn.progress.authors = ["Alice"]
-        turn.progress.gaps = {"music": "find explicit music preferences"}
         token = current_turn.set(turn)
         try:
             for i, term in enumerate(["music", "song", "favourite", "playlist"]):
@@ -82,34 +91,25 @@ class ConvergenceRegressions(unittest.IsolatedAsyncioTestCase):
                                 tool_calls=[
                                     {
                                         "id": str(i),
-                                        "name": "search_posts",
-                                        "args": {"term": term, "gap_id": "music"},
+                                        "name": "forum_search",
+                                        "args": {"query": term, "topic_id": 42},
                                     }
                                 ],
                             )
                         ]
                     }
                 )
-            self.assertEqual(turn.progress.phase, "review")
-            self.assertEqual(len(turn.evidence), 1)
-            # The controller must not add an author filter the model never asked for:
-            # doing so silently changed which posts came back and the model then
-            # distrusted its own query scope.
-            for (
-                call
-            ) in model.search_post_details_by_optional_username_topic.await_args_list:
-                self.assertEqual(call.args[2:4], (None, 42))
+            self.assertEqual(turn.progress.phase, "final")
+            self.assertEqual(turn.control.stop_reason, "no_new_evidence")
+            self.assertEqual(model.search_forum.await_count, 4)
         finally:
             current_turn.reset(token)
 
-    async def test_progress_update_and_search_can_share_batch(self):
+    async def test_removed_progress_tool_is_rejected_while_search_runs(self):
         model = SimpleNamespace(
-            search_post_details_by_optional_username_topic=AsyncMock(return_value={})
+            search_forum=AsyncMock(return_value={"posts": [], "topics": []})
         )
         runtime = OfflineChat(model)
-        runtime.tools.append(
-            StructuredTool.from_function(coroutine=update_task_progress)
-        )
         turn = TurnResults()
         turn.progress.topic_id = 42
         token = current_turn.set(turn)
@@ -122,8 +122,8 @@ class ConvergenceRegressions(unittest.IsolatedAsyncioTestCase):
                             tool_calls=[
                                 {
                                     "id": "s",
-                                    "name": "search_posts",
-                                    "args": {"term": "music", "gap_id": "music"},
+                                    "name": "forum_search",
+                                    "args": {"query": "music"},
                                 },
                                 {
                                     "id": "p",
@@ -140,8 +140,11 @@ class ConvergenceRegressions(unittest.IsolatedAsyncioTestCase):
                     ]
                 }
             )
-            self.assertTrue(all(m.status == "success" for m in result["messages"]))
-            model.search_post_details_by_optional_username_topic.assert_awaited_once()
+            self.assertEqual(
+                [message.status for message in result["messages"]],
+                ["success", "error"],
+            )
+            model.search_forum.assert_awaited_once()
         finally:
             current_turn.reset(token)
 
@@ -156,7 +159,7 @@ class ConvergenceRegressions(unittest.IsolatedAsyncioTestCase):
         turn.read(result)
         self.assertEqual(len(turn.read_pages), 1)
 
-    async def test_parallel_readbacks_have_explicit_bounded_pages(self):
+    async def test_removed_result_reader_is_rejected_without_exposing_storage(self):
         runtime = OfflineChat(SimpleNamespace())
         turn = TurnResults()
         token = current_turn.set(turn)
@@ -179,12 +182,13 @@ class ConvergenceRegressions(unittest.IsolatedAsyncioTestCase):
                     ]
                 }
             )
-            outputs = [json.loads(message.content) for message in response["messages"]]
-            self.assertLessEqual(sum(len(p["content"]) for p in outputs), 6000)
+            self.assertTrue(
+                all(message.status == "error" for message in response["messages"])
+            )
             self.assertTrue(
                 all(
-                    p["truncated"] and p["page_limit"] == p["next_cursor"]
-                    for p in outputs
+                    "read_tool_result" in message.content
+                    for message in response["messages"]
                 )
             )
         finally:

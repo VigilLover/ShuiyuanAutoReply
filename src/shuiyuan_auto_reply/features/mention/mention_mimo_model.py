@@ -101,11 +101,10 @@ class MentionMimoModel(MentionChatModel):
     def _get_multimodal_prompt_rules(self) -> str:
         return (
             "【图片理解 - 严格规则】\n"
-            "1. 如果用户要求查看、分析、理解某张图片、帖子搜索结果里的图片或用户头像，请先通过水源工具拿到图片 URL，再调用 inspect_image。\n"
-            "2. search_posts、recent_posts、search_posts_by_time、get_post 的结果若包含 Images 字段，只说明帖子里有这些图片；不要直接猜测图片内容，需要看图时必须调用 inspect_image(image_url=...)。\n"
-            "3. 需要理解用户头像时，先调用 search_user（按用户名或 user_id 查询），并把 include_avatar 设为 True；拿到 avatar 后再调用 inspect_image，**必须传入 description 参数标明该头像对应的用户名或 ID（如 description='用户 xxx 的头像'）**。\n"
-            "4. inspect_image 只接受水源图片或头像 URL。外部网页图片无法通过该工具读取。\n"
-            "5. 当一次需要对多名用户头像调用 inspect_image 时，为每次调用分别传入不同的 description 以区分归属，避免模型混淆。\n\n"
+            "1. 用户当前附件和 forum_read 精确读取结果中的图片会直接进入视觉输入。\n"
+            "2. forum_search 和话题列表只返回图片引用；需要理解图片时，用 forum_read 精确定位帖子。\n"
+            "3. 需要理解头像时调用 users，并设置 include_avatar=True；返回的头像会按用户标签进入视觉输入。\n"
+            "4. 外部图片使用 web_read；无法载入时明确说明，不能根据 URL 猜测内容。\n\n"
         )
 
     def __init__(
@@ -137,7 +136,6 @@ class MentionMimoModel(MentionChatModel):
         model_name = current.mimo_model
         self.llm = _mk_mimo_llm(api_key, model_name, current)
         self.supports_multimodal = True
-        self.uses_inspect_image_tool = True
         self.multimodal_search_image_limit = current.mimo_multimodal_search_images
 
     def parse_model_output(self, raw_output: Any) -> str:

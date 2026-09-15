@@ -157,7 +157,7 @@ def test_activate_writes_the_profile_and_can_switch_back(api):
         if item["scope"] == "web"
     )
     assert profile["draft"]["base_url"] == ""
-    assert profile["draft"]["model"] == "deepseek-v4-flash-vision-exp"
+    assert profile["draft"]["model"] == "deepseek-flash"
     assert (
         api.client.get("/api/settings/model-configs").json()["active"]["web"]
         == "default"
@@ -357,9 +357,7 @@ def test_base_url_and_model_reach_the_chat_client():
     assert client.openai_api_base == "https://4router.example/v1"
     assert client.model_name == "aggregator-vision"
 
-    official = _mk_deepseek_llm(
-        "sk-x", "deepseek-v4-flash-vision-exp", ProviderSettings()
-    )
+    official = _mk_deepseek_llm("sk-x", "deepseek-flash", ProviderSettings())
     assert official.openai_api_base == DEEPSEEK_BASE_URL
 
 

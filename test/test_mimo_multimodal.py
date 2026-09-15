@@ -265,8 +265,11 @@ class TestPostShortImages(unittest.TestCase):
         )
         self.assertEqual(post.raw, raw)
         self.assertEqual(post.cooked, cooked)
-        self.assertEqual(post.to_dict()["post_id"], 1)
-        self.assertEqual(post.to_dict()["image_urls"], post.image_urls)
+        self.assertEqual(post.to_compact_dict()["post_id"], 1)
+        self.assertEqual(
+            [item["url"] for item in post.to_compact_dict()["media"]],
+            post.image_urls,
+        )
 
 
 class TestMentionMimoModel(unittest.TestCase):
@@ -363,7 +366,7 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(content[0]["type"], "image_url")
         self.assertEqual(content[1]["type"], "text")
 
-    async def test_collect_tool_output_images_ignores_post_artifacts_without_inspect_image(
+    async def test_collect_tool_output_images_ignores_search_media_references(
         self,
     ):
         model = MentionChatModel.__new__(MentionChatModel)
@@ -378,7 +381,12 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
             "supports_multimodal": True,
             "image_inputs": [],
             "messages": [
-                ToolMessage(content="posts", tool_call_id="call-1", artifact=artifact),
+                ToolMessage(
+                    content="posts",
+                    tool_call_id="call-1",
+                    name="forum_search",
+                    artifact=artifact,
+                ),
             ],
         }
 
@@ -388,21 +396,24 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("messages", result)
         model.model.download_image.assert_not_called()
 
-    async def test_collect_tool_output_images_uses_inspect_image_artifact(self):
+    async def test_collect_tool_output_images_uses_forum_read_artifact(self):
         model = MentionChatModel.__new__(MentionChatModel)
         model.model = MagicMock()
         model.model.download_image = AsyncMock(return_value=_tiny_png_bytes())
         model.multimodal_search_image_limit = 1
 
         artifact = MagicMock(
-            image_urls=["upload://a.jpeg"], source="inspect_image", description=""
+            image_urls=["upload://a.jpeg"], source="forum_read", description=""
         )
         state = {
             "supports_multimodal": True,
             "image_inputs": [],
             "messages": [
                 ToolMessage(
-                    content="image inspected", tool_call_id="call-1", artifact=artifact
+                    content="post read",
+                    tool_call_id="call-1",
+                    name="forum_read",
+                    artifact=artifact,
                 ),
             ],
         }
@@ -415,10 +426,10 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
         content = result["messages"][0].content
         self.assertEqual(content[0]["type"], "image_url")
         self.assertEqual(content[1]["type"], "text")
-        self.assertIn("inspect_image", content[1]["text"])
+        self.assertIn("精确读取", content[1]["text"])
         model.model.download_image.assert_awaited_once_with("upload://a.jpeg")
 
-    def test_inspect_image_is_artifact_tool_and_post_tools_are_plain_content(self):
+    def test_exact_read_and_users_are_artifact_tools(self):
         model = MentionChatModel.__new__(MentionChatModel)
         model.model = MagicMock()
         model.supports_multimodal = True
@@ -426,31 +437,29 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
         tools = MentionChatModel._load_shuiyuan_tools(model)
         by_name = {tool.name: tool for tool in tools}
 
-        for name in [
-            "search_posts",
-            "recent_posts",
-            "search_posts_by_time",
-            "get_post",
-        ]:
-            self.assertEqual(by_name[name].response_format, "content")
-        self.assertEqual(
-            by_name["inspect_image"].response_format, "content_and_artifact"
-        )
+        self.assertEqual(by_name["forum_search"].response_format, "content")
+        self.assertEqual(by_name["forum_read"].response_format, "content_and_artifact")
+        self.assertEqual(by_name["users"].response_format, "content_and_artifact")
+        self.assertNotIn("inspect_image", by_name)
+        self.assertNotIn("inspect_images", by_name)
         self.assertEqual(by_name["generate_image"].response_format, "content")
 
-    async def test_inspect_image_tool_returns_artifact_for_requested_url(self):
+    async def test_forum_read_tool_returns_artifact_for_exact_post_images(self):
         model = MentionChatModel.__new__(MentionChatModel)
         model.model = MagicMock()
+        model.model.get_post_details = AsyncMock(
+            return_value=_post_details(raw="![x](upload://a.jpeg)")
+        )
         model.supports_multimodal = True
 
         tools = MentionChatModel._load_shuiyuan_tools(model)
-        inspect_tool = {tool.name: tool for tool in tools}["inspect_image"]
+        read_tool = {tool.name: tool for tool in tools}["forum_read"]
 
-        content, artifact = await inspect_tool.coroutine("upload://a.jpeg")
+        content, artifact = await read_tool.coroutine(post_id=1)
 
-        self.assertIn("图片已读取", content)
-        self.assertEqual(artifact.source, "inspect_image")
-        self.assertEqual(artifact.image_urls, ["upload://a.jpeg"])
+        self.assertIn("forum:99/7", content)
+        self.assertEqual(artifact[0].source, "forum_read")
+        self.assertEqual(artifact[0].image_urls, ["upload://a.jpeg"])
 
 
 class TestMentionProviderSelection(unittest.TestCase):

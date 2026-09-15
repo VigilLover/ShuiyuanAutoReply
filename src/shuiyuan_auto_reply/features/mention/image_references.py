@@ -41,7 +41,7 @@ async def prepare_references(
     references: list[dict[str, str]], *, model, strict_remote: bool = True
 ) -> dict:
     from .image_generation import _MAX_TOTAL_REFERENCE_BYTES, _download_and_encode
-    from .shuiyuan_tools_wrapper import ShuiyuanToolsWrapper
+    from .shuiyuan_tools_objects import UserShort
 
     turn = current_turn.get()
     if not references or len(references) > 50:
@@ -125,13 +125,16 @@ async def prepare_references(
                                     None,
                                 )
                                 if username:
-                                    user = await ShuiyuanToolsWrapper(model).get_user(
-                                        username, True, refresh=True
+                                    user = await model.get_user_by_username(username)
+                                    avatar = (
+                                        UserShort(user, include_avatar=True).avatar
+                                        if user
+                                        else None
                                     )
-                                    if user.get("avatar") and encoded_image_url(
-                                        user["avatar"]
+                                    if avatar and encoded_image_url(
+                                        avatar
                                     ) != encoded_image_url(url):
-                                        url = user["avatar"]
+                                        url = avatar
                                         continue
                             retryable = isinstance(
                                 exc, (TimeoutError, aiohttp.ClientConnectionError)
@@ -205,22 +208,3 @@ async def prepare_references(
         {"successful": len(data_urls), "failed": len(items) - len(data_urls)},
     )
     return prepared
-
-
-def create_reference_preparation_tool(model, *, strict_remote=True):
-    async def prepare_image_references(references: list[dict[str, str]]) -> dict:
-        """Prepare reference images before generation; downloads only missing/failed items.
-
-        references: 1-50 objects with unique key, url, optional label (person/object/source).
-        Returns reference_set_id, successful ordered labels and per-item errors.
-        Use labels, not numeric image indices, in generate_image's prompt. Partial success
-        uses only available subjects; all failures must be reported. Sets last this turn only.
-        """
-        if current_turn.get() is None:
-            return {"status": "error", "error": "no_active_turn"}
-        result = await prepare_references(
-            references, model=model, strict_remote=strict_remote
-        )
-        return {key: value for key, value in result.items() if key != "data_urls"}
-
-    return prepare_image_references

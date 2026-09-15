@@ -37,31 +37,22 @@ from shuiyuan_auto_reply.features.mention.deepseek_vision import (
     save_uploaded_image,
 )
 from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
+from shuiyuan_auto_reply.features.mention.tool_catalog import (
+    MODEL_TOOL_NAMES,
+    migrate_tool_names,
+)
 from shuiyuan_auto_reply.infrastructure.persistence.model_configs import (
     secret_name as model_config_secret_name,
 )
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 
 logger = logging.getLogger(__name__)
-DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
+DEEPSEEK_VISION_MODEL = "deepseek-flash"
 
 # Tool names the agent registers, used as the settings-page fallback before the
 # first agent run writes its own catalog. Keep in sync with the registration in
 # MentionChatModel._load_shuiyuan_tools.
-RUNTIME_TOOL_NAMES = (
-    "inspect_images",
-    "get_user",
-    "read_tool_result",
-    "prepare_image_references",
-    "search_user",
-    "search_posts",
-    "recent_posts",
-    "search_posts_by_time",
-    "get_post",
-    "generate_image",
-    "search_mention_memory",
-    "manage_mention_memory",
-)
+RUNTIME_TOOL_NAMES = MODEL_TOOL_NAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -776,8 +767,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             "fallback_model": None,
             "system_prompt": prompt,
             "enabled_tools": None,
-            # Hardware状态与对话和检索无关，新配置默认关闭；可在设置页按应用重新打开。
-            "disabled_mcp_tools": ["get_hardware_status"],
+            "disabled_mcp_tools": [],
         }
 
     @api.get("/api/settings/profiles")
@@ -795,14 +785,10 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             }
             profile["draft_changed"] = active != profile["draft"]
             profile["prompt_metadata"] = profile_metadata(active, profile["scope"])
-            configured = profile["draft"].get("enabled_tools")
+            configured = migrate_tool_names(profile["draft"].get("enabled_tools"))
             profile["suggested_tools"] = [
                 name
-                for name in (
-                    "inspect_images",
-                    "read_tool_result",
-                    "prepare_image_references",
-                )
+                for name in ("forum_search", "forum_read", "users")
                 if configured is not None and name not in configured
             ]
         vault = request.app.state.container.secret_vault
@@ -1253,7 +1239,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         if catalog:
             catalog = [item for item in catalog if item.get("source") != "mcp"]
             profile = await _store(request).get_profile(scope, _profile_defaults(scope))
-            configured = profile["draft"].get("enabled_tools")
+            configured = migrate_tool_names(profile["draft"].get("enabled_tools"))
             if configured is not None:
                 selected = set(configured)
                 for item in catalog:
@@ -1261,7 +1247,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             return catalog
         names = list(RUNTIME_TOOL_NAMES)
         profile = await _store(request).get_profile(scope, _profile_defaults(scope))
-        configured = profile["draft"].get("enabled_tools")
+        configured = migrate_tool_names(profile["draft"].get("enabled_tools"))
         enabled = set(configured) if configured is not None else set(names)
         return [
             {"name": name, "enabled": name in enabled, "source": "runtime"}
@@ -1297,19 +1283,36 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 "error": str(exc)[:300],
                 "tools": [],
             }
+        loaded_names = {tool.name for tool in loaded_tools}
+        tools = []
+        if loaded_names & {"web_search", "image_search"}:
+            allowed_kinds = set()
+            if "web_search" in loaded_names and "web_search" not in disabled:
+                allowed_kinds.update({"text", "news"})
+            if "image_search" in loaded_names and "image_search" not in disabled:
+                allowed_kinds.add("images")
+            tools.append(
+                {
+                    "name": "web_search",
+                    "description": "统一网页、新闻和图片搜索",
+                    "enabled": bool(allowed_kinds),
+                    "kinds": sorted(allowed_kinds),
+                }
+            )
+        if "fetch_webpage_content" in loaded_names:
+            tools.append(
+                {
+                    "name": "web_read",
+                    "description": "读取网页正文或直接图片",
+                    "enabled": "fetch_webpage_content" not in disabled,
+                }
+            )
         return {
             "url": url,
             "configured": True,
             "connected": True,
             "error": None,
-            "tools": [
-                {
-                    "name": tool.name,
-                    "description": tool.description or "",
-                    "enabled": tool.name not in disabled,
-                }
-                for tool in loaded_tools
-            ],
+            "tools": tools,
         }
 
     static_dir = Path(__file__).with_name("static")

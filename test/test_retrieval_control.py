@@ -12,21 +12,13 @@ from shuiyuan_auto_reply.application.task_progress import TaskProgress
 from shuiyuan_auto_reply.shuiyuan.objects import User
 
 
-def test_review_allows_only_one_bounded_continuation():
-    p = TaskProgress(
-        gaps={"song": "identify explicit favourite"}, strategy="search lyrics"
-    )
+def test_three_empty_batches_stop_without_model_written_review():
+    p = TaskProgress()
     c = RetrievalControl()
     for _ in range(3):
         c.after_batch(p, new_evidence=0, reads=1)
-    assert p.phase == "review"
-    with pytest.raises(ValueError):
-        c.continue_after_review(p)
-    p.strategy = "read linked original music post"
-    c.continue_after_review(p)
-    c.after_batch(p, new_evidence=1, reads=1)
-    c.after_batch(p, new_evidence=1, reads=1)
     assert p.phase == "final"
+    assert c.stop_reason == "no_new_evidence"
 
 
 def test_budget_reserves_last_model_request():
@@ -56,7 +48,6 @@ async def _real_graph_stops_model_ignoring_review_and_reuses_read():
     )
     model = SimpleNamespace(
         get_post_details_by_post_number=AsyncMock(return_value=post),
-        query_recent_posts_by_topic_id=AsyncMock(return_value=("title", [])),
     )
     runtime = OfflineChat(model)
     runtime.llm = SimpleNamespace(
@@ -71,7 +62,7 @@ async def _real_graph_stops_model_ignoring_review_and_reuses_read():
             tool_calls=[
                 {
                     "id": str(len(calls)),
-                    "name": "get_post",
+                    "name": "forum_read",
                     "args": {"topic_id": 42, "post_number": 1},
                 }
             ],

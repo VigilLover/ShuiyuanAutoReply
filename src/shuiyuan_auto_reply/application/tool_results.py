@@ -34,6 +34,7 @@ class TurnResults:
     cache: dict[str, Any] = field(default_factory=dict)
     pending: dict[str, asyncio.Task] = field(default_factory=dict)
     references: dict[str, Any] = field(default_factory=dict)
+    cursors: dict[str, Any] = field(default_factory=dict)
     notices: list[str] = field(default_factory=list)
     cache_hits: int = 0
     deadline: float = field(default_factory=lambda: time.monotonic() + 900)
@@ -63,18 +64,21 @@ class TurnResults:
     def observe(self, value: Any, *, tool: str = "") -> set[str]:
         added = set()
         for identity, record in source_records(value):
-            kind = "full" if tool == "get_post" else "summary"
+            kind = "full" if tool == "forum_read" else "summary"
             digest = content_digest(record)
             key = identity + ":" + kind + ":" + digest[:16]
             if key in self.evidence:
                 continue
             result_id = self.save(record)
             author = record.get("author") or {}
+            author_username = (
+                author.get("username") if isinstance(author, dict) else str(author)
+            )
             self.evidence[key] = {
                 "identity": identity,
                 "kind": kind,
                 "result_id": result_id,
-                "username": author.get("username", record.get("username")),
+                "username": author_username or record.get("username"),
                 "topic_id": record.get("topic_id"),
                 "post_number": record.get("post_number"),
                 "reply_to_post_number": record.get("reply_to_post_number"),
@@ -82,18 +86,7 @@ class TurnResults:
                     :300
                 ],
             }
-            if (
-                not self.progress.authors
-                or not self.evidence[key]["username"]
-                or self.evidence[key]["username"].casefold()
-                in {a.casefold() for a in self.progress.authors}
-            ):
-                if (
-                    not self.progress.topic_id
-                    or not record.get("topic_id")
-                    or record.get("topic_id") == self.progress.topic_id
-                ):
-                    added.add(key)
+            added.add(key)
         return added
 
     def read(

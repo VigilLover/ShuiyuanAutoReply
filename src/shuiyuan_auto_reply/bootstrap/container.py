@@ -40,7 +40,7 @@ from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 from .providers import MentionProviderFactory, apply_profile_endpoint
 from .settings import AppSettings, DeepSeekApiFormat, ProviderSettings
 
-DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
+DEEPSEEK_VISION_MODEL = "deepseek-flash"
 
 
 class _UnavailableChatBackend:

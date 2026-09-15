@@ -5,7 +5,6 @@ Only important information for LLM is kept here.
 import json
 from typing import Optional
 
-from shuiyuan_auto_reply.application.tool_results import PAGE_CHARS, current_turn
 from shuiyuan_auto_reply.shuiyuan.constants import base_url
 from shuiyuan_auto_reply.shuiyuan.objects import PostDetails, User
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
@@ -47,6 +46,18 @@ class UserShort:
     def __repr__(self):
         return self.__str__()
 
+    def to_compact_dict(self) -> dict:
+        return {
+            key: value
+            for key, value in {
+                "user_id": self.id,
+                "username": self.username,
+                "name": self.name,
+                "avatar": self.avatar,
+            }.items()
+            if value not in (None, "")
+        }
+
 
 class PostShort:
     """
@@ -64,6 +75,7 @@ class PostShort:
     reply_to_post_number: Optional[int]
     title: str
     image_urls: list[str]
+    source = "forum_read"
 
     def __init__(self, post: PostDetails, title: str = "", *, full: bool = False):
         self.id = post.id
@@ -86,65 +98,39 @@ class PostShort:
         self.full = full
         self.warnings = []
         self._data = parse_content(post.raw, post.cooked)
-        self.result_id = None
-        turn = current_turn.get()
-        if turn:
-            self.result_id = turn.save(self._data["content"])
         self.reply_to_post_number = post.reply_to_post_number
+        self.created_at = getattr(post, "created_at", None)
         self.title = title
 
-    def to_dict(self, cursor: int = 0) -> dict:
-        content = self._data["content"]
-        limit = PAGE_CHARS if self.full else 800
-        return {
-            "post_id": self.id,
-            "topic_id": self.topic_id,
-            "post_number": self.post_number,
-            "reply_to_post_number": self.reply_to_post_number,
-            "author": {
-                "user_id": self.user_id,
-                "username": self.username,
-                "name": self.name,
-            },
-            "title": self.title,
-            **self._data,
-            "content": content[cursor : cursor + limit],
-            "image_urls": self.image_urls,
-            "truncated": len(content) > cursor + limit,
-            "total_chars": len(content),
-            "result_id": self.result_id,
-            "next_cursor": cursor + limit if len(content) > cursor + limit else None,
-            "read_full": {"tool": "get_post", "post_id": self.id},
-            "warnings": self.warnings,
-        }
-
     def __str__(self):
-        return json.dumps(self.to_dict(), ensure_ascii=False)
+        return json.dumps(self.to_compact_dict(text_limit=6000), ensure_ascii=False)
 
     def __repr__(self):
         return self.__str__()
 
-
-class PostSearchResults(list):
-    """List-compatible search result with explicit coverage metadata for the model."""
-
-    def __init__(self, items=(), *, query=None, truncated=False):
-        super().__init__(items)
-        self.query = query or {}
-        self.truncated = truncated
-
-    def __str__(self):
-        return json.dumps(
-            {
-                "query_scope": self.query,
-                "truncated": self.truncated,
-                "pagination_supported": False,
-                "posts": [post.to_dict() for post in self],
-                "returned_count": len(self),
-                "coverage": "not_guaranteed_complete",
-                "continuation": "Use get_post for full content; refine query for additional matches.",
-            },
-            ensure_ascii=False,
-        )
-
-    __repr__ = __str__
+    def to_compact_dict(self, *, text_limit: int = 1200, text_offset: int = 0) -> dict:
+        content = self._data["content"]
+        item = {
+            "ref": f"forum:{self.topic_id}/{self.post_number}",
+            "post_id": self.id,
+            "author": self.username,
+            "text": content[text_offset : text_offset + text_limit],
+            "created_at": str(self.created_at) if self.created_at else None,
+            "reply_to": (
+                f"forum:{self.topic_id}/{self.reply_to_post_number}"
+                if self.reply_to_post_number
+                else None
+            ),
+            "media": [
+                {
+                    "ref": f"{self.topic_id}/{self.post_number}#image-{index}",
+                    "url": url,
+                }
+                for index, url in enumerate(self.image_urls, 1)
+            ],
+        }
+        if len(content) > text_offset + text_limit:
+            item["text_truncated"] = True
+        return {
+            key: value for key, value in item.items() if value not in (None, "", [], {})
+        }
