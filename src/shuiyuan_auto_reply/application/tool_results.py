@@ -134,6 +134,57 @@ class TurnResults:
             topic_id = self._topic_only_search(request)
         return bool(topic_id and int(topic_id) in self.completed_topics)
 
+    def final_evidence_text(self, max_chars: int) -> str:
+        """Render every canonical source into a compact, evenly sized digest."""
+        records = []
+        for evidence in self.evidence.values():
+            raw = self.results.get(evidence["result_id"], "")
+            try:
+                record = json.loads(raw)
+            except (TypeError, ValueError):
+                record = {"text": str(raw)}
+            if not isinstance(record, dict):
+                record = {"text": str(record)}
+            item = {
+                key: record[key]
+                for key in (
+                    "ref",
+                    "title",
+                    "topic",
+                    "author",
+                    "username",
+                    "created_at",
+                    "reply_to",
+                    "text",
+                    "content",
+                )
+                if record.get(key) not in (None, "", [], {})
+            }
+            item.setdefault("ref", evidence["identity"])
+            records.append(item)
+        if not records:
+            return "[]"
+        allowance = max(120, max_chars // len(records) - 80)
+        while allowance >= 20:
+            compact = []
+            for record in records:
+                item = dict(record)
+                for field in ("text", "content"):
+                    value = item.get(field)
+                    if isinstance(value, str) and len(value) > allowance:
+                        item[field] = value[: allowance - 1].rstrip() + "…"
+                compact.append(item)
+            text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+            if len(text) <= max_chars:
+                return text
+            allowance = int(allowance * 0.7)
+        references = [record["ref"] for record in records]
+        return json.dumps(
+            {"refs": references, "detail_truncated": True},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
     def read(
         self,
         result_id: str,
