@@ -200,6 +200,49 @@ def test_matched_lookup_error_is_a_failed_run_even_when_error_reply_sent(tmp_pat
     asyncio.run(run())
 
 
+def test_unexpected_chat_failure_is_recorded_as_a_failed_run(tmp_path):
+    async def run():
+        model, store = await setup(tmp_path)
+        model.nickname = "小狼bot"
+        model.trigger_word = "【小狼】"
+        model._runtime_lock = asyncio.Lock()
+        model._runtime_counts = {}
+        model._retired_runtimes = set()
+
+        class FailingRuntime:
+            async def get_pumpkin_response(self, *args, **kwargs):
+                raise TypeError("Object of type PostShort is not JSON serializable")
+
+        model.pumpkin = FailingRuntime()
+
+        async def chat(context):
+            return await model._handle_chat(context)
+
+        model.bot_service = BotService(
+            SQLiteSessionRepository(store),
+            HandlerRegistry(
+                [CallbackChatHandler(lambda text: "【小狼】" in text, chat)]
+            ),
+        )
+        await model._new_action_routine(action())
+
+        cid = (await store.list_conversations())[0].id
+        runs = await store.list_forum_runs(cid)
+        assert len(runs) == 1
+        assert runs[0]["status"] == "failed"
+        assert "PostShort" in runs[0]["error"]
+        events = [e["type"] for e in await store.forum_events_after(0)]
+        assert "run.generation_failed" in events
+        assert events.index("run.generation_failed") < events.index("run.failed")
+        published = model.model.reply_to_post.await_args.args[0]
+        assert "抱歉，遇到了一些未知错误。" in published
+        assert "小狼bot遇到了一个错误" not in published
+        # The friendly fallback keeps the normal chat signature.
+        assert "Pumpkin Edition" in published
+
+    asyncio.run(run())
+
+
 def test_uncertain_publication_and_recovery(tmp_path):
     async def run():
         model, store = await setup(tmp_path)

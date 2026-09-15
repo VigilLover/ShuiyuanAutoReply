@@ -28,6 +28,7 @@ from shuiyuan_auto_reply.domain import (
     ConversationRef,
     DispatchMode,
     ForumContextRef,
+    ReplyGenerationError,
     ReplyRequest,
     ReplyResult,
 )
@@ -336,8 +337,16 @@ class MentionModel(BaseUserActionModel):
                     f"==> [MentionModel] AI replied with ValueError: {str(e)}"
                 )
         except Exception as e:
-            reply = "抱歉，遇到了一些未知错误。"
             logging.error(f"==> [MentionModel] AI replied with Exception: {str(e)}")
+            # Keep the same user-visible fallback text, but let the run lifecycle
+            # record the failure instead of reporting a completed run that published
+            # an error reply.
+            raise ReplyGenerationError(
+                f"{type(e).__name__}: {e}",
+                fallback_text=self.output_formatter.format_chat(
+                    "抱歉，遇到了一些未知错误。", self.nickname
+                ),
+            ) from e
         finally:
             await self._release_chat_runtime(runtime)
 
@@ -756,9 +765,13 @@ class MentionModel(BaseUserActionModel):
                 prepared["generation_error"] = str(exc)
                 await emit_event("run.generation_failed", {"error": str(exc)})
                 logging.exception("Forum generation failed for %s", request.request_id)
-                text = self.output_formatter.make_unique(
-                    "抱歉，小狼bot遇到了一个错误，暂时无法处理您的请求，请稍后再试 :crying_cat:"
-                )
+                if isinstance(exc, ReplyGenerationError) and exc.fallback_text:
+                    # The handler already composed the final, decorated fallback.
+                    text = exc.fallback_text
+                else:
+                    text = self.output_formatter.make_unique(
+                        "抱歉，小狼bot遇到了一个错误，暂时无法处理您的请求，请稍后再试 :crying_cat:"
+                    )
             await transition("publishing", "forum.reply_publishing")
             await self.model.reply_to_post(
                 text, request.forum_context.topic_id, request.forum_context.post_number

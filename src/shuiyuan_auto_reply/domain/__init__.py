@@ -5,6 +5,7 @@ from .message import AttachmentRef, ChatMessage, DispatchMode, ReplyRequest
 from .response import (
     ForumMediaRef,
     GeneratedImageArtifact,
+    ReplyGenerationError,
     ReplyResult,
     VisualMediaArtifact,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "ForumContextRef",
     "ForumMediaRef",
     "GeneratedImageArtifact",
+    "ReplyGenerationError",
     "ReplyRequest",
     "ReplyResult",
     "VisualMediaArtifact",
