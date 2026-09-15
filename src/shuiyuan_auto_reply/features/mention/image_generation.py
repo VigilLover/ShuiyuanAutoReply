@@ -710,6 +710,33 @@ def _prepare_image_upload(image_bytes: bytes) -> tuple[str, bytes]:
     return extension, buffer.getvalue()
 
 
+async def resolve_image_endpoint(state_store=None) -> tuple[str, str, str]:
+    """(api_url, api_key, model) for image generation.
+
+    The active stored configuration wins per field; anything it leaves out falls
+    back to the deployment environment, so a partially filled entry still works.
+    """
+    stored: dict = {}
+    resolver = getattr(state_store, "model_config_resolver", None)
+    if resolver is not None:
+        try:
+            stored = await resolver() or {}
+        except Exception:
+            logger.exception("Reading the stored image configuration failed")
+    api_key = (stored.get("api_key") or "").strip() or os.getenv(
+        "IMAGE_GEN_API_KEY", ""
+    ).strip()
+    api_url = (stored.get("base_url") or "").strip() or os.getenv(
+        "IMAGE_GEN_API_URL", ""
+    ).strip()
+    image_model = (
+        (stored.get("model") or "").strip()
+        or os.getenv("IMAGE_GEN_MODEL", "").strip()
+        or _DEFAULT_IMAGE_MODEL
+    )
+    return api_url, api_key, image_model
+
+
 def create_image_generation_tool(model, *, state_store=None):
     """
     创建一个与 ShuiyuanModel 绑定的文生图工具函数.
@@ -749,9 +776,7 @@ def create_image_generation_tool(model, *, state_store=None):
         :param output_dir: 可选的自定义输出目录，用于保存生成的图片备份。
         :return: 图片的短链接。你必须用 `![描述](链接)` 格式嵌入回复中。
         """
-        api_key = os.getenv("IMAGE_GEN_API_KEY", "").strip()
-        api_url = os.getenv("IMAGE_GEN_API_URL", "").strip()
-        image_model = os.getenv("IMAGE_GEN_MODEL", "").strip() or _DEFAULT_IMAGE_MODEL
+        api_url, api_key, image_model = await resolve_image_endpoint(state_store)
         if not api_key:
             return "图片生成失败: IMAGE_GEN_API_KEY 未配置."
         if not api_url:

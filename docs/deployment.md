@@ -155,6 +155,23 @@ python3 scripts/deploy/init_secrets.py --cookie /tmp/forum-cookie.json
 模型文档：<https://help.aliyun.com/zh/model-studio/text-embedding-synchronous-api>。
 当前文档列出该模型最多 20 条输入、单条最多 128,000 Token。部署前确认账号可用性和配额。
 
+### 4.4 文字模型与生图模型的配置库
+
+设置页的「模型」可以在默认端点之外保存多份 OpenAI 兼容配置（Base URL、API Key、模型名、
+API 格式），并一键切换；配置与密钥存放在应用状态库（密钥仍走本机 Fernet 保险箱），
+**不需要修改 `deployment.toml`**，也不影响向量空间指纹与部署兼容判断。
+
+- 文字模型按应用启用（网页 / 论坛各自选用），切换会走一次热切换：先构建候选 Runtime，
+  失败则保留原配置并返回错误。
+- 生图模型全机器人共用，工具在每次调用时读取当前启用的配置，因此切换后下一次生图即生效，
+  不需要重启；配置里留空的字段（例如不填 API Key）按字段回退到 `IMAGE_GEN_*` 环境值。
+- 「获取模型列表 / 测试连通」调用 `GET {base_url}/models` 验证地址与密钥，不会真正生成内容；
+  地址未提供该接口时可以手动填写模型名。
+- 默认端点仍是官方 DeepSeek；论坛 Agent 依赖视觉能力，自定义端点若不支持 DeepSeek 的
+  `/files` 上传链路，图片理解可能失败（只影响看图，不影响文字回答）。
+- 新增配置表后首次部署需要执行数据库迁移（部署流程会自动跑 `shuiyuan-ops db migrate`）；
+  旧版本 Bot 忽略新表，回滚安全。
+
 ## 5. 构建、发布和传输镜像
 
 推荐在开发机或 CI 构建，不在 2GB 生产服务器上运行 Node 构建或安装本地 ML 依赖。
