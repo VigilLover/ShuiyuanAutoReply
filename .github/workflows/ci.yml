@@ -45,6 +45,11 @@ jobs:
       - run: uv run --no-sync black --check src test scripts deploy/mcp
       - run: uv run --no-sync isort --check-only src test scripts deploy/mcp
       - run: uv run --no-sync pytest -q --junitxml=reports/pytest.xml
+      - name: Verify packaged prompt resources
+        if: matrix.backend == 'remote'
+        run: |
+          uv build --wheel --out-dir dist
+          uv run --no-sync python scripts/ci/check_prompt_package.py dist/*.whl
       - name: CLI and compose checks
         run: |
           uv run --no-sync shuiyuan-ops --help
