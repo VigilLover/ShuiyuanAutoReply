@@ -11,6 +11,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy"))
 from release import VERSION
+from remote import PULL_ATTEMPTS, PULL_TIMEOUT_SECONDS
+
+# The client must outlast the server's pull budget plus the rest of the rollout,
+# otherwise it hangs up on a deploy that is still making progress.
+DEPLOY_TIMEOUT_SECONDS = PULL_ATTEMPTS * PULL_TIMEOUT_SECONDS + 600
 
 
 def main():
@@ -78,6 +83,12 @@ def main():
             f"UserKnownHostsFile={known}",
             "-o",
             "ConnectTimeout=15",
+            # Image pulls produce no output for minutes; without keepalives the
+            # idle connection is dropped mid-deploy (which the server survives).
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=8",
             f"{user}@{host}",
         ]
         with bundle.open("rb") as stream:
@@ -87,7 +98,23 @@ def main():
                 check=True,
                 timeout=300,
             )
-        subprocess.run([*command, f"{operation} {version}"], check=True, timeout=1800)
+        try:
+            subprocess.run(
+                [*command, f"{operation} {version}"],
+                check=True,
+                timeout=DEPLOY_TIMEOUT_SECONDS,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            # The forced command ignores SIGHUP, so a dropped connection leaves
+            # the server deploying. Report its own record instead of guessing.
+            status = subprocess.run(
+                [*command, "status"], capture_output=True, text=True, timeout=120
+            )
+            print(
+                f"Deployment transport failed; server reports: {status.stdout.strip()}",
+                file=sys.stderr,
+            )
+            raise
 
 
 if __name__ == "__main__":

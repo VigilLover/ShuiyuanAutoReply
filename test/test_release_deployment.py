@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -180,7 +181,7 @@ class FakeDeployer(remote.Deployer):
         self.failure = failure
         self.events = []
 
-    def compose(self, manifest, args):
+    def compose(self, manifest, args, **kwargs):
         self.events.append((manifest["version"], args[0]))
         if args[0] == self.failure:
             raise RuntimeError("synthetic")
@@ -246,6 +247,56 @@ def test_preflight_failure_does_not_stop(installation, failure):
     with pytest.raises((ValueError, RuntimeError)):
         controller.deploy("v1.0.1")
     assert not any(event[1] == "stop" for event in controller.events)
+
+
+class PullStub(remote.Deployer):
+    """Deployer whose only real work is counting bounded pull attempts."""
+
+    def __init__(self, root, timeouts):
+        super().__init__(root)
+        self.timeouts = timeouts
+        self.pulls = 0
+
+    def compose(self, manifest, args, **kwargs):
+        if args[0] != "pull":
+            return ""
+        self.pulls += 1
+        if self.pulls <= self.timeouts:
+            raise subprocess.TimeoutExpired("docker compose pull", kwargs["timeout"])
+        return ""
+
+    def fingerprint(self, manifest):
+        return "space"
+
+    def health(self):
+        return dict(process="ok", database="ok", state="ok", forum="ok")
+
+    def ops(self, manifest, args, **kwargs):
+        return ""
+
+    def wait_ready(self):
+        pass
+
+
+def test_slow_pull_is_retried_and_the_deploy_still_succeeds(installation, capsys):
+    controller = PullStub(installation, timeouts=remote.PULL_ATTEMPTS - 1)
+    controller.deploy("v1.0.1")
+    assert controller.pulls == remote.PULL_ATTEMPTS
+    assert controller.record["phase"] == "success"
+    retries = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if '"retrying": true' in line
+    ]
+    assert len(retries) == remote.PULL_ATTEMPTS - 1
+
+
+def test_pull_that_never_finishes_fails_before_touching_the_app(installation):
+    controller = PullStub(installation, timeouts=remote.PULL_ATTEMPTS)
+    with pytest.raises(subprocess.TimeoutExpired):
+        controller.deploy("v1.0.1")
+    assert controller.pulls == remote.PULL_ATTEMPTS
+    assert controller.record["phase"] == "failed-preflight"
 
 
 def test_readiness_requires_sqlite_and_forum():

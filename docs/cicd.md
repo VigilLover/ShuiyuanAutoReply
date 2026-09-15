@@ -182,6 +182,8 @@ ssh -N -L 11451:127.0.0.1:11451 SERVER_IP
 ### 常见失败
 
 - `failed_phase: pull` 且镜像拉取报 `denied: denied`：服务器上保存的 ghcr.io 凭据对该包没有读权限，GHCR 不会回退到匿名。公开包执行 `sudo docker logout ghcr.io` 后重试；若镜像改为私有，需重新 `docker login ghcr.io` 并只授予 `read:packages`。
+- `failed_phase: pull` 且控制器记录 `TimeoutExpired`：服务器到 registry 的链路慢。控制器按 `remote.PULL_ATTEMPTS` × `remote.PULL_TIMEOUT_SECONDS` 的预算重试，已下载的层会保留、下一轮只需补差额；仍失败时在服务器上 `sudo docker pull <镜像>@<digest>` 落盘后重跑部署。
+- 工作流报 `Broken pipe` / SSH 退出码 255，但服务器仍在部署：拉镜像期间没有输出，连接被链路的空闲回收掐断。控制器忽略 SIGHUP，服务端会继续走完并自己记录状态；dispatch 会额外用 `status` 打印服务端记录，别把这次失败当成部署失败，先看那段输出。
 - `Release file integrity failure`：`/opt/shuiyuan/releases/<版本>/` 下的文件被手工改过，控制器会按 manifest 校验每个文件的 sha256。用发布包内的原始文件恢复，配置改动走新版本发布。
 - `No tested backward compatibility for this release`：新版本 `schema_id` 与已部署版本不同，且兼容窗口不覆盖它。把 `compatible_from` 的窗口调大（`recent:N`）或补上该版本，再发布一个新版本；旧清单已发布、标签不能移动。
 
