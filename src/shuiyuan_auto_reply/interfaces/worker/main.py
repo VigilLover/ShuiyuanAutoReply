@@ -9,13 +9,19 @@ from dotenv import load_dotenv
 from shuiyuan_auto_reply.application.handlers import ChatHandler
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.bootstrap.container import ApplicationContainer
-from shuiyuan_auto_reply.bootstrap.providers import MentionProviderFactory
+from shuiyuan_auto_reply.bootstrap.providers import (
+    MentionProviderFactory,
+    apply_profile_endpoint,
+)
 from shuiyuan_auto_reply.bootstrap.settings import AppSettings, DeepSeekApiFormat
 from shuiyuan_auto_reply.features.mention import MentionModel
 from shuiyuan_auto_reply.infrastructure.llm import LegacyMentionChatBackend
 from shuiyuan_auto_reply.infrastructure.persistence import (
     LocalSecretVault,
     SQLiteStateStore,
+)
+from shuiyuan_auto_reply.infrastructure.persistence.model_configs import (
+    image_endpoint_resolver,
 )
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
@@ -30,6 +36,7 @@ def _forum_profile_defaults(settings: AppSettings, persona: str) -> dict:
     return {
         "provider": "deepseek",
         "model": DEEPSEEK_VISION_MODEL,
+        "base_url": "",
         "api_format": settings.providers.deepseek_api_format.value,
         "fallback_model": None,
         "system_prompt": prompt,
@@ -39,7 +46,7 @@ def _forum_profile_defaults(settings: AppSettings, persona: str) -> dict:
 
 
 async def _forum_provider_settings(
-    settings: AppSettings, vault: LocalSecretVault, profile: dict
+    settings: AppSettings, store, vault: LocalSecretVault, profile: dict
 ):
     provider = "deepseek"
     effective = replace(
@@ -59,7 +66,9 @@ async def _forum_provider_settings(
     }
     if secret:
         effective = replace(effective, **{key_fields[provider]: secret})
-    return effective
+    return await apply_profile_endpoint(
+        effective, "forum", profile, store=store, vault=vault
+    )
 
 
 async def run_worker(persona: str = "wolf_lumine") -> None:
@@ -68,6 +77,10 @@ async def run_worker(persona: str = "wolf_lumine") -> None:
     state_store = SQLiteStateStore()
     await state_store.initialize()
     secret_vault = LocalSecretVault(state_store)
+    # The image tool only receives the store, so the resolver travels with it.
+    state_store.model_config_resolver = image_endpoint_resolver(
+        state_store, secret_vault
+    )
     model = await ShuiyuanModel.create(settings.forum.cookie_file)
     from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
 
@@ -96,7 +109,7 @@ async def run_worker(persona: str = "wolf_lumine") -> None:
             "forum", _forum_profile_defaults(settings, persona)
         )
         effective_settings = await _forum_provider_settings(
-            settings, secret_vault, profile["active"]
+            settings, state_store, secret_vault, profile["active"]
         )
         chat_model = MentionProviderFactory.create(
             model,
@@ -124,7 +137,7 @@ async def run_worker(persona: str = "wolf_lumine") -> None:
                 if latest["active_revision"] == active_revision:
                     return
                 candidate_settings = await _forum_provider_settings(
-                    settings, secret_vault, latest["active"]
+                    settings, state_store, secret_vault, latest["active"]
                 )
                 enabled = latest["active"].get("enabled_tools")
                 candidate = MentionProviderFactory.create(

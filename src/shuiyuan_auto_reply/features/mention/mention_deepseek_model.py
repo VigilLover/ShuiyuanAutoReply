@@ -159,7 +159,8 @@ def _mk_deepseek_llm(
     common_kwargs: dict[str, Any] = {
         "model": model_name,
         "api_key": api_key,
-        "base_url": DEEPSEEK_BASE_URL,
+        "base_url": (current.mention_base_url or "").strip().rstrip("/")
+        or DEEPSEEK_BASE_URL,
         "max_retries": DEEPSEEK_DEFAULT_MAX_RETRIES,
     }
     if DeepSeekApiFormat(current.deepseek_api_format) is DeepSeekApiFormat.RESPONSES:
@@ -236,7 +237,7 @@ class MentionDeepSeekModel(MentionChatModel):
 
         self.llm = _mk_deepseek_llm(
             api_key,
-            DEEPSEEK_DEFAULT_MODEL,
+            (current.deepseek_model or "").strip() or DEEPSEEK_DEFAULT_MODEL,
             current,
         )
         if self.api_format is DeepSeekApiFormat.RESPONSES:
@@ -249,6 +250,8 @@ class MentionDeepSeekModel(MentionChatModel):
             state_store=state_store,
             forum_model=model,
             api_key=api_key,
+            base_url=(current.mention_base_url or "").strip().rstrip("/")
+            or DEEPSEEK_BASE_URL,
         )
 
     async def _load_current_images(self, state: MentionGraphState) -> MentionGraphState:

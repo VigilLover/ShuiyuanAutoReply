@@ -52,6 +52,11 @@ class ProviderSettings:
         .strip()
         .lower()
     )
+    # Empty means the provider's own endpoint; the settings UI can point a stored
+    # configuration at any OpenAI-compatible base URL.
+    mention_base_url: str | None = field(
+        default_factory=lambda: _value("MENTION_BASE_URL")
+    )
     deepseek_api_key: str | None = field(
         default_factory=lambda: _value("DEEPSEEK_API_KEY")
     )

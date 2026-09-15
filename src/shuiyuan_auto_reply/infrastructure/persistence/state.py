@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import uuid
@@ -215,10 +216,22 @@ CREATE TABLE IF NOT EXISTS runtime_tools (
   enabled INTEGER NOT NULL, loaded INTEGER NOT NULL DEFAULT 1,
   error TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(scope, name)
 );
+CREATE TABLE IF NOT EXISTS model_configs (
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,
+  base_url TEXT NOT NULL, model TEXT NOT NULL, api_format TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS model_config_active (
+  scope TEXT PRIMARY KEY, config_id TEXT NOT NULL
+);
 """
 
 
 class SQLiteStateStore:
+    # Composition roots attach a resolver here so tools that only receive the
+    # store (the image generator) can still reach the active stored endpoint.
+    model_config_resolver = None
+
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path) if path else state_directory() / "state.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1235,6 +1248,135 @@ class SQLiteStateStore:
                 "UPDATE runtime_profiles SET draft_json=?, updated_at=? WHERE scope=?",
                 (json.dumps(value, ensure_ascii=False), utc_now(), scope),
             )
+            await db.commit()
+        finally:
+            await db.close()
+
+    #################################################
+    ##         Model configuration library         ##
+    #################################################
+
+    async def list_model_configs(self, kind: str) -> list[dict[str, Any]]:
+        """Named chat/image endpoints. Missing tables mean "not migrated yet"."""
+        db = await self._connect()
+        try:
+            rows = await (
+                await db.execute(
+                    "SELECT * FROM model_configs WHERE kind=? ORDER BY created_at, name",
+                    (kind,),
+                )
+            ).fetchall()
+            return [dict(row) for row in rows]
+        except aiosqlite.OperationalError:
+            logging.warning(
+                "model_configs table is missing; run the database migration to "
+                "enable stored model configurations"
+            )
+            return []
+        finally:
+            await db.close()
+
+    async def model_config(self, config_id: str) -> dict[str, Any] | None:
+        db = await self._connect()
+        try:
+            row = await (
+                await db.execute("SELECT * FROM model_configs WHERE id=?", (config_id,))
+            ).fetchone()
+            return dict(row) if row else None
+        except aiosqlite.OperationalError:
+            return None
+        finally:
+            await db.close()
+
+    async def save_model_config(
+        self, value: dict[str, Any], *, config_id: str | None = None
+    ) -> str:
+        """Create or update one configuration; returns its id."""
+        now = utc_now()
+        db = await self._connect()
+        try:
+            if config_id is None:
+                config_id = str(uuid.uuid4())
+                await db.execute(
+                    """INSERT INTO model_configs
+                    (id, kind, name, base_url, model, api_format, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        config_id,
+                        value["kind"],
+                        value["name"],
+                        value["base_url"],
+                        value["model"],
+                        value.get("api_format"),
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                cursor = await db.execute(
+                    """UPDATE model_configs
+                    SET name=?, base_url=?, model=?, api_format=?, updated_at=?
+                    WHERE id=?""",
+                    (
+                        value["name"],
+                        value["base_url"],
+                        value["model"],
+                        value.get("api_format"),
+                        now,
+                        config_id,
+                    ),
+                )
+                if not cursor.rowcount:
+                    raise LookupError("model configuration not found")
+            await db.commit()
+            return config_id
+        finally:
+            await db.close()
+
+    async def delete_model_config(self, config_id: str) -> None:
+        db = await self._connect()
+        try:
+            await db.execute(
+                "DELETE FROM model_config_active WHERE config_id=?", (config_id,)
+            )
+            await db.execute("DELETE FROM model_configs WHERE id=?", (config_id,))
+            await db.commit()
+        finally:
+            await db.close()
+
+    async def active_model_config(self, scope: str) -> dict[str, Any] | None:
+        db = await self._connect()
+        try:
+            row = await (
+                await db.execute(
+                    """SELECT model_configs.* FROM model_config_active
+                    JOIN model_configs ON model_configs.id = model_config_active.config_id
+                    WHERE model_config_active.scope=?""",
+                    (scope,),
+                )
+            ).fetchone()
+            return dict(row) if row else None
+        except aiosqlite.OperationalError:
+            return None
+        finally:
+            await db.close()
+
+    async def set_active_model_config(self, scope: str, config_id: str) -> None:
+        db = await self._connect()
+        try:
+            await db.execute(
+                "INSERT INTO model_config_active(scope, config_id) VALUES (?, ?) "
+                "ON CONFLICT(scope) DO UPDATE SET config_id=excluded.config_id",
+                (scope, config_id),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    async def clear_active_model_config(self, scope: str) -> None:
+        db = await self._connect()
+        try:
+            await db.execute("DELETE FROM model_config_active WHERE scope=?", (scope,))
             await db.commit()
         finally:
             await db.close()

@@ -28,13 +28,16 @@ from shuiyuan_auto_reply.infrastructure.persistence import (
     SQLiteSessionRepository,
     SQLiteStateStore,
 )
+from shuiyuan_auto_reply.infrastructure.persistence.model_configs import (
+    image_endpoint_resolver,
+)
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 from shuiyuan_auto_reply.infrastructure.retrieval.neo4j import (
     close_neo4j as close_global_async_neo4j_manager,
 )
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
-from .providers import MentionProviderFactory
+from .providers import MentionProviderFactory, apply_profile_endpoint
 from .settings import AppSettings, DeepSeekApiFormat, ProviderSettings
 
 DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
@@ -245,7 +248,9 @@ class ApplicationContainer:
         }
         if secret:
             settings = replace(settings, **{key_fields[provider]: secret})
-        return settings
+        return await apply_profile_endpoint(
+            settings, scope, profile, store=self.state_store, vault=self.secret_vault
+        )
 
     @classmethod
     async def for_api(
@@ -255,6 +260,10 @@ class ApplicationContainer:
         state_store = SQLiteStateStore()
         await state_store.initialize()
         secret_vault = LocalSecretVault(state_store)
+        # The image tool only receives the store, so the resolver travels with it.
+        state_store.model_config_resolver = image_endpoint_resolver(
+            state_store, secret_vault
+        )
         from shuiyuan_auto_reply.infrastructure.forum.lazy import LazyChat, LazyForum
 
         forum_model = LazyForum(current.forum.cookie_file)

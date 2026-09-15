@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
+import aiohttp
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +37,9 @@ from shuiyuan_auto_reply.features.mention.deepseek_vision import (
     save_uploaded_image,
 )
 from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
+from shuiyuan_auto_reply.infrastructure.persistence.model_configs import (
+    secret_name as model_config_secret_name,
+)
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 
 logger = logging.getLogger(__name__)
@@ -121,6 +125,67 @@ class ProfileDraftRequest(BaseModel):
     enabled_tools: list[str] | None = None
     disabled_mcp_tools: list[str] = Field(default_factory=list)
     api_key: str | None = None
+    base_url: str | None = None
+
+
+class ModelConfigRequest(BaseModel):
+    """One stored endpoint configuration for the chat or image model."""
+
+    kind: Literal["chat", "image"]
+    name: str
+    base_url: str
+    model: str
+    api_format: Literal["chat_completions", "responses"] | None = None
+    api_key: str | None = None
+
+
+class ModelConfigProbeRequest(BaseModel):
+    kind: Literal["chat", "image"]
+    base_url: str
+    api_key: str | None = None
+    model: str | None = None
+    config_id: str | None = None
+
+
+class ModelConfigActivateRequest(BaseModel):
+    scope: Literal["web", "forum", "image"]
+
+
+PROBE_TIMEOUT_SECONDS = 10.0
+
+
+def normalized_base_url(value: str | None) -> str:
+    """Accept an OpenAI-compatible base URL; empty means the built-in endpoint."""
+    url = (value or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=400, detail="Base URL 必须以 http:// 或 https:// 开头"
+        )
+    return url
+
+
+async def list_provider_models(base_url: str, api_key: str | None) -> list[str]:
+    """Read {base_url}/models; the only reliable "is this endpoint usable" probe."""
+    url = normalized_base_url(base_url)
+    if not url:
+        raise ValueError("Base URL 为空")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    timeout = aiohttp.ClientTimeout(total=PROBE_TIMEOUT_SECONDS)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(f"{url}/models", headers=headers) as response:
+            if response.status != 200:
+                raise ValueError(f"HTTP {response.status}")
+            payload = await response.json(content_type=None)
+    identifiers = [
+        str(item["id"])
+        for item in (payload.get("data") or [])
+        if isinstance(item, dict) and item.get("id")
+    ]
+    if not identifiers:
+        raise ValueError("响应里没有模型列表")
+    return sorted(set(identifiers))
 
 
 ContainerFactory = Callable[[], Awaitable[ApplicationContainer]]
@@ -688,6 +753,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         return {
             "provider": "deepseek",
             "model": DEEPSEEK_VISION_MODEL,
+            "base_url": "",
             "api_format": settings.deepseek_api_format.value,
             "fallback_model": None,
             "system_prompt": prompt,
@@ -731,7 +797,9 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         for profile in profiles:
             for value in (profile["draft"], profile["active"]):
                 value["provider"] = "deepseek"
-                value["model"] = DEEPSEEK_VISION_MODEL
+                if not value.get("model"):
+                    value["model"] = DEEPSEEK_VISION_MODEL
+                value["base_url"] = normalized_base_url(value.get("base_url"))
                 value.setdefault(
                     "api_format", AppSettings().providers.deepseek_api_format.value
                 )
@@ -763,13 +831,15 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         if scope not in {"forum", "web"}:
             raise HTTPException(status_code=404, detail="未知应用")
         if payload.provider != "deepseek":
-            raise HTTPException(status_code=400, detail="视觉流程固定使用 DeepSeek")
-        if payload.model not in {None, DEEPSEEK_VISION_MODEL}:
             raise HTTPException(
-                status_code=400, detail="模型固定为 deepseek-v4-flash-vision-exp"
+                status_code=400, detail="视觉流程固定使用 DeepSeek 兼容客户端"
             )
+        model = (payload.model or DEEPSEEK_VISION_MODEL).strip()
+        if not model:
+            raise HTTPException(status_code=400, detail="模型名称不能为空")
         value = payload.model_dump(mode="json", exclude={"api_key"})
-        value["model"] = DEEPSEEK_VISION_MODEL
+        value["model"] = model
+        value["base_url"] = normalized_base_url(payload.base_url)
         value["fallback_model"] = None
         await _store(request).get_profile(scope, _profile_defaults(scope))
         await _store(request).save_profile_draft(scope, value)
@@ -793,8 +863,8 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             errors.append("System Prompt 不能为空")
         return {"valid": not errors, "errors": errors}
 
-    @api.post("/api/settings/profiles/{scope}/apply")
-    async def apply_profile(scope: str, request: Request):
+    async def apply_scope_profile(scope: str, request: Request) -> int:
+        """Build a candidate runtime for the saved draft, then make it active."""
         validation = await validate_profile(scope, request)
         if not validation["valid"]:
             raise HTTPException(status_code=400, detail=validation["errors"])
@@ -838,7 +908,14 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             apply_runtime = getattr(container, "apply_runtime_profile", None)
             if apply_runtime is not None and scope == "web":
                 await apply_runtime(scope, profile["active"])
-        return {"status": "applied", "active_revision": revision}
+        return revision
+
+    @api.post("/api/settings/profiles/{scope}/apply")
+    async def apply_profile(scope: str, request: Request):
+        return {
+            "status": "applied",
+            "active_revision": await apply_scope_profile(scope, request),
+        }
 
     @api.post("/api/settings/profiles/{scope}/provider-test")
     async def provider_test(scope: str, request: Request):
@@ -931,7 +1008,224 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         defaults = _profile_defaults(scope)
         await _store(request).get_profile(scope, defaults)
         await _store(request).save_profile_draft(scope, defaults)
+        # The library entry no longer describes the draft, so stop claiming it.
+        await _store(request).clear_active_model_config(scope)
         return {"status": "restored"}
+
+    async def decorated_model_config(request: Request, config: dict) -> dict:
+        """Add the key status a configuration entry is shown with."""
+        entry = dict(config)
+        vault = request.app.state.container.secret_vault
+        if entry.get("source") == "default":
+            env_name = (
+                "IMAGE_GEN_API_KEY" if entry["kind"] == "image" else "DEEPSEEK_API_KEY"
+            )
+            value = os.getenv(env_name)
+            entry["secret"] = {
+                "configured": bool(value),
+                "last_four": value[-4:] if value else None,
+                "source": "environment" if value else None,
+            }
+            return entry
+        stored = ""
+        if vault is not None:
+            stored = (
+                await vault.get(model_config_secret_name(entry["id"])) or ""
+            ).strip()
+        entry["secret"] = {
+            "configured": bool(stored),
+            "last_four": stored[-4:] if stored else None,
+            "source": "ui" if stored else None,
+        }
+        return entry
+
+    def default_model_config(kind: str) -> dict:
+        """The built-in endpoint: deployment configuration, never editable."""
+        if kind == "image":
+            return {
+                "id": "default",
+                "kind": "image",
+                "name": "默认（部署配置）",
+                "base_url": os.getenv("IMAGE_GEN_API_URL", "").strip(),
+                "model": os.getenv("IMAGE_GEN_MODEL", "").strip() or "gpt-image-2",
+                "api_format": None,
+                "source": "default",
+            }
+        return {
+            "id": "default",
+            "kind": "chat",
+            "name": "默认（官方 DeepSeek）",
+            "base_url": "",
+            "model": DEEPSEEK_VISION_MODEL,
+            "api_format": AppSettings().providers.deepseek_api_format.value,
+            "source": "default",
+        }
+
+    def validated_model_config(payload: ModelConfigRequest) -> dict:
+        name = payload.name.strip()
+        model = payload.model.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="配置名称不能为空")
+        if not model:
+            raise HTTPException(status_code=400, detail="模型名称不能为空")
+        return {
+            "kind": payload.kind,
+            "name": name[:60],
+            "model": model,
+            "base_url": normalized_base_url(payload.base_url),
+            "api_format": payload.api_format if payload.kind == "chat" else None,
+        }
+
+    async def store_model_config_secret(
+        request: Request, config_id: str, api_key: str | None
+    ) -> None:
+        """An empty or absent key keeps whatever the entry already had."""
+        vault = request.app.state.container.secret_vault
+        if vault is None or not api_key:
+            return
+        await vault.set(model_config_secret_name(config_id), api_key.strip())
+
+    @api.get("/api/settings/model-configs")
+    async def get_model_configs(request: Request):
+        store = _store(request)
+        active: dict[str, str] = {}
+        for scope in ("web", "forum", "image"):
+            row = await store.active_model_config(scope)
+            active[scope] = row["id"] if row else "default"
+        result: dict[str, Any] = {"active": active}
+        for kind in ("chat", "image"):
+            entries = [
+                await decorated_model_config(request, default_model_config(kind))
+            ]
+            for stored in await store.list_model_configs(kind):
+                entries.append(
+                    await decorated_model_config(
+                        request, {**stored, "source": "custom"}
+                    )
+                )
+            result[kind] = entries
+        return result
+
+    @api.post("/api/settings/model-configs")
+    async def create_model_config(payload: ModelConfigRequest, request: Request):
+        value = validated_model_config(payload)
+        config_id = await _store(request).save_model_config(value)
+        await store_model_config_secret(request, config_id, payload.api_key)
+        return {"status": "created", "id": config_id}
+
+    @api.put("/api/settings/model-configs/{config_id}")
+    async def update_model_config(
+        config_id: str, payload: ModelConfigRequest, request: Request
+    ):
+        existing = await _store(request).model_config(config_id)
+        if existing is None or existing["kind"] != payload.kind:
+            raise HTTPException(status_code=404, detail="未知的模型配置")
+        value = validated_model_config(payload)
+        try:
+            await _store(request).save_model_config(value, config_id=config_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="未知的模型配置") from exc
+        await store_model_config_secret(request, config_id, payload.api_key)
+        return {"status": "updated", "id": config_id}
+
+    @api.delete("/api/settings/model-configs/{config_id}")
+    async def delete_model_config(config_id: str, request: Request):
+        store = _store(request)
+        if await store.model_config(config_id) is None:
+            raise HTTPException(status_code=404, detail="未知的模型配置")
+        await store.delete_model_config(config_id)
+        vault = request.app.state.container.secret_vault
+        if vault is not None:
+            await vault.set(model_config_secret_name(config_id), "")
+        return {"status": "deleted"}
+
+    @api.post("/api/settings/model-configs/probe")
+    async def probe_model_config(payload: ModelConfigProbeRequest, request: Request):
+        """Check that an endpoint answers and that the key is accepted."""
+        vault = request.app.state.container.secret_vault
+        api_key = (payload.api_key or "").strip()
+        if not api_key and payload.config_id and vault is not None:
+            api_key = (
+                await vault.get(model_config_secret_name(payload.config_id)) or ""
+            ).strip()
+        if not api_key:
+            env_name = (
+                "IMAGE_GEN_API_KEY" if payload.kind == "image" else "DEEPSEEK_API_KEY"
+            )
+            api_key = (os.getenv(env_name) or "").strip()
+        try:
+            models = await list_provider_models(payload.base_url, api_key or None)
+        except HTTPException as exc:
+            return {
+                "ok": False,
+                "models": [],
+                "model_present": False,
+                "message": f"探测失败：{str(exc.detail)[:300]}",
+            }
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+            return {
+                "ok": False,
+                "models": [],
+                "model_present": False,
+                "message": f"探测失败：{(str(exc) or type(exc).__name__)[:300]}",
+            }
+        wanted = (payload.model or "").strip()
+        present = bool(wanted) and wanted in models
+        if not wanted:
+            message = f"连接成功，返回 {len(models)} 个模型"
+        elif present:
+            message = f"连接成功，{wanted} 在模型列表中"
+        else:
+            message = f"连接成功，但列表里没有 {wanted}，仍可手动填写"
+        return {
+            "ok": True,
+            "models": models,
+            "model_present": present,
+            "message": message,
+        }
+
+    @api.post("/api/settings/model-configs/{config_id}/activate")
+    async def activate_model_config(
+        config_id: str, payload: ModelConfigActivateRequest, request: Request
+    ):
+        """Switch a scope onto this configuration; chat goes through the hot swap."""
+        store = _store(request)
+        scope = payload.scope
+        if scope == "image":
+            if config_id == "default":
+                await store.clear_active_model_config("image")
+                return {"status": "active", "scope": scope, "config_id": "default"}
+            config = await store.model_config(config_id)
+            if config is None or config["kind"] != "image":
+                raise HTTPException(status_code=404, detail="未知的生图配置")
+            await store.set_active_model_config("image", config_id)
+            return {"status": "active", "scope": scope, "config_id": config_id}
+        defaults = _profile_defaults(scope)
+        profile = await store.get_profile(scope, defaults)
+        draft = dict(profile["draft"])
+        if config_id == "default":
+            draft["base_url"] = ""
+            draft["model"] = defaults["model"]
+        else:
+            config = await store.model_config(config_id)
+            if config is None or config["kind"] != "chat":
+                raise HTTPException(status_code=404, detail="未知的文字模型配置")
+            draft["base_url"] = config["base_url"]
+            draft["model"] = config["model"]
+            if config.get("api_format"):
+                draft["api_format"] = config["api_format"]
+        await store.save_profile_draft(scope, draft)
+        revision = await apply_scope_profile(scope, request)
+        if config_id == "default":
+            await store.clear_active_model_config(scope)
+        else:
+            await store.set_active_model_config(scope, config_id)
+        return {
+            "status": "active",
+            "scope": scope,
+            "config_id": config_id,
+            "active_revision": revision,
+        }
 
     @api.get("/api/settings/tools/{scope}")
     async def get_tools(scope: str, request: Request):

@@ -257,10 +257,17 @@ from shuiyuan_auto_reply.infrastructure.persistence.resources import bounded_med
 
 
 class DeepSeekVisionMediaManager:
-    def __init__(self, *, state_store, forum_model, api_key: str) -> None:
+    def __init__(
+        self,
+        *,
+        state_store,
+        forum_model,
+        api_key: str,
+        base_url: str = "https://api.deepseek.com",
+    ) -> None:
         self.state_store = state_store
         self.forum_model = forum_model
-        self.files = DeepSeekFilesClient(api_key)
+        self.files = DeepSeekFilesClient(api_key, base_url)
         self.credential_fingerprint = hashlib.sha256(api_key.encode()).hexdigest()[:16]
 
     @bounded_media

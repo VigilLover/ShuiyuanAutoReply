@@ -10,6 +10,7 @@ import {
   PhFloppyDisk,
   PhGlobe,
   PhPlugsConnected,
+  PhPlus,
   PhRocketLaunch,
   PhShieldCheck,
   PhTextT,
@@ -18,6 +19,20 @@ import {
   PhX,
 } from '@phosphor-icons/vue'
 import { api } from '../api'
+import {
+  activeEntry,
+  configPayload,
+  draftError,
+  draftFromEntry,
+  endpointHost,
+  keyLabel,
+  KIND_LABELS,
+  newDraft,
+  sortModels,
+  usedBy,
+  type ModelConfigDraft,
+  type ModelConfigEntry,
+} from '../model-configs'
 import {
   draftCard,
   effectiveCard,
@@ -41,8 +56,20 @@ const tools = ref<any[]>([])
 const mcp = ref<any>({ url: null, configured: false, connected: false, error: null, tools: [] })
 const mcpLoading = ref(false)
 const activeSection = ref<'model' | 'prompt' | 'tools'>('model')
+const modelConfigs = ref<any>({ chat: [], image: [], active: {} })
+const configEditor = ref<ModelConfigDraft | null>(null)
+const configProbe = ref<{ ok: boolean; models: string[]; message: string } | null>(null)
+const configBusy = ref(false)
+const configError = ref('')
+const modelKinds = ['chat', 'image'] as const
 
 const current = () => profiles.value.find(item => item.scope === scope.value)
+const chatActive = computed(() => activeEntry('chat', scope.value, modelConfigs.value))
+const imageActive = computed(() => activeEntry('image', 'image', modelConfigs.value))
+const probeModels = computed(() =>
+  sortModels(configProbe.value?.models || [], configEditor.value?.model),
+)
+const defaultKeyVisible = computed(() => modelConfigs.value.active?.[scope.value] === 'default')
 const mode = computed(() => promptModeState(current()))
 const draftDirty = computed(() => {
   const item = current()
@@ -87,6 +114,7 @@ function countText(value: unknown) {
 async function load() {
   profiles.value = await api('/api/settings/profiles')
   snapshotDrafts()
+  await loadModelConfigs()
   await loadScopeSettings()
 }
 
@@ -99,6 +127,9 @@ async function changeScope(value: 'web' | 'forum') {
   scope.value = value
   promptPreview.value = ''
   promptView.value = 'edit'
+  configEditor.value = null
+  configProbe.value = null
+  configError.value = ''
   await loadScopeSettings()
 }
 
@@ -114,6 +145,113 @@ async function loadMcp() {
     mcp.value = { url: null, configured: false, connected: false, error: String(error), tools: [] }
   } finally {
     mcpLoading.value = false
+  }
+}
+
+async function loadModelConfigs() {
+  modelConfigs.value = await api('/api/settings/model-configs')
+}
+
+function startCreate(kind: 'chat' | 'image') {
+  configEditor.value = newDraft(kind)
+  configProbe.value = null
+  configError.value = ''
+}
+
+function startEdit(entry: ModelConfigEntry) {
+  configEditor.value = draftFromEntry(entry)
+  configProbe.value = null
+  configError.value = ''
+}
+
+function cancelEdit() {
+  configEditor.value = null
+  configProbe.value = null
+  configError.value = ''
+}
+
+async function saveConfig() {
+  const draft = configEditor.value
+  if (!draft) return
+  const problem = draftError(draft)
+  if (problem) {
+    configError.value = problem
+    return
+  }
+  configBusy.value = true
+  configError.value = ''
+  try {
+    const body = JSON.stringify(configPayload(draft))
+    if (draft.id) {
+      await api(`/api/settings/model-configs/${draft.id}`, { method: 'PUT', body })
+    } else {
+      await api('/api/settings/model-configs', { method: 'POST', body })
+    }
+    await loadModelConfigs()
+    setStatus('配置已保存')
+    cancelEdit()
+  } catch (error) {
+    configError.value = String(error)
+  } finally {
+    configBusy.value = false
+  }
+}
+
+async function probeConfig() {
+  const draft = configEditor.value
+  if (!draft) return
+  configBusy.value = true
+  configError.value = ''
+  configProbe.value = null
+  try {
+    const payload: Record<string, string> = {
+      kind: draft.kind,
+      base_url: draft.base_url,
+      model: draft.model,
+    }
+    if (draft.api_key.trim()) payload.api_key = draft.api_key.trim()
+    if (draft.id) payload.config_id = draft.id
+    configProbe.value = await api('/api/settings/model-configs/probe', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  } catch (error) {
+    configError.value = String(error)
+  } finally {
+    configBusy.value = false
+  }
+}
+
+async function deleteConfig(entry: ModelConfigEntry) {
+  if (!window.confirm(`删除配置《${entry.name}》？已启用的应用会回到默认配置。`)) return
+  try {
+    await api(`/api/settings/model-configs/${entry.id}`, { method: 'DELETE' })
+    if (configEditor.value?.id === entry.id) cancelEdit()
+    await load()
+    setStatus('配置已删除')
+  } catch (error) {
+    setStatus(String(error), true)
+  }
+}
+
+async function activateConfig(entry: ModelConfigEntry, target: 'web' | 'forum' | 'image') {
+  configBusy.value = true
+  try {
+    const result: any = await api(
+      `/api/settings/model-configs/${entry.id}/activate`,
+      { method: 'POST', body: JSON.stringify({ scope: target }) },
+    )
+    await load()
+    const where = target === 'image' ? '生图模型' : target === 'web' ? '网页对话' : '论坛自动回复'
+    setStatus(
+      target === 'image'
+        ? `${where}已切换到《${entry.name}》，下次生图生效`
+        : `${where}已切换到《${entry.name}》 · revision ${result.active_revision}`,
+    )
+  } catch (error) {
+    setStatus(String(error), true)
+  } finally {
+    configBusy.value = false
   }
 }
 
@@ -198,10 +336,6 @@ function setStatus(message: string, error = false) {
   statusError.value = error
 }
 
-function setApiFormat(value: 'chat_completions' | 'responses') {
-  current().draft.api_format = value
-}
-
 watch(promptView, view => {
   if (view === 'preview') previewPrompt()
 })
@@ -237,47 +371,149 @@ onMounted(load)
             <span class="revision-badge">ACTIVE · r{{ current().active_revision }}</span>
           </div>
 
-          <div v-if="activeSection === 'model'" class="settings-section">
-            <p class="section-intro">网页与论坛 Agent 已统一接入 DeepSeek 原生视觉模型。API Key 保存后只显示配置状态和末四位。</p>
-            <div class="provider-grid">
-              <div class="provider-card selected">
-                <strong>DeepSeek</strong>
-                <span><PhCheck :size="15" weight="bold" /> Vision 固定模型</span>
+          <div v-if="activeSection === 'model'" class="settings-section model-section">
+            <p class="section-intro">文字模型按应用启用（网页 / 论坛各自选用），生图模型全机器人共用。默认配置来自部署文件、只读；新增的配置存在本机，可随时一键切换。</p>
+
+            <div class="config-active-grid">
+              <div class="config-active-card">
+                <span class="eyebrow">{{ scope === 'web' ? '本应用启用 · 网页对话' : '本应用启用 · 论坛自动回复' }}</span>
+                <strong class="config-active-name">{{ chatActive?.name || '—' }}</strong>
+                <small>{{ chatActive?.model }} · {{ endpointHost(chatActive?.base_url) }}</small>
+                <small class="config-key" :class="{ ok: chatActive?.secret?.configured }">{{ keyLabel(chatActive?.secret, { fallback: chatActive?.source === 'custom' }) }}</small>
+              </div>
+              <div class="config-active-card">
+                <span class="eyebrow">全机器人启用 · 生图</span>
+                <strong>{{ imageActive?.name }}</strong>
+                <small>{{ imageActive?.model }} · {{ endpointHost(imageActive?.base_url) }}</small>
+                <small class="config-key" :class="{ ok: imageActive?.secret?.configured }">{{ keyLabel(imageActive?.secret, { fallback: imageActive?.source === 'custom' }) }}</small>
               </div>
             </div>
-            <div class="form-grid">
-              <label class="full-field"><span>模型名称</span><input value="deepseek-v4-flash-vision-exp" readonly /></label>
-              <div class="full-field api-format-field">
-                <span>API 格式</span>
-                <div class="api-format-grid" role="radiogroup" aria-label="DeepSeek API 格式">
-                  <button
-                    type="button"
-                    class="provider-card api-format-card"
-                    :class="{ selected: current().draft.api_format !== 'responses' }"
-                    role="radio"
-                    :aria-checked="current().draft.api_format !== 'responses'"
-                    @click="setApiFormat('chat_completions')"
-                  >
-                    <strong>Chat Completions</strong>
-                    <span v-if="current().draft.api_format !== 'responses'"><PhCheck :size="15" weight="bold" /> 已选择</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="provider-card api-format-card"
-                    :class="{ selected: current().draft.api_format === 'responses' }"
-                    role="radio"
-                    :aria-checked="current().draft.api_format === 'responses'"
-                    @click="setApiFormat('responses')"
-                  >
-                    <strong>Responses</strong>
-                    <span v-if="current().draft.api_format === 'responses'"><PhCheck :size="15" weight="bold" /> 已选择</span>
-                  </button>
+
+            <div v-for="kind in modelKinds" :key="kind" class="config-group">
+              <div class="config-group-head">
+                <div>
+                  <h3>{{ KIND_LABELS[kind] }}</h3>
+                  <p>{{ kind === 'chat' ? '每应用各自选用，切换走热切换通道' : '全机器人共用，切换后下一次生图即生效' }}</p>
                 </div>
-                <small>仅保存为草稿；点击“应用并热切换”后生效。</small>
+                <button class="outline-action compact" :disabled="configBusy" @click="startCreate(kind)"><PhPlus :size="14" />新建配置</button>
               </div>
-              <label class="full-field"><span>API Key</span><input v-model="current().draft.api_key" type="password" :placeholder="current().secret?.configured ? `已配置 ····${current().secret.last_four}` : '输入新密钥'" /></label>
+              <div class="config-list">
+                <div
+                  v-for="entry in modelConfigs[kind]"
+                  :key="entry.id"
+                  class="config-row"
+                  :class="{ selected: usedBy(entry, modelConfigs).length }"
+                >
+                  <div class="config-row-main">
+                    <strong>{{ entry.name }}</strong>
+                    <small>{{ entry.model }} · {{ endpointHost(entry.base_url) }}</small>
+                  </div>
+                  <span v-if="entry.source === 'default'" class="config-badge">部署配置</span>
+                  <span v-else-if="usedBy(entry, modelConfigs).length" class="config-badge used">{{ usedBy(entry, modelConfigs).join(' / ') }}</span>
+                  <span class="config-key" :class="{ ok: entry.secret?.configured }">{{ keyLabel(entry.secret) }}</span>
+                  <div class="config-row-actions">
+                    <button
+                      v-if="kind === 'chat'"
+                      class="text-action"
+                      :class="{ active: modelConfigs.active[scope] === entry.id }"
+                      :disabled="configBusy || modelConfigs.active[scope] === entry.id"
+                      @click="activateConfig(entry, scope)"
+                    >{{ modelConfigs.active[scope] === entry.id ? '本应用使用中' : '本应用启用' }}</button>
+                    <button
+                      v-else
+                      class="text-action"
+                      :class="{ active: modelConfigs.active.image === entry.id }"
+                      :disabled="configBusy || modelConfigs.active.image === entry.id"
+                      @click="activateConfig(entry, 'image')"
+                    >{{ modelConfigs.active.image === entry.id ? '使用中' : '启用' }}</button>
+                    <button v-if="entry.source !== 'default'" class="text-action" :disabled="configBusy" @click="startEdit(entry)">编辑</button>
+                    <button v-if="entry.source !== 'default'" class="text-action danger" :disabled="configBusy" @click="deleteConfig(entry)">删除</button>
+                  </div>
+                </div>
+              </div>
             </div>
-            <button class="outline-action" @click="testProvider"><PhPlugsConnected :size="16" />测试 Provider 连接</button>
+
+            <label v-if="defaultKeyVisible" class="full-field config-default-key">
+              <span>默认端点密钥（仅默认文字模型使用；配置自带的密钥优先）</span>
+              <input v-model="current().draft.api_key" type="password" :placeholder="current().secret?.configured ? `已配置 ····${current().secret.last_four}` : '输入新密钥'" />
+            </label>
+
+            <div v-if="configEditor" class="config-editor">
+              <div class="config-editor-head">
+                <div>
+                  <span class="eyebrow">{{ configEditor.id ? '编辑配置' : '新建配置' }}</span>
+                  <strong>{{ KIND_LABELS[configEditor.kind] }}</strong>
+                </div>
+                <button class="text-action" @click="cancelEdit"><PhX :size="15" />收起</button>
+              </div>
+
+              <div class="form-grid">
+                <label class="full-field"><span>名称</span><input v-model="configEditor.name" placeholder="例如：聚合站 A" /></label>
+                <label class="full-field"><span>Base URL</span><input v-model="configEditor.base_url" placeholder="https://provider.example/v1" spellcheck="false" /></label>
+                <label class="full-field">
+                  <span>API Key</span>
+                  <input
+                    v-model="configEditor.api_key"
+                    type="password"
+                    :placeholder="configEditor.id ? '留空表示不修改已保存的密钥' : 'sk-...（留空则用环境密钥）'"
+                  />
+                </label>
+                <div class="full-field model-picker-field">
+                  <span>模型</span>
+                  <div class="model-picker">
+                    <input v-model="configEditor.model" placeholder="选择或手动输入模型名" spellcheck="false" />
+                    <button class="outline-action compact" :disabled="configBusy" @click="probeConfig">
+                      <PhPlugsConnected :size="14" />{{ configBusy ? '检测中…' : '获取模型列表 / 测试连通' }}
+                    </button>
+                  </div>
+                  <div v-if="probeModels.length" class="model-options">
+                    <button
+                      v-for="model in probeModels"
+                      :key="model"
+                      type="button"
+                      class="model-chip"
+                      :class="{ selected: configEditor.model === model }"
+                      @click="configEditor.model = model"
+                    >{{ model }}</button>
+                  </div>
+                  <small v-if="configProbe" class="config-probe" :class="{ ok: configProbe.ok }">{{ configProbe.message }}</small>
+                </div>
+                <div v-if="configEditor.kind === 'chat'" class="full-field api-format-field">
+                  <span>API 格式</span>
+                  <div class="api-format-grid" role="radiogroup" aria-label="API 格式">
+                    <button
+                      type="button"
+                      class="provider-card api-format-card"
+                      :class="{ selected: configEditor.api_format !== 'responses' }"
+                      @click="configEditor.api_format = 'chat_completions'"
+                    >
+                      <strong>Chat Completions</strong>
+                      <span v-if="configEditor.api_format !== 'responses'"><PhCheck :size="15" weight="bold" /> 已选择</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="provider-card api-format-card"
+                      :class="{ selected: configEditor.api_format === 'responses' }"
+                      @click="configEditor.api_format = 'responses'"
+                    >
+                      <strong>Responses</strong>
+                      <span v-if="configEditor.api_format === 'responses'"><PhCheck :size="15" weight="bold" /> 已选择</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <p v-if="configEditor.kind === 'chat'" class="config-hint">
+                <PhWarningCircle :size="14" weight="fill" />论坛 Agent 依赖视觉能力；自定义端点若不支持 DeepSeek 的 /files 上传链路，图片理解可能失败（只影响看图，不影响文字回答）。
+              </p>
+              <p v-if="configError" class="config-error">{{ configError }}</p>
+              <div class="config-editor-actions">
+                <button class="outline-action" :disabled="configBusy" @click="saveConfig"><PhFloppyDisk :size="16" />保存配置</button>
+                <button class="text-action" @click="cancelEdit">取消</button>
+              </div>
+            </div>
+
+            <button class="outline-action" :disabled="configBusy" @click="testProvider"><PhPlugsConnected :size="16" />测试当前启用的文字模型（真实请求一次）</button>
           </div>
 
           <div v-else-if="activeSection === 'prompt'" class="settings-section prompt-section">
