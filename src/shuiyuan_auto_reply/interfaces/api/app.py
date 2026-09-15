@@ -41,6 +41,24 @@ from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 logger = logging.getLogger(__name__)
 DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
 
+# Tool names the agent registers, used as the settings-page fallback before the
+# first agent run writes its own catalog. Keep in sync with the registration in
+# MentionChatModel._load_shuiyuan_tools.
+RUNTIME_TOOL_NAMES = (
+    "inspect_images",
+    "get_user",
+    "read_tool_result",
+    "prepare_image_references",
+    "search_user",
+    "search_posts",
+    "recent_posts",
+    "search_posts_by_time",
+    "get_post",
+    "generate_image",
+    "search_mention_memory",
+    "manage_mention_memory",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SessionData:
@@ -692,7 +710,8 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             "fallback_model": None,
             "system_prompt": prompt,
             "enabled_tools": None,
-            "disabled_mcp_tools": [],
+            # Hardware状态与对话和检索无关，新配置默认关闭；可在设置页按应用重新打开。
+            "disabled_mcp_tools": ["get_hardware_status"],
         }
 
     @api.get("/api/settings/profiles")
@@ -715,7 +734,6 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 name
                 for name in (
                     "inspect_images",
-                    "get_users",
                     "read_tool_result",
                     "prepare_image_references",
                 )
@@ -947,23 +965,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 for item in catalog:
                     item["enabled"] = item["name"] in selected
             return catalog
-        names = [
-            "inspect_images",
-            "get_user",
-            "get_users",
-            "get_post_by_id",
-            "read_tool_result",
-            "prepare_image_references",
-            "search_user",
-            "search_user_by_id",
-            "search_posts",
-            "recent_posts",
-            "search_posts_by_time",
-            "get_post",
-            "generate_image",
-            "search_mention_memory",
-            "manage_mention_memory",
-        ]
+        names = list(RUNTIME_TOOL_NAMES)
         profile = await _store(request).get_profile(scope, _profile_defaults(scope))
         configured = profile["draft"].get("enabled_tools")
         enabled = set(configured) if configured is not None else set(names)

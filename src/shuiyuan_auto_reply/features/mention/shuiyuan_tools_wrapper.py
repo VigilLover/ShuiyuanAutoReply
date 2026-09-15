@@ -55,6 +55,7 @@ def cached_read(func):
             return {
                 "status": "error",
                 "error": "limit_must_be_1_to_20",
+                "message": "limit must be between 1 and 20",
                 "retryable": False,
             }
         turn = current_turn.get()
@@ -95,19 +96,36 @@ class ShuiyuanToolsWrapper:
     @cached_read
     async def search_user_by_term(
         self,
-        term: str,
+        term: str = "",
+        user_id: Optional[int] = None,
         include_avatar: bool = False,
         refresh: bool = False,
-    ) -> List[UserShort] | str:
+    ) -> List[UserShort] | UserShort | None | str:
         """
-        Search for users by a search term.
+        Find users: give a NON-EMPTY term to search by username or nickname, or give a user_id to resolve that single ID.
 
-        :param term: The search term to use for finding users. It has to be NON-EMPTY.
+        Search matches are not exhaustive; prefer get_user when the exact username is known.
+        A user_id result of nothing does NOT prove the user is absent.
+
+        :param term: The search term to use for finding users.
+        :param user_id: The ID of a single user to resolve; takes precedence when no term is given.
         :param include_avatar: Whether to include each user's avatar. Default is False.
             Set to True only if the avatar is needed for image generation or editing.
-        :return: A list of UserShort instances matching the search term or error message.
+        :return: A list of UserShort instances matching the search term, one UserShort for
+            a user_id lookup, or an error message.
         """
         try:
+            if user_id is not None and not term.strip():
+                return await self.search_user_by_user_id(
+                    user_id, include_avatar=include_avatar, refresh=refresh
+                )
+            if not term.strip():
+                return {
+                    "status": "error",
+                    "error": "provide_a_search_term_or_user_id",
+                    "message": "Pass a non-empty term, or a user_id",
+                    "retryable": False,
+                }
             users = await self.shuiyuan_model.search_user_by_term(term)
             return [UserShort(user, include_avatar=include_avatar) for user in users]
         except Exception as e:
@@ -150,16 +168,16 @@ class ShuiyuanToolsWrapper:
         refresh: bool = False,
         gap_id: str = "",
         scope_reason: str = "",
-        page: int = 0,
         limit: int = 10,
     ) -> List[PostShort] | str:
         """
-        Search posts and return summaries (up to 800 characters each). Use get_post/get_post_by_id for full content. Results may not exhaust the topic; do not assume complete coverage. refresh=True explicitly bypasses cached results.
+        Search posts and return summaries (up to 800 characters each); limit is 1-20. Use get_post for full content. Results may not exhaust the topic; do not assume complete coverage. refresh=True explicitly bypasses cached results.
 
         :param term: Optional search term to use for finding posts. Default is empty.
         :param latest: Whether to sort the results by created_at in descending order. Default is False.
         :param username: An optional username to filter posts by. Default is None.
         :param topic_id: An optional topic ID to filter posts by. Default is None.
+        :param limit: Maximum number of summaries to return, 1-20. Default is 10.
         :return: A list of PostShort instances matching the search criteria or error message.
         """
         try:
@@ -187,13 +205,12 @@ class ShuiyuanToolsWrapper:
         refresh: bool = False,
         gap_id: str = "",
         scope_reason: str = "",
-        page: int = 0,
     ) -> List[PostShort] | str:
         """
-        Read recent post summaries, up to 800 characters each. Use get_post for full text and reply relations. Start small; expand only for a specific information gap. refresh=True bypasses cached results.
+        Read the newest post summaries of a topic, in order, up to 800 characters each; limit is 1-20. Use get_post for full text and reply relations. Start small; expand only for a specific information gap. refresh=True bypasses cached results.
 
         :param topic_id: The ID of the topic to query.
-        :param limit: The maximum number of recent posts to retrieve. Default is 10.
+        :param limit: The maximum number of recent posts to retrieve, 1-20. Default is 10.
         :return: A list of PostShort instances for the recent posts in the topic or error message.
         """
         try:
@@ -207,15 +224,19 @@ class ShuiyuanToolsWrapper:
     @cached_read
     async def get_post_details_by_post_number(
         self,
-        topic_id: int,
-        post_number: int,
+        topic_id: Optional[int] = None,
+        post_number: Optional[int] = None,
+        post_id: Optional[int] = None,
         refresh: bool = False,
         cursor: int = 0,
         gap_id: str = "",
         scope_reason: str = "",
     ) -> PostShort | str:
         """
-        Read full raw text by topic ID and topic-local floor number. Cursor pages contain 12000 characters; use next_cursor to continue, or read_tool_result with result_id. refresh=True explicitly bypasses cached results.
+        Read one post's full raw text. Identify the post either by topic_id + post_number (the
+        topic-local floor number) or by its global post_id.
+
+        Cursor pages contain 12000 characters; use next_cursor to continue, or read_tool_result with result_id. refresh=True explicitly bypasses cached results.
         If a user give you a url like "https://shuiyuan.sjtu.edu.cn/t/topic_id/post_number",
         you can extract the topic_id and post_number from the url and use this function to get the post details.
         Also, for any post you've retrieved using tool, if the `topic_id` and `reply_to_post_number` are both not None,
@@ -223,9 +244,21 @@ class ShuiyuanToolsWrapper:
 
         :param topic_id: The ID of the topic the post belongs to.
         :param post_number: The post number within the topic.
+        :param post_id: The global post ID, when a tool returned post_id instead of a floor number.
         :return: An instance of PostShort containing the post information or error message.
         """
         try:
+            if post_id is not None:
+                return await self.get_post_by_id(
+                    post_id, refresh=refresh, cursor=cursor
+                )
+            if topic_id is None or post_number is None:
+                return {
+                    "status": "error",
+                    "error": "provide_topic_id_and_post_number_or_post_id",
+                    "message": "Pass topic_id + post_number, or post_id",
+                    "retryable": False,
+                }
             turn = current_turn.get()
             key = f"post_number:{topic_id}:{post_number}"
             if turn and not refresh and key in turn.cache:
@@ -249,15 +282,19 @@ class ShuiyuanToolsWrapper:
         refresh: bool = False,
         gap_id: str = "",
         scope_reason: str = "",
-        page: int = 0,
         limit: int = 10,
     ) -> List[PostShort] | str:
         """
-        Search post summaries within a topic and date range; results may not exhaust the range. Use get_post for full text. refresh=True bypasses cached results.
+        List summaries of one topic's posts, optionally narrowed to a date range; limit is 1-20.
+        This is how to reach floors that recent_posts (newest posts only) does not cover; results may not exhaust the range.
+
+        Date bounds are exclusive: for posts on exactly 2026-03-18 pass after_date=2026-03-18 and before_date=2026-03-19.
+        Use get_post for full text. refresh=True bypasses cached results.
 
         :param topic_id: The ID of the topic to search in.
         :param after_date: An optional start date (format: YYYY-MM-DD).
         :param before_date: An optional end date (format: YYYY-MM-DD).
+        :param limit: Maximum number of summaries to return, 1-20. Default is 10.
         :return: A list of PostShort instances matching the criteria or error message.
         """
         try:

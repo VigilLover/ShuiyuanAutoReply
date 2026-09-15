@@ -47,7 +47,7 @@ class ConvergenceRegressions(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(profile["active_revision"], 2)
             self.assertEqual(profile["active"]["system_prompt"], draft["system_prompt"])
 
-    async def test_changed_keywords_with_same_posts_trigger_review_and_filter_author(
+    async def test_changed_keywords_with_same_posts_trigger_review_without_rewriting_query(
         self,
     ):
         post = SimpleNamespace(
@@ -92,10 +92,13 @@ class ConvergenceRegressions(unittest.IsolatedAsyncioTestCase):
                 )
             self.assertEqual(turn.progress.phase, "review")
             self.assertEqual(len(turn.evidence), 1)
+            # The controller must not add an author filter the model never asked for:
+            # doing so silently changed which posts came back and the model then
+            # distrusted its own query scope.
             for (
                 call
             ) in model.search_post_details_by_optional_username_topic.await_args_list:
-                self.assertEqual(call.args[2:4], ("Alice", 42))
+                self.assertEqual(call.args[2:4], (None, 42))
         finally:
             current_turn.reset(token)
 

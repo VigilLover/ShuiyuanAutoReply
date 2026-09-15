@@ -8,11 +8,14 @@ from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 
 
 class PromptRepositoryTests(unittest.TestCase):
+    # Hashes are deliberately frozen: changing a policy template must update them
+    # by hand so a prompt edit is never an accident. Last revised with the tool-set
+    # cleanup (rules version 4).
     def test_wolf_system_prompt_v2_snapshot(self):
         bundle = FilePromptRepository().load("wolf_lumine", set())
         self.assertEqual(
             sha256(bundle.system_prompt.encode()).hexdigest(),
-            "6faf3bf490358b351cf8131aef2c63734dbeac9f9cc49432a522a3bdd83e372a",
+            "f0d688a66f3e88ec86504fb991edb9bc3fb426575223577ad0f7856d06b0162c",
         )
 
     def test_unknown_persona_falls_back_to_wolf(self):
@@ -20,7 +23,7 @@ class PromptRepositoryTests(unittest.TestCase):
         self.assertEqual(bundle.persona_id, "wolf_lumine")
         self.assertEqual(
             sha256(bundle.system_prompt.encode()).hexdigest(),
-            "e4a0fe06b8a63872747bec51b51f538f43854b5af88e7d5b6b12d1d3248e1f4d",
+            "f8670657f756a336be0e0f6483520af3eddf45e5333e9b367360b35da291896b",
         )
 
     def test_archive_and_multimodal_v2_snapshots(self):
@@ -29,11 +32,11 @@ class PromptRepositoryTests(unittest.TestCase):
         multimodal = repository.load("wolf_lumine", {"multimodal"}).system_prompt
         self.assertEqual(
             sha256(archive.encode()).hexdigest(),
-            "95b8b2902c74eaf0645afc75c1ef7761e8171a58f4eb0921a5e9b67ece26d392",
+            "07b9c88d4cb35888048baca3bfe14e41ec8f0d3c0acbdd7881ae9db5c8c274fa",
         )
         self.assertEqual(
             sha256(multimodal.encode()).hexdigest(),
-            "9b0674dd47c6d78ec25c5246693be9f08ee13a4e494efb4425f053ec68cdbd6c",
+            "bace2ee7ccb4f474f03e2de5fc3d9010cf82762a148ed03a15a010843b27835e",
         )
 
     def test_web_prompt_keeps_shared_rules_without_forum_write_capabilities(self):

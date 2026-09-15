@@ -543,7 +543,11 @@ class ManagedApiTests(unittest.TestCase):
                 self.assertEqual(
                     web_profile["active"]["api_format"], "chat_completions"
                 )
-                self.assertEqual(web_profile["active"]["disabled_mcp_tools"], [])
+                # Hardware状态与对话和检索无关，新配置默认关闭它。
+                self.assertEqual(
+                    web_profile["active"]["disabled_mcp_tools"],
+                    ["get_hardware_status"],
+                )
                 response_draft = {
                     **web_profile["draft"],
                     "api_format": "responses",
