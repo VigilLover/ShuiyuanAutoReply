@@ -95,6 +95,18 @@ class ForumQueue:
         finally:
             await db.close()
 
+    async def record_poll(self) -> None:
+        """Mark the poller alive without changing which action is handled next."""
+        db = await self.connect()
+        try:
+            await db.execute(
+                "UPDATE forum_cursor SET last_poll=? WHERE username=?",
+                (time.time(), self.username),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
     async def status(self, post_id, status, reply_id=None):
         db = await self.connect()
         try:

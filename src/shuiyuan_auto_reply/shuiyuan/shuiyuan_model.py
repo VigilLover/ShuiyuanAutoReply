@@ -245,7 +245,14 @@ class ShuiyuanModel:
         cls._request_chain = next_future
 
         # Wait until the previous request is done
-        await wait_for
+        try:
+            await wait_for
+        except BaseException:
+            # A cancelled waiter must not leave the chain unresolved: every later
+            # request would then wait forever on a future nobody ever sets.
+            if not next_future.done():
+                next_future.set_result(None)
+            raise
 
         try:
             # Calculate the wait time to enforce rate limiting

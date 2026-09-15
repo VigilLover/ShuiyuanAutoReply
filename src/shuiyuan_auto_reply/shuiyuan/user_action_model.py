@@ -9,6 +9,10 @@ from ..constants import settings
 from .objects import UserActionDetails
 from .shuiyuan_model import ShuiyuanModel
 
+# One poll request must never park the worker: an unanswered request used to hold
+# the round open until the next restart, which reads as stale polling everywhere.
+POLL_REQUEST_TIMEOUT_SECONDS = 60
+
 
 class BaseUserActionModel:
     """
@@ -89,7 +93,6 @@ class BaseUserActionModel:
         A routine to watch for new actions.
         """
         import json
-        from collections import deque
 
         from dacite import from_dict
 
@@ -181,33 +184,63 @@ class BaseUserActionModel:
                 cursor = await queue.cursor()
                 free = config["queue_limit"] - len(active)
                 if free > 0:
-                    offset = 0
-                    collected = deque(maxlen=free)
-                    while True:
-                        page = (
-                            await self.model.get_actions(
-                                self.username, self.action_type, offset=offset
-                            )
-                        ).user_actions
-                        if cursor is None:
-                            await queue.enqueue([], page[0].post_id if page else 0)
-                            break
-                        stop = False
-                        for action in page:
-                            if action.post_id == cursor:
-                                stop = True
-                                break
-                            collected.append(action)
-                        if stop or not page:
-                            ordered = list(reversed(collected))
-                            await queue.enqueue(
-                                ordered, ordered[-1].post_id if ordered else cursor
-                            )
-                            break
-                        offset += len(page)
+                    await self._poll_new_actions(queue, cursor, free)
+            except asyncio.TimeoutError:
+                logging.warning(
+                    "Forum poll request did not answer within %ss; retrying next interval",
+                    POLL_REQUEST_TIMEOUT_SECONDS,
+                )
             except Exception:
                 logging.exception("Forum polling failed")
             await asyncio.sleep(config["poll_interval"])
+
+    async def _poll_new_actions(self, queue, cursor, free: int) -> None:
+        """Enqueue actions newer than the cursor without walking the whole feed.
+
+        The cursor is a post id taken from the feed, but the feed is ordered by
+        action time, so a resurfaced old post can put the cursor out of reach and
+        the search degenerates into a full history walk: hundreds of rate-limited
+        requests that the health check reports as stale polling. Only ``free``
+        actions can ever be enqueued, so stop once that many are collected and
+        re-baseline onto the newest action instead of walking further.
+        """
+        offset = 0
+        collected = []
+        while True:
+            async with asyncio.timeout(POLL_REQUEST_TIMEOUT_SECONDS):
+                page = (
+                    await self.model.get_actions(
+                        self.username, self.action_type, offset=offset
+                    )
+                ).user_actions
+            # The poll itself succeeded; report it before the round finishes so a
+            # long round is not mistaken for a dead worker.
+            await queue.record_poll()
+            if cursor is None:
+                await queue.enqueue([], page[0].post_id if page else 0)
+                return
+            for action in page:
+                if action.post_id == cursor:
+                    ordered = list(reversed(collected))
+                    await queue.enqueue(
+                        ordered, ordered[-1].post_id if ordered else cursor
+                    )
+                    return
+                collected.append(action)
+            if not page or len(collected) >= free:
+                # Keep the newest actions the queue can still take, and move the
+                # cursor onto them so the next round is a single page again.
+                ordered = list(reversed(collected[:free]))
+                logging.warning(
+                    "Forum poll cursor %s is not among the newest %d actions; "
+                    "re-baselining on %s",
+                    cursor,
+                    len(collected),
+                    ordered[-1].post_id if ordered else cursor,
+                )
+                await queue.enqueue(ordered, ordered[-1].post_id if ordered else cursor)
+                return
+            offset += len(page)
 
     def _on_background_task_done(self, task: asyncio.Task) -> None:
         self._bg_tasks.discard(task)
