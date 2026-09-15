@@ -7,11 +7,8 @@ from dataclasses import dataclass, field
 READ_TOOLS = frozenset(
     {
         "get_post",
-        "get_post_by_id",
         "get_user",
-        "get_users",
         "search_user",
-        "search_user_by_id",
         "search_posts",
         "recent_posts",
         "search_posts_by_time",

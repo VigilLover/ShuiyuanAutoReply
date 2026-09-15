@@ -4,12 +4,12 @@
 
 ## 帖子和用户
 
-- `get_post(topic_id, post_number, refresh=False, cursor=0)` 根据话题内楼层读取；`get_post_by_id(post_id, refresh=False, cursor=0)` 使用全站帖子 ID。不能互换两种编号。
+- `get_post(topic_id=None, post_number=None, post_id=None, refresh=False, cursor=0)` 读单帖：用话题内楼层号（`topic_id` + `post_number`）或全站帖子 ID（`post_id`）定位，两种编号不能混用。缺两者之一时返回明确错误。
 - 精准读取优先获取 `raw`，缺失时补取详情，再回退为清理后的 HTML 文本。结果包含 `content_source`、回复关系、正文／引用提及、图片、来源和警告。
 - 精准正文每页 12000 字符，`truncated`、`next_cursor` 明确指示后续内容。用同一精准工具的 `cursor`，或 `read_tool_result(result_id, cursor)` 读取后续页。
 - 搜索正文摘要最多 800 字符，并说明返回结果不保证穷尽。标题可为空；不为标题增加整话题请求。
-- `get_user` 精确查用户名，`get_users` 批量查 1–50 个用户名，并发最多 4。输出保留输入映射和逐项错误。只在需要头像时传 `include_avatar=True`。
-- `search_user` 保留模糊发现用途。旧 `search_user_by_id` 依赖用户发帖记录，查不到不代表不存在。
+- `get_user` 精确查用户名，输出保留逐项错误。只在需要头像时传 `include_avatar=True`。多个已知用户逐个调用。
+- `search_user(term=None, user_id=None)` 负责模糊发现或按 user_id 反查；查不到不代表用户不存在（user_id 路径依赖用户发帖记录）。
 - 相同成功查询仅在当前轮复用；`refresh=True` 请求新数据。批量重试不会重复请求成功用户。非重试性 HTTP 错误不会盲目重试。
 
 ## 上下文和工具配置
@@ -18,7 +18,13 @@
 
 压缩只修改发送给模型的视图：完整结果在本轮内可回读，目标帖引用、最近两组调用和实体映射仍可访问。不设置按任务类型的搜索次数限制。
 
-默认工具目录包含新增工具。已有显式 `enabled_tools` 白名单不会自动扩大；需要使用新能力时，在管理界面的论坛／网页工具设置中启用 `get_user`、`get_users`、`get_post_by_id`、`read_tool_result`、`prepare_image_references`。若未启用 `read_tool_result`，运行时保留完整工具消息，避免产生不可回读的压缩内容；精准读帖仍可用 `cursor` 翻页。
+每次调用模型前都会校验调用／返回配对：同一轮内重复读取命中缓存时，回放的返回使用新的消息 ID，否则图状态按 ID 合并会顶掉较早的那条消息，使一次调用失去返回；出站前若仍存在没有返回的调用或先于调用出现的返回，会补齐或丢弃并记录 `tool.pairing_repaired`。OpenAI 兼容的 Responses 端点遇到这种输入会直接返回 400，失败的是整轮回答而不只是一次调用。
+
+MCP 的 `get_hardware_status` 与对话和检索无关，新配置默认关闭，可在设置页按应用打开。当前时间由执行控制消息直接给出，模型不必为此调用 `get_system_time`。
+
+默认工具目录包含新增工具。已有显式 `enabled_tools` 白名单不会自动扩大；需要使用新能力时，在管理界面的论坛／网页工具设置中启用 `get_user`、`read_tool_result`、`prepare_image_references`。若未启用 `read_tool_result`，运行时保留完整工具消息，避免产生不可回读的压缩内容；精准读帖仍可用 `cursor` 翻页。
+
+同一能力只暴露一个工具入口：按 ID 查人并入 `search_user`，按全局 `post_id` 读帖并入 `get_post`，近义词工具会让模型在同一个读操作上换名字重试。工具 schema 里声明的 `limit` 一律为 1–20（默认 10），超出范围返回带说明的错误；不支持分页的工具不再暴露 `page` 参数。
 
 ## 参考图片
 
@@ -34,7 +40,7 @@
 
 观察 `context.evidence` 的结果数及缓存命中数、`image.references_prepared` 的成功／失败计数，以及上下文投影的估算 token 日志。线上验证应另外安排，不在离线测试中调用论坛或付费生图服务。
 
-## 托管提示词与迁移（规则版本 3）
+## 托管提示词与迁移（规则版本 4）
 
 运行配置支持 `managed` 和 `legacy`。托管模式每次构建 Runtime 都组合当前代码规则、独立人设和补充要求；人设中的花括号按普通文本处理。旧完整 `system_prompt` 仍保留，供审阅和旧版本读取。已有完整自定义提示词保持 legacy，不猜测拆分内容。
 
@@ -54,7 +60,7 @@
 
 `update_task_progress` 是不能通过普通工具白名单关闭的内部状态工具，不读取外部数据。记录目标、已确认作者、缺口 ID、带证据 ID 的结论和新策略。作者需存在于本轮证据中；结论必须引用存在的证据，不能用更新状态清零执行预算。
 
-论坛搜索支持 `gap_id`、`scope_reason`、`limit`、`page`。默认每页 10 条，最多 20 条；当前适配器仅支持 page=0，其他页明确返回 `pagination_unsupported`。当仅有一个未解决缺口时，控制器可自动关联该缺口；MCP 工具无需修改其服务端 schema。确认单一作者后自动补齐 username；当前话题默认补齐 topic_id。多作者集合需要逐作者查询或说明扩大范围的理由。新的精准定位需要来源、真实回复关系或对应缺口的明确说明。
+论坛搜索支持 `gap_id`、`scope_reason`、`limit`（1–20）。当仅有一个未解决缺口时，控制器可自动关联该缺口；MCP 工具无需修改其服务端 schema。当前话题默认补齐 topic_id。作者过滤严格保持模型传入的取值，控制器不再自动补齐 username：静默改写会让模型拿到自己没有要求的结果。多作者集合需要逐作者查询或说明扩大范围的理由。新的精准定位需要来源、真实回复关系或对应缺口的明确说明。
 
 默认控制参数位于 `[common.runtime]`：
 
@@ -77,13 +83,13 @@
 
 ## 显式查看图片
 
-普通论坛读帖和文字搜索只返回图片元信息；新增 `inspect_images(urls=None, evidence_ids=None, description="")`，按需选择一至四张图。当前用户直接附带图片仍自动加载；目标帖图片不再自动下载。显式 `image_search` 保留展示素材能力。合照使用 `get_users` → `prepare_image_references` → `generate_image`，不要求逐张识图。
+普通论坛读帖和文字搜索只返回图片元信息；新增 `inspect_images(urls=None, evidence_ids=None, description="")`，按需选择一至四张图。当前用户直接附带图片仍自动加载；目标帖图片不再自动下载。显式 `image_search` 保留展示素材能力。合照使用 `get_user` → `prepare_image_references` → `generate_image`，不要求逐张识图。
 
 `inspect_images` 属于内置可选工具；已有白名单需要手动启用，管理页会提示缺失能力。原图、secure-uploads 和头像走论坛认证路径，失败后不降级成无鉴权公开下载。成功字节和确定性失败在本轮共享；查看图片与准备参考图复用已下载字节。无效图片、读取失败均不能作为已理解画面的依据。
 
 ## 验证与发布检查
 
-离线回归覆盖迁移幂等性、草稿隔离、纯文本花括号、精确作者过滤、同批状态更新及搜索、换关键词但相同结果、无视复盘指令、有限续查、确定性错误以及按需图片路径。
+离线回归覆盖迁移幂等性、草稿隔离、纯文本花括号、查询范围不被改写、同批状态更新及搜索、换关键词但相同结果、无视复盘指令、有限续查、确定性错误、调用／返回配对以及按需图片路径。
 
 脱敏评测集位于 `test/fixtures/agent_convergence/scenarios.json`，包含音乐偏好、主楼改写、名单合照和必要广泛研究。以下命令默认只显示样例，不调用模型：
 
@@ -99,6 +105,6 @@ uv run --no-sync python scripts/eval_agent_convergence.py --live-model --scenari
 
 此入口使用 `DEEPSEEK_API_KEY`。论坛、参考图和图片生成工具均为脱敏模拟器，不访问真实论坛或生成真实图片；输出包含答案、人工验收要求和调用指标。它验证真实模型的决策与控制器配合，不代替线上多模态验收。默认离线 pytest 不运行这些付费调用。
 
-新增事件 `tool.execution` 记录补齐范围后的实际参数；`retrieval.batch`、`retrieval.progress`、`retrieval.finished` 记录新增证据、复盘、重复、轮次、查询、缓存、媒体及停止原因。`forum_http_requests` 单独统计论坛 GET，包括补取和重试。排查时先确认 `runtime.profile_used`，再分析调用轨迹。
+新增事件 `tool.execution` 记录补齐范围后的实际参数；`retrieval.batch`、`retrieval.progress`、`retrieval.finished` 记录新增证据、复盘、重复、轮次、查询、缓存、媒体及停止原因；`model.failed` 记录模型调用失败的阶段与错误正文（模型提供商返回的 4xx 正文会一并记录）；`tool.pairing_repaired` 记录出站前修补的调用 ID。`forum_http_requests` 单独统计论坛 GET，包括补取和重试。排查时先确认 `runtime.profile_used`，再分析调用轨迹。
 
 沿用 `backward-compatible / recent:2` 发布策略，没有新增表。发布前仍须运行 Release 的旧镜像兼容性检查；本地 JSON 配置回归不能替代旧版本容器测试。回滚后旧程序读取归档的完整提示词，新模式的人设与补充要求不会自动转换成旧格式。发布、部署和线上发帖验收单独执行。

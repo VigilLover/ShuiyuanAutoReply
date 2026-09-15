@@ -916,6 +916,7 @@ class ShuiyuanModel:
 
         return topic_details.title, post_details[:limit]
 
+    @async_retry(log_traceback=True)
     async def _search_post_details_by_time_range_and_topic(
         self,
         topic_id: int,
@@ -977,8 +978,7 @@ class ShuiyuanModel:
         :param before_date: An optional end date (format: YYYY-MM-DD).
         :return: A dictionary mapping topic titles to lists of detailed post information.
         """
-        return await self._retry_wrapper(
-            self._search_post_details_by_time_range_and_topic,
+        return await self._search_post_details_by_time_range_and_topic(
             topic_id,
             after_date,
             before_date,

@@ -114,7 +114,7 @@ class PostShort:
             "total_chars": len(content),
             "result_id": self.result_id,
             "next_cursor": cursor + limit if len(content) > cursor + limit else None,
-            "read_full": {"tool": "get_post_by_id", "post_id": self.id},
+            "read_full": {"tool": "get_post", "post_id": self.id},
             "warnings": self.warnings,
         }
 
@@ -142,7 +142,7 @@ class PostSearchResults(list):
                 "posts": [post.to_dict() for post in self],
                 "returned_count": len(self),
                 "coverage": "not_guaranteed_complete",
-                "continuation": "Use get_post/get_post_by_id for full content; refine query for additional matches.",
+                "continuation": "Use get_post for full content; refine query for additional matches.",
             },
             ensure_ascii=False,
         )

@@ -63,7 +63,7 @@ class TurnResults:
     def observe(self, value: Any, *, tool: str = "") -> set[str]:
         added = set()
         for identity, record in source_records(value):
-            kind = "full" if tool in {"get_post", "get_post_by_id"} else "summary"
+            kind = "full" if tool == "get_post" else "summary"
             digest = content_digest(record)
             key = identity + ":" + kind + ":" + digest[:16]
             if key in self.evidence:

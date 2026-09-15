@@ -54,11 +54,8 @@ class OfflineChat(MentionChatModel):
                 tool_calls=[
                     {
                         "id": "first",
-                        "name": "get_users",
-                        "args": {
-                            "usernames": ["Alice", "alice"],
-                            "include_avatar": True,
-                        },
+                        "name": "get_user",
+                        "args": {"username": "Alice", "include_avatar": True},
                     }
                 ],
             )
@@ -110,7 +107,22 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("确认用户资料", result)
         model.get_post_details_by_post_number.assert_awaited_once_with(42, 7)
+        # The second, identical read is answered from this turn's cache; the replay must
+        # still pair with its own call, because a reused message id used to collapse the
+        # pair on the next model request.
         model.get_user_by_username.assert_awaited_once_with("Alice")
+        pairs: dict[str, bool] = {}
+        for message in runtime.prompts[2]:
+            for tool_call in getattr(message, "tool_calls", None) or []:
+                pairs[tool_call["id"]] = False
+            answered = getattr(message, "tool_call_id", None)
+            if answered:
+                pairs[answered] = True
+        self.assertTrue(pairs)
+        self.assertEqual(
+            [call_id for call_id, answered in pairs.items() if not answered],
+            [],
+        )
         first = "\n".join(str(m.content) for m in runtime.prompts[0])
         self.assertIn("名单：@Alice", first)
         self.assertIn("reply_to_post_number", first)
@@ -119,14 +131,37 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_tools_expose_parameters_and_managed_description(self):
         runtime = OfflineChat(SimpleNamespace())
         catalog = {tool.name: tool for tool in runtime.tools}
+        properties = catalog["get_post"].args_schema.model_json_schema()["properties"]
+        self.assertIn("cursor", properties)
+        # get_post absorbs the global-id lookup; search_user absorbs the id lookup.
+        self.assertIn("post_id", properties)
         self.assertIn(
-            "cursor", catalog["get_post"].args_schema.model_json_schema()["properties"]
+            "user_id",
+            catalog["search_user"].args_schema.model_json_schema()["properties"],
         )
         self.assertIn(
             "reference_set_id",
             catalog["generate_image"].args_schema.model_json_schema()["properties"],
         )
         self.assertIn("prepare_image_references", catalog["generate_image"].description)
+        # One entry point per capability: near-synonym tools made the model retry the
+        # same read through a different name instead of using the result it had.
+        for removed in ("get_post_by_id", "get_users", "search_user_by_id"):
+            self.assertNotIn(removed, catalog)
+
+    async def test_settings_tool_list_has_no_stale_names(self):
+        from shuiyuan_auto_reply.interfaces.api.app import RUNTIME_TOOL_NAMES
+
+        runtime = OfflineChat(SimpleNamespace())
+        registered = {tool.name for tool in runtime.tools}
+        # The settings page falls back to this list before the first agent run; a
+        # removed tool left behind here would be advertised but never callable.
+        # inspect_images needs a multimodal provider and the memory tools come from
+        # the memory model, neither of which this harness registers.
+        self.assertEqual(
+            set(RUNTIME_TOOL_NAMES) - registered,
+            {"inspect_images", "search_mention_memory", "manage_mention_memory"},
+        )
 
     async def test_generated_artifact_is_delivered_with_missing_reference_notice(self):
         from shuiyuan_auto_reply.application.tool_results import TurnResults

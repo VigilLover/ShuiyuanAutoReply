@@ -765,7 +765,7 @@ def create_image_generation_tool(model, *, state_store=None):
 
         提示词(prompt)编写规则（根据是否有参考图区别对待）：
         - 有参考图（reference_images 非空）：prompt 简要准确描述用户要求，保留用户明确指定的风格、布局及修改要求，不擅自添加要求，让参考图提供形象依据，并且强调"根据给定的参考图生成图片"。
-        - 需要参考水源用户头像时，已知用户名使用 get_user/get_users(include_avatar=True)，不确定名称才搜索。用 prepare_image_references 准备选中素材，以标签描述对象并传 reference_set_id；不要自行添加数字编号。
+        - 需要参考水源用户头像时，已知用户名使用 get_user(include_avatar=True)，不确定名称才搜索。用 prepare_image_references 准备选中素材，以标签描述对象并传 reference_set_id；不要自行添加数字编号。
         - 无参考图（reference_images 为空）：必须用纯中文进行极其详细的画面描述，涵盖外貌、服饰、姿态、光影、背景、氛围等。如果绘画对象是人物，画风默认二次元精美插画，强调"唯美、精细、干净通透"，避免过度锐化、畸变与崩坏。若用户提供设定/附件/印象，必须将关键元素具象化融入画面。
 
         :param prompt: 详细的纯中文生图提示词。

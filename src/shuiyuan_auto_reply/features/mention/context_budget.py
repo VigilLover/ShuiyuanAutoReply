@@ -35,6 +35,50 @@ def compact_content(content, limit: int, *, result_id=None):
     )
 
 
+def repair_tool_pairing(messages):
+    """Return ``(messages, repaired_call_ids)`` with every tool call answered.
+
+    OpenAI-compatible Responses endpoints reject an input where a function call
+    has no matching output, or where an output appears before its call. A single
+    broken pair therefore fails every later request in the turn. Repair the
+    projection here so one bad pair costs one round instead of the whole answer.
+    """
+    seen: set[str] = set()
+    kept: list = []
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            if message.tool_call_id not in seen:
+                continue
+        else:
+            for call in getattr(message, "tool_calls", None) or []:
+                if call.get("id"):
+                    seen.add(call["id"])
+        kept.append(message)
+    answered = {
+        m.tool_call_id for m in kept if isinstance(m, ToolMessage) and m.tool_call_id
+    }
+    result: list = []
+    repaired: list[str] = []
+    for message in kept:
+        result.append(message)
+        for call in getattr(message, "tool_calls", None) or []:
+            call_id = call.get("id")
+            if call_id and call_id not in answered:
+                repaired.append(call_id)
+                result.append(
+                    ToolMessage(
+                        content=(
+                            "Tool result unavailable in this context; call the tool "
+                            "again if this result is still needed."
+                        ),
+                        tool_call_id=call_id,
+                        name=call.get("name") or "",
+                        status="error",
+                    )
+                )
+    return result, repaired
+
+
 def project_messages(messages, budget: int = 24_000, *, preserve_first: bool = True):
     """Keep call/result pairing, save full evidence before shortening the projection."""
     messages = list(messages)

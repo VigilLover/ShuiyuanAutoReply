@@ -107,11 +107,11 @@ async def evaluate(scenario, model_name):
         if t.name
         in {
             "get_post",
-            "get_post_by_id",
             "get_user",
-            "get_users",
+            "search_user",
             "search_posts",
             "recent_posts",
+            "search_posts_by_time",
             "read_tool_result",
         }
     ]

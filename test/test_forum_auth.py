@@ -102,6 +102,25 @@ class ForumAuthTests(unittest.IsolatedAsyncioTestCase):
                 )
 
 
+class TimeRangeSearchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_time_range_search_delegates_to_the_retrying_helper(self):
+        # The public helper used to call a removed _retry_wrapper, so every
+        # search_posts_by_time call failed with AttributeError.
+        model = ShuiyuanModel.__new__(ShuiyuanModel)
+        calls = []
+
+        async def fake_search(topic_id, after_date=None, before_date=None):
+            calls.append((topic_id, after_date, before_date))
+            return {"标题": []}
+
+        model._search_post_details_by_time_range_and_topic = fake_search
+        result = await model.search_post_details_by_time_range_and_topic(
+            7, "2026-01-01", "2026-01-02"
+        )
+        self.assertEqual(result, {"标题": []})
+        self.assertEqual(calls, [(7, "2026-01-01", "2026-01-02")])
+
+
 class CookieJarDistributionTests(unittest.IsolatedAsyncioTestCase):
     async def test_cookies_reach_forum_and_jaccount_during_sso(self):
         # get_cookies.ipynb writes a flat jAccount cookie dict; the SSO bounce
