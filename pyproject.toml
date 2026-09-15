@@ -63,6 +63,7 @@ include = ["shuiyuan_auto_reply*"]
 [tool.setuptools.package-data]
 shuiyuan_auto_reply = [
     "prompts/manifest.json",
+    "prompts/legacy_defaults.json",
     "prompts/personas/*.txt",
     "prompts/policies/*.txt",
     "prompts/capabilities/*.txt",
