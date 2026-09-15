@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -36,6 +37,9 @@ class TurnResults:
     references: dict[str, Any] = field(default_factory=dict)
     cursors: dict[str, Any] = field(default_factory=dict)
     notices: list[str] = field(default_factory=list)
+    topic_coverage: dict[int, set[int]] = field(default_factory=dict)
+    completed_topics: set[int] = field(default_factory=set)
+    topic_titles: dict[int, str] = field(default_factory=dict)
     cache_hits: int = 0
     deadline: float = field(default_factory=lambda: time.monotonic() + 900)
 
@@ -65,18 +69,18 @@ class TurnResults:
         added = set()
         for identity, record in source_records(value):
             kind = "full" if tool == "forum_read" else "summary"
-            digest = content_digest(record)
-            key = identity + ":" + kind + ":" + digest[:16]
-            if key in self.evidence:
+            existing = self.evidence.get(identity)
+            if existing and (existing["kind"] == "full" or kind == "summary"):
                 continue
             result_id = self.save(record)
             author = record.get("author") or {}
             author_username = (
                 author.get("username") if isinstance(author, dict) else str(author)
             )
-            self.evidence[key] = {
+            self.evidence[identity] = {
                 "identity": identity,
                 "kind": kind,
+                "digest": content_digest(record),
                 "result_id": result_id,
                 "username": author_username or record.get("username"),
                 "topic_id": record.get("topic_id"),
@@ -86,8 +90,49 @@ class TurnResults:
                     :300
                 ],
             }
-            added.add(key)
+            added.add(identity)
         return added
+
+    def note_topic_page(
+        self, topic_id: int, items: list[dict], *, complete: bool, title: str = ""
+    ) -> None:
+        coverage = self.topic_coverage.setdefault(topic_id, set())
+        for item in items:
+            ref = str(item.get("ref", ""))
+            match = re.fullmatch(rf"forum:{topic_id}/(\d+)", ref)
+            if match:
+                coverage.add(int(match.group(1)))
+        if title:
+            self.topic_titles[topic_id] = title
+        if complete:
+            self.completed_topics.add(topic_id)
+
+    @staticmethod
+    def _topic_only_search(args: dict) -> int | None:
+        if any(args.get(key) for key in ("username", "after_date", "before_date")):
+            return None
+        topic_id = args.get("topic_id")
+        query = str(args.get("query", "") or "").strip()
+        matches = re.findall(r"(?<!\S)topic:(\d+)(?=\s|$)", query, re.I)
+        if topic_id is None and matches:
+            topic_id = int(matches[0])
+        query = re.sub(r"(?<!\S)topic:\d+(?=\s|$)", "", query, flags=re.I)
+        query = re.sub(r"(?<!\S)order:(?:latest|oldest)(?=\s|$)", "", query, flags=re.I)
+        return int(topic_id) if topic_id and not query.strip() else None
+
+    def is_redundant_completed_call(self, tool: str, args: dict) -> bool:
+        if tool not in {"forum_search", "forum_read"}:
+            return False
+        request = args
+        if args.get("cursor"):
+            request = self.cursors.get(args["cursor"], {}).get("request", {})
+        if tool == "forum_read":
+            if request.get("post_id") or request.get("post_number"):
+                return False
+            topic_id = request.get("topic_id")
+        else:
+            topic_id = self._topic_only_search(request)
+        return bool(topic_id and int(topic_id) in self.completed_topics)
 
     def read(
         self,

@@ -145,6 +145,7 @@ async def _forum_read_cursor_accepts_matching_topic_locator():
             cursor=cursor, topic_id=42, order="oldest", limit=60
         )
         assert json.loads(continued)["items"][0]["ref"] == "forum:42/2"
+        assert model.read_topic_post_page.await_args.kwargs["limit"] == 20
         conflict, _ = await tools.forum_read(cursor=cursor, topic_id=43)
         assert json.loads(conflict)["code"] == "cursor_conflict"
     finally:

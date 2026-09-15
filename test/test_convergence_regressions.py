@@ -105,6 +105,55 @@ class ConvergenceRegressions(unittest.IsolatedAsyncioTestCase):
         finally:
             current_turn.reset(token)
 
+    async def test_completed_topic_short_circuits_restarted_unfiltered_read(self):
+        post = SimpleNamespace(
+            id=10,
+            topic_id=42,
+            post_number=1,
+            reply_to_post_number=None,
+            user_id=1,
+            username="Alice",
+            name="Alice",
+            raw="完整内容",
+            cooked="<p>完整内容</p>",
+            created_at="2026-09-15T00:00:00Z",
+        )
+        model = SimpleNamespace(
+            read_topic_post_page=AsyncMock(return_value=("Topic", [post], 1, False))
+        )
+        runtime = OfflineChat(model)
+        turn = TurnResults()
+        token = current_turn.set(turn)
+        try:
+            call = lambda call_id: {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": call_id,
+                                "name": "forum_read",
+                                "args": {"topic_id": 42, "order": "oldest"},
+                            }
+                        ],
+                    )
+                ]
+            }
+            first = await runtime._execute_tools(call("first"))
+            self.assertTrue(json.loads(first["messages"][0].content)["complete"])
+            self.assertEqual(turn.topic_coverage[42], {1})
+            self.assertEqual(turn.progress.phase, "investigate")
+
+            second = await runtime._execute_tools(call("second"))
+            payload = json.loads(second["messages"][0].content)
+            self.assertEqual(payload["items"][0]["ref"], "forum:42/1")
+            self.assertTrue(payload["complete"])
+            self.assertEqual(turn.progress.phase, "final")
+            self.assertEqual(turn.control.stop_reason, "source_complete")
+            model.read_topic_post_page.assert_awaited_once()
+        finally:
+            current_turn.reset(token)
+
     async def test_removed_progress_tool_is_rejected_while_search_runs(self):
         model = SimpleNamespace(
             search_forum=AsyncMock(return_value={"posts": [], "topics": []})

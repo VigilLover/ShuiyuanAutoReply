@@ -8,6 +8,7 @@ from typing import Literal
 from bs4 import BeautifulSoup
 
 from shuiyuan_auto_reply.application.tool_results import (
+    TurnResults,
     cached_query,
     current_turn,
     tool_error,
@@ -230,6 +231,15 @@ class ShuiyuanToolsWrapper:
                     sort=sort,
                 )
                 page, offset = 1, 0
+            turn = current_turn.get()
+            scope = state.get("request", {}) if cursor else request
+            completed_topic = TurnResults._topic_only_search(scope) if turn else None
+            if completed_topic in (turn.completed_topics if turn else set()):
+                return self._ok(
+                    [],
+                    topic=turn.topic_titles.get(completed_topic),
+                    complete=True,
+                )
             self._require_operation("forum_search", kind)
             data = await cached_query(
                 f"forum_search:{search_query}:{page}",
@@ -380,7 +390,13 @@ class ShuiyuanToolsWrapper:
                 )
                 posts, title = [post], ""
             elif topic_id is not None:
-                fetch_limit = min(limit, 5)
+                turn = current_turn.get()
+                if not cursor and turn and topic_id in turn.completed_topics:
+                    payload = self._ok(
+                        [], topic=turn.topic_titles.get(topic_id), complete=True
+                    )
+                    return json.dumps(payload, ensure_ascii=False), []
+                fetch_limit = limit
                 (
                     title,
                     posts,
@@ -445,6 +461,17 @@ class ShuiyuanToolsWrapper:
                     }
                 )
             payload = self._ok(items, topic=title, next_cursor=next_cursor)
+            if not exact:
+                turn = current_turn.get()
+                if turn:
+                    turn.note_topic_page(
+                        topic_id,
+                        items,
+                        complete=not has_more,
+                        title=title,
+                    )
+                if not has_more:
+                    payload["complete"] = True
             artifacts = short if exact and images != "none" else []
             return json.dumps(payload, ensure_ascii=False), artifacts
         except Exception as exc:

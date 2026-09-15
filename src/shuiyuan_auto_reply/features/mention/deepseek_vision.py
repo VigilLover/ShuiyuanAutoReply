@@ -32,7 +32,11 @@ from shuiyuan_auto_reply.infrastructure.image_transport import (
 )
 from shuiyuan_auto_reply.infrastructure.persistence.state import state_directory
 
-from .mention_multimodal import extract_image_urls, normalize_shuiyuan_image_url
+from .mention_multimodal import (
+    SHUIYUAN_HOSTS,
+    extract_image_urls,
+    normalize_shuiyuan_image_url,
+)
 
 SUPPORTED_MIME_TYPES = {
     "image/jpeg": ".jpg",
@@ -586,7 +590,10 @@ class DeepSeekVisionMediaManager:
 
             for public_url in extract_public_image_urls(combined):
                 # Forum URLs must never fall back to an unauthenticated public request.
-                if normalize_shuiyuan_image_url(public_url):
+                if (
+                    normalize_shuiyuan_image_url(public_url)
+                    or urlparse(public_url).netloc.lower() in SHUIYUAN_HOSTS
+                ):
                     continue
                 if len(results) >= limit:
                     return results

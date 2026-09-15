@@ -1439,6 +1439,17 @@ class MentionChatModel:
                 new_evidence=len(added) + len(turn.read_pages) - prior_pages,
                 reads=sum(c["name"] in READ_TOOLS for c in calls),
             )
+            read_calls = [c for c in calls if c["name"] in READ_TOOLS]
+            if (
+                read_calls
+                and not added
+                and len(turn.read_pages) == prior_pages
+                and all(
+                    turn.is_redundant_completed_call(c["name"], c["args"])
+                    for c in read_calls
+                )
+            ):
+                turn.control.stop(turn.progress, "source_complete")
             await emit_event(
                 "retrieval.batch",
                 {"new_evidence": len(added), **turn.control.metrics()},
