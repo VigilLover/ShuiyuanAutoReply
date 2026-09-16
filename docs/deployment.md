@@ -189,7 +189,7 @@ python3 scripts/deploy/prepare_sources.py --mcp-source /absolute/path/to/SimpleM
 
 脚本只写 `deploy/vendor/` 下的独立构建副本，不修改原仓库。固定版本是：
 
-- SimpleMCP：`2ab491f5fe4c9a7cec8bf44bafa3363676e31a96`
+- SimpleMCP：`4524368d28c60cdbe2ce058e3ffe2fd551772cf4`
 - pgvector 0.8.2：`cab9da72c04353f143bb06b42ab70a403daac64a`
 
 版本无法取得、已有副本被修改时会失败，不会自动换成最新版本。
@@ -210,7 +210,7 @@ DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f deploy/compose.yaml build 
 没有镜像仓库时：
 
 ```bash
-docker save -o /tmp/shuiyuan-images.tar shuiyuan-bot:remote-v1 shuiyuan-postgres:17.6-vector0.8.2 shuiyuan-mcp:2ab491f
+docker save -o /tmp/shuiyuan-images.tar shuiyuan-bot:remote-v1 shuiyuan-postgres:17.6-vector0.8.2 shuiyuan-mcp:4524368
 scp /tmp/shuiyuan-images.tar YOUR_SERVER:/tmp/
 # 服务器上：
 docker load -i /tmp/shuiyuan-images.tar

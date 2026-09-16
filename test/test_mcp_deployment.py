@@ -2,7 +2,7 @@ import importlib.util
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_SIMPLEMCP_REVISION = "2ab491f5fe4c9a7cec8bf44bafa3363676e31a96"
+EXPECTED_SIMPLEMCP_REVISION = "4524368d28c60cdbe2ce058e3ffe2fd551772cf4"
 
 
 def _prepare_sources_module():

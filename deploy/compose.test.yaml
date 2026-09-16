@@ -36,7 +36,7 @@ services:
       retries: 15
     networks: [validation]
   mcp:
-    image: ${MCP_IMAGE:-shuiyuan-mcp:2ab491f}
+    image: ${MCP_IMAGE:-shuiyuan-mcp:4524368}
     read_only: true
     cap_drop: [ALL]
     volumes: [mcp_temp:/var/tmp/mcp]
