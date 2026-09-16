@@ -26,6 +26,19 @@ MCP 的 `get_hardware_status` 与对话和检索无关，新配置默认关闭�
 
 同一能力只暴露一个工具入口：按 ID 查人并入 `search_user`，按全局 `post_id` 读帖并入 `get_post`，近义词工具会让模型在同一个读操作上换名字重试。工具 schema 里声明的 `limit` 一律为 1–20（默认 10），超出范围返回带说明的错误；不支持分页的工具不再暴露 `page` 参数。
 
+## 外部网页读取
+
+`web_search` 和 `web_read` 都通过 MCP；Bot 不再维护第二份网页抓取实现。`web_search` 会先解包 MCP ContentBlock，再恢复 `title`、`url` 和 `snippet`。`web_read` 同时兼容旧版 MCP 的纯文本返回和新版结构化 envelope。
+
+`web_read(url, mode="auto", query=None, json_path=None, fields=None, max_results=20)` 是唯一网页读取入口：
+
+- `auto` 根据 Content-Type 和可解析性选择文档、JSON 或普通文本；`document` 提取 HTML 主体并去除导航、页眉页脚、侧栏、表单和隐藏节点；`raw` 只在确需原文时使用。
+- `query` 对文档返回命中块及相邻上下文，对 JSON 集合过滤包含关键词的对象。大型接口优先组合 `json_path` 和 `fields`，避免图片 URL、SKU、库存明细等无关字段占满上下文。
+- 默认每页 6000 字符，最多 12000。分页以 MCP 清洗后的完整表示为基准；`next_cursor` 是绑定 URL、模式、查询和字段投影的不透明游标。继续翻页时可以重复传入相同 URL，但不能改变提取条件。
+- 每页证据包含 `ref`、`url`、`content` 和 `page_start`。同 URL 的不同页按页偏移和内容分别计入进展，最终生成阶段会保留成功读取的网页证据。
+
+该能力仍是公网只读 HTTP(S)，不提供 Bash、认证请求头、Cookie、任意 HTTP 方法或浏览器脚本执行。
+
 ## 参考图片
 
 `prepare_image_references(references)` 接受 1–50 项，每项包含唯一 `key`、`url` 和可选 `label`。返回本轮 `reference_set_id`、成功顺序、逐项错误。成功下载会复用；超时、连接失败、429、5xx 最多尝试 3 次，遵循 Retry-After 和本轮剩余时间。已确认用户的头像 404 时可刷新一次资料，只有 URL 改变后才重试。
