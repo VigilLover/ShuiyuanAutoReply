@@ -106,6 +106,24 @@ def describe_model_failure(error: BaseException) -> str:
     return detail[:800]
 
 
+def mcp_text_content(value: Any) -> str:
+    """Unwrap LangChain MCP text blocks without stringifying their envelope."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        texts = []
+        for block in value:
+            if isinstance(block, dict) and block.get("type") == "text":
+                texts.append(str(block.get("text", "")))
+            elif getattr(block, "type", None) == "text":
+                texts.append(str(getattr(block, "text", "")))
+        if texts:
+            return "\n".join(texts)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
+
+
 class MentionGraphState(TypedDict, total=False):
     persona: str
     target_post: object
@@ -565,15 +583,14 @@ class MentionChatModel:
                         args["include_domains"] = include_domains
                     if exclude_domains:
                         args["exclude_domains"] = exclude_domains
-                    value = await target.ainvoke(args)
-                    if isinstance(value, str):
-                        try:
-                            value = json.loads(value)
-                        except ValueError:
-                            return {
-                                "status": "ok",
-                                "items": [{"text": value[:6000]}],
-                            }
+                    raw_value = mcp_text_content(await target.ainvoke(args))
+                    try:
+                        value = json.loads(raw_value)
+                    except ValueError:
+                        return {
+                            "status": "ok",
+                            "items": [{"text": raw_value[:6000]}],
+                        }
                     rows = (
                         value.get("results", value.get("items", []))
                         if isinstance(value, dict)
@@ -673,13 +690,11 @@ class MentionChatModel:
                             "start_index": offset,
                         }
                     )
-                    if isinstance(value, str):
-                        try:
-                            decoded = json.loads(value)
-                        except ValueError:
-                            decoded = None
-                    else:
-                        decoded = value
+                    value = mcp_text_content(value)
+                    try:
+                        decoded = json.loads(value)
+                    except ValueError:
+                        decoded = None
                     raw_text = (
                         decoded.get("content") or decoded.get("text")
                         if isinstance(decoded, dict)
