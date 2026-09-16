@@ -533,11 +533,12 @@ class MentionChatModel:
         return mcp_tools
 
     def _consolidate_mcp_tools(self, tools: list[BaseTool]) -> list[BaseTool]:
-        """Expose one web search and one web read tool; omit reply-irrelevant utilities."""
+        """Expose concise public-data tools; omit reply-irrelevant utilities."""
         by_name = {tool.name: tool for tool in tools}
         search = by_name.get("web_search")
         image_search = by_name.get("image_search")
         fetch = by_name.get("fetch_webpage_content")
+        chuangka_menu = by_name.get("get_chuangka_menu")
         result: list[BaseTool] = []
 
         if search or image_search:
@@ -800,6 +801,122 @@ class MentionChatModel:
                     coroutine=web_read,
                     name="web_read",
                     response_format="content_and_artifact",
+                )
+            )
+
+        if chuangka_menu:
+
+            async def get_chuangka_menu(
+                location: Literal["all", "zhutu", "huanyuan"] = "all",
+                category: Literal["all", "ice_cream"] = "all",
+                query: str | None = None,
+                cursor: str | None = None,
+                max_length: int = 6000,
+            ) -> dict[str, Any]:
+                """Read the current ChuangKa menu, optionally limited to ice cream."""
+                try:
+                    if not 1 <= max_length <= 12000:
+                        raise ValueError("max_length must be between 1 and 12000")
+                    offset = 0
+                    if cursor:
+                        state = ShuiyuanToolsWrapper._resume(
+                            cursor, "get_chuangka_menu"
+                        )
+                        requested = {
+                            "location": location,
+                            "category": category,
+                            "query": query,
+                        }
+                        defaults = {
+                            "location": "all",
+                            "category": "all",
+                            "query": None,
+                        }
+                        for key, value in requested.items():
+                            if value != defaults[key] and value != state[key]:
+                                raise ValueError(f"Cursor menu option conflicts: {key}")
+                        location = state["location"]
+                        category = state["category"]
+                        query = state["query"]
+                        offset = state["offset"]
+                    raw_value = mcp_text_content(
+                        await chuangka_menu.ainvoke(
+                            {
+                                "location": location,
+                                "category": category,
+                                "query": query,
+                                "max_length": max_length,
+                                "start_index": offset,
+                            }
+                        )
+                    )
+                    try:
+                        envelope = json.loads(raw_value)
+                    except ValueError as exc:
+                        raise ValueError(
+                            "MCP returned an invalid ChuangKa menu response"
+                        ) from exc
+                    if not isinstance(envelope, dict):
+                        raise ValueError("MCP returned a non-object ChuangKa menu")
+                    if envelope.get("status") == "error":
+                        return envelope
+                    if envelope.get("status") != "ok":
+                        raise ValueError("MCP returned an unknown ChuangKa menu status")
+                    source_urls = [
+                        str(value) for value in envelope.get("source_urls", []) if value
+                    ]
+                    if not source_urls:
+                        raise ValueError("ChuangKa menu response has no source URL")
+                    page_start = int(envelope.get("start_index", offset))
+                    content = str(envelope.get("content", ""))
+                    payload: dict[str, Any] = {
+                        "status": "ok",
+                        "items": [
+                            {
+                                "ref": source_urls[0],
+                                "url": source_urls[0],
+                                "content": content,
+                                "page_start": page_start,
+                                "source_urls": source_urls,
+                            }
+                        ],
+                    }
+                    for key in (
+                        "fetched_at",
+                        "location",
+                        "category",
+                        "query",
+                        "total_products",
+                        "total_by_location",
+                        "matched_count",
+                        "failed_locations",
+                        "warnings",
+                    ):
+                        if envelope.get(key) not in (None, "", [], {}):
+                            payload[key] = envelope[key]
+                    if envelope.get("truncated"):
+                        next_offset = envelope.get("next_start_index")
+                        if next_offset is None:
+                            raise ValueError(
+                                "Truncated ChuangKa menu has no next offset"
+                            )
+                        payload["next_cursor"] = ShuiyuanToolsWrapper._cursor(
+                            {
+                                "kind": "get_chuangka_menu",
+                                "location": location,
+                                "category": category,
+                                "query": query,
+                                "offset": int(next_offset),
+                            }
+                        )
+                    return payload
+                except Exception as exc:
+                    return ShuiyuanToolsWrapper._error(exc)
+
+            result.append(
+                StructuredTool.from_function(
+                    coroutine=get_chuangka_menu,
+                    name="get_chuangka_menu",
                 )
             )
         return result

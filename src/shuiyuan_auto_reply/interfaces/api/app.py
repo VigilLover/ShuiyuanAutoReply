@@ -1307,6 +1307,14 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                     "enabled": "fetch_webpage_content" not in disabled,
                 }
             )
+        if "get_chuangka_menu" in loaded_names:
+            tools.append(
+                {
+                    "name": "get_chuangka_menu",
+                    "description": "读取交图、交环创咖当前菜单或冰淇淋菜单",
+                    "enabled": "get_chuangka_menu" not in disabled,
+                }
+            )
         return {
             "url": url,
             "configured": True,

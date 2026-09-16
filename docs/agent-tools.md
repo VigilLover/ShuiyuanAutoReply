@@ -39,6 +39,8 @@ MCP 的 `get_hardware_status` 与对话和检索无关，新配置默认关闭�
 
 该能力仍是公网只读 HTTP(S)，不提供 Bash、认证请求头、Cookie、任意 HTTP 方法或浏览器脚本执行。
 
+`get_chuangka_menu(location="all", category="all", query=None)` 通过 MCP 读取交图、交环创咖的当前菜单。`location` 可选 `all`、`zhutu`、`huanyuan`；`category` 可选完整菜单 `all` 或冰淇淋菜单 `ice_cream`；`query` 仅按商品名过滤。输出正文只保留商品名和价格。长菜单通过绑定筛选条件的不透明 `cursor` 继续读取，并作为完整网页证据进入最终生成阶段。
+
 ## 参考图片
 
 `prepare_image_references(references)` 接受 1–50 项，每项包含唯一 `key`、`url` 和可选 `label`。返回本轮 `reference_set_id`、成功顺序、逐项错误。成功下载会复用；超时、连接失败、429、5xx 最多尝试 3 次，遵循 Retry-After 和本轮剩余时间。已确认用户的头像 404 时可刷新一次资料，只有 URL 改变后才重试。

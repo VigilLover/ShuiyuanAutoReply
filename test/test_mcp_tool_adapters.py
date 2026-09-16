@@ -239,3 +239,92 @@ def test_web_read_changed_content_at_same_offset_is_new_evidence():
     assert len(turn.observe(json.dumps(page("old content")), tool="web_read")) == 1
     assert len(turn.observe(json.dumps(page("new content")), tool="web_read")) == 1
     assert len(turn.observe(json.dumps(page("new content")), tool="web_read")) == 0
+
+
+def test_chuangka_menu_decodes_envelope_and_uses_exact_cursor():
+    source = "https://m.yk.fkw.com/api/product/list?aid=32677668&page=1"
+    first = {
+        "status": "ok",
+        "fetched_at": "2026-09-16T12:00:00+08:00",
+        "location": "zhutu",
+        "category": "ice_cream",
+        "query": None,
+        "total_products": 188,
+        "total_by_location": {"zhutu": 188},
+        "matched_count": 9,
+        "content": "# 创咖当前冰淇淋菜单\n- 香草圣代｜¥2.50",
+        "start_index": 0,
+        "truncated": True,
+        "next_start_index": 24,
+        "source_urls": [source],
+        "failed_locations": [],
+        "warnings": [],
+    }
+    second = {
+        **first,
+        "content": "- 香草吐冰｜¥3.50",
+        "start_index": 24,
+        "truncated": False,
+        "next_start_index": None,
+    }
+    upstream = SimpleNamespace(
+        name="get_chuangka_menu",
+        ainvoke=AsyncMock(
+            side_effect=[
+                [{"type": "text", "text": json.dumps(first, ensure_ascii=False)}],
+                [{"type": "text", "text": json.dumps(second, ensure_ascii=False)}],
+            ]
+        ),
+    )
+    tool = next(
+        item
+        for item in _model()._consolidate_mcp_tools([upstream])
+        if item.name == "get_chuangka_menu"
+    )
+    token = current_turn.set(TurnResults())
+    try:
+        result = asyncio.run(tool.coroutine(location="zhutu", category="ice_cream"))
+        assert result["items"][0] == {
+            "ref": source,
+            "url": source,
+            "content": first["content"],
+            "page_start": 0,
+            "source_urls": [source],
+        }
+        cursor = result["next_cursor"]
+
+        continued = asyncio.run(tool.coroutine(cursor=cursor, max_length=12000))
+
+        assert continued["items"][0]["page_start"] == 24
+        continued_args = upstream.ainvoke.call_args_list[-1].args[0]
+        assert continued_args == {
+            "location": "zhutu",
+            "category": "ice_cream",
+            "query": None,
+            "max_length": 12000,
+            "start_index": 24,
+        }
+    finally:
+        current_turn.reset(token)
+
+
+def test_chuangka_menu_is_full_final_evidence():
+    turn = TurnResults()
+    payload = {
+        "status": "ok",
+        "items": [
+            {
+                "ref": "https://m.yk.fkw.com/api/product/list?aid=32677668",
+                "url": "https://m.yk.fkw.com/api/product/list?aid=32677668",
+                "content": "- 香草圣代｜¥2.50",
+                "page_start": 0,
+            }
+        ],
+    }
+
+    added = turn.observe(json.dumps(payload), tool="get_chuangka_menu")
+
+    assert len(added) == 1
+    evidence = turn.evidence[next(iter(added))]
+    assert evidence["kind"] == "full"
+    assert "香草圣代" in turn.final_evidence_text(1000)
