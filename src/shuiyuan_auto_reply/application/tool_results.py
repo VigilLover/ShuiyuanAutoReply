@@ -68,7 +68,7 @@ class TurnResults:
     def observe(self, value: Any, *, tool: str = "") -> set[str]:
         added = set()
         for identity, record in source_records(value):
-            kind = "full" if tool == "forum_read" else "summary"
+            kind = "full" if tool in {"forum_read", "web_read"} else "summary"
             existing = self.evidence.get(identity)
             if existing and (existing["kind"] == "full" or kind == "summary"):
                 continue

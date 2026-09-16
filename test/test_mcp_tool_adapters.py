@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from shuiyuan_auto_reply.application.tool_results import TurnResults, current_turn
 from shuiyuan_auto_reply.features.mention.mention_chat_model import (
     MentionChatModel,
     mcp_text_content,
@@ -59,6 +60,7 @@ def test_web_search_decodes_mcp_text_block_json():
         "items": [
             {
                 "ref": "https://example.com/article",
+                "url": "https://example.com/article",
                 "title": "Example",
                 "text": "Useful result",
             }
@@ -85,6 +87,155 @@ def test_web_read_decodes_legacy_mcp_text_block_without_repr_noise():
         tool.coroutine(url="https://example.com", max_length=6000, images="none")
     )
 
-    assert json.loads(content)["items"][0]["text"] == "clean page body"
+    assert json.loads(content)["items"][0]["content"] == "clean page body"
     assert "lc_fetch" not in content
     assert artifact is None
+
+
+def test_web_read_uses_structured_envelope_and_exact_cursor():
+    first = {
+        "status": "ok",
+        "url": "https://example.com/menu",
+        "content_type": "application/json",
+        "mode": "json",
+        "content": '{"items":[{"name":"香草冰淇淋"}]}',
+        "total_chars": 40,
+        "start_index": 0,
+        "truncated": True,
+        "next_start_index": 37,
+        "matched_count": 1,
+        "warnings": [],
+    }
+    second = {
+        **first,
+        "content": "end",
+        "start_index": 37,
+        "truncated": False,
+        "next_start_index": None,
+    }
+    upstream = SimpleNamespace(
+        name="fetch_webpage_content",
+        ainvoke=AsyncMock(
+            side_effect=[
+                [{"type": "text", "text": json.dumps(first)}],
+                [{"type": "text", "text": json.dumps(second)}],
+            ]
+        ),
+    )
+    tool = _model()._consolidate_mcp_tools([upstream])[0]
+    token = current_turn.set(TurnResults())
+    try:
+        content, _ = asyncio.run(
+            tool.coroutine(
+                url=first["url"],
+                query="冰淇淋",
+                json_path="dataList",
+                fields=["name"],
+                max_results=10,
+            )
+        )
+        payload = json.loads(content)
+        cursor = payload["next_cursor"]
+        assert payload["items"][0] == {
+            "ref": first["url"],
+            "url": first["url"],
+            "content": first["content"],
+            "page_start": 0,
+        }
+
+        continued, _ = asyncio.run(
+            tool.coroutine(url=first["url"], cursor=cursor, max_length=12000)
+        )
+
+        assert json.loads(continued)["items"][0]["page_start"] == 37
+        continued_args = upstream.ainvoke.call_args_list[-1].args[0]
+        assert continued_args["start_index"] == 37
+        assert continued_args["query"] == "冰淇淋"
+    finally:
+        current_turn.reset(token)
+
+
+def test_web_read_rejects_conflicting_cursor_options():
+    envelope = {
+        "status": "ok",
+        "url": "https://example.com",
+        "content_type": "text/plain",
+        "mode": "document",
+        "content": "page",
+        "total_chars": 10,
+        "start_index": 0,
+        "truncated": True,
+        "next_start_index": 4,
+        "warnings": [],
+    }
+    upstream = SimpleNamespace(
+        name="fetch_webpage_content",
+        ainvoke=AsyncMock(
+            return_value=[{"type": "text", "text": json.dumps(envelope)}]
+        ),
+    )
+    tool = _model()._consolidate_mcp_tools([upstream])[0]
+    token = current_turn.set(TurnResults())
+    try:
+        content, _ = asyncio.run(tool.coroutine(url=envelope["url"], query="first"))
+        cursor = json.loads(content)["next_cursor"]
+
+        conflict, _ = asyncio.run(tool.coroutine(cursor=cursor, query="different"))
+
+        assert json.loads(conflict)["code"] == "invalid_arguments"
+    finally:
+        current_turn.reset(token)
+
+
+def test_web_read_pages_are_distinct_full_evidence_for_finalizer():
+    turn = TurnResults()
+    first = {
+        "status": "ok",
+        "items": [
+            {
+                "ref": "https://example.com/long",
+                "url": "https://example.com/long",
+                "content": "first verified page",
+                "page_start": 0,
+            }
+        ],
+    }
+    second = {
+        "status": "ok",
+        "items": [
+            {
+                "ref": "https://example.com/long",
+                "url": "https://example.com/long",
+                "content": "second verified page",
+                "page_start": 6000,
+            }
+        ],
+    }
+
+    assert len(turn.observe(json.dumps(first), tool="web_read")) == 1
+    assert len(turn.observe(json.dumps(second), tool="web_read")) == 1
+    assert all(item["kind"] == "full" for item in turn.evidence.values())
+    final = turn.final_evidence_text(6000)
+    assert "first verified page" in final
+    assert "second verified page" in final
+
+
+def test_web_read_changed_content_at_same_offset_is_new_evidence():
+    turn = TurnResults()
+
+    def page(content):
+        return {
+            "status": "ok",
+            "items": [
+                {
+                    "ref": "https://example.com/live",
+                    "url": "https://example.com/live",
+                    "content": content,
+                    "page_start": 0,
+                }
+            ],
+        }
+
+    assert len(turn.observe(json.dumps(page("old content")), tool="web_read")) == 1
+    assert len(turn.observe(json.dumps(page("new content")), tool="web_read")) == 1
+    assert len(turn.observe(json.dumps(page("new content")), tool="web_read")) == 0
