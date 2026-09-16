@@ -11,6 +11,7 @@ READ_TOOLS = frozenset(
         "users",
         "web_search",
         "web_read",
+        "get_chuangka_menu",
     }
 )
 SEARCH_TOOLS = frozenset(

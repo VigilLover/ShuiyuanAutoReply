@@ -164,6 +164,8 @@ curl -s http://127.0.0.1:11451/api/runtime-health
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:11451/api/live
 ```
 
+涉及 SimpleMCP 或网页工具的版本还应执行只读烟测：确认 Bot 与 MCP 容器 digest 与 `release.json` 一致；通过线上 SSE 调用一次 `web_search`，确认结果可恢复为真实标题、URL 和摘要；再对已知的大型 JSON 页面调用带 `query`、`json_path`、`fields` 的 `web_read`，确认尾部目标可直接命中且返回正确的 `next_cursor`。最后在网页会话核对答案引用了读取结果，日志中没有 `invalid_arguments` 或成功抓取后的空证据。任何一项失败都使用同一 Deploy workflow 回滚到上一正式版本，不手工混搭 Bot 与 MCP 镜像。
+
 容器、日志、磁盘与备份：
 
 ```bash

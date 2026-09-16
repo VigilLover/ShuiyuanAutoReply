@@ -77,7 +77,7 @@ services:
       timeout: 5s
       retries: 3
   mcp:
-    image: ${MCP_IMAGE:-shuiyuan-mcp:de42d48}
+    image: ${MCP_IMAGE:-shuiyuan-mcp:4524368}
     build: {context: .., dockerfile: deploy/mcp/Dockerfile}
     init: true
     user: '10002:10002'

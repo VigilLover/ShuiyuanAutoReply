@@ -189,7 +189,7 @@ python3 scripts/deploy/prepare_sources.py --mcp-source /absolute/path/to/SimpleM
 
 脚本只写 `deploy/vendor/` 下的独立构建副本，不修改原仓库。固定版本是：
 
-- SimpleMCP：`de42d48eb81644604ebade8524af2748c4cc3e6b`
+- SimpleMCP：`4524368d28c60cdbe2ce058e3ffe2fd551772cf4`
 - pgvector 0.8.2：`cab9da72c04353f143bb06b42ab70a403daac64a`
 
 版本无法取得、已有副本被修改时会失败，不会自动换成最新版本。
@@ -210,7 +210,7 @@ DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f deploy/compose.yaml build 
 没有镜像仓库时：
 
 ```bash
-docker save -o /tmp/shuiyuan-images.tar shuiyuan-bot:remote-v1 shuiyuan-postgres:17.6-vector0.8.2 shuiyuan-mcp:de42d48
+docker save -o /tmp/shuiyuan-images.tar shuiyuan-bot:remote-v1 shuiyuan-postgres:17.6-vector0.8.2 shuiyuan-mcp:4524368
 scp /tmp/shuiyuan-images.tar YOUR_SERVER:/tmp/
 # 服务器上：
 docker load -i /tmp/shuiyuan-images.tar
@@ -359,8 +359,8 @@ Compose 的 unhealthy 本身不会自动重启容器；异常退出由 restart �
 
 SimpleMCP 不连接数据库网络、不挂载 Bot Key/Cookie、Docker socket 或宿主机 `/proc`。
 网页抓取仅允许实际连接到公网 IP 的 HTTP(S) 80/443，最多 5 次重定向、30 秒、5MiB 流式上限。
-为避免压缩内容绕过资源上限，抓取包装要求 identity 编码，拒绝服务器强制压缩的响应。
-该包装保持工具名称和参数，但对不符合安全限制的网站会返回失败；不会退回原 uvx 抓取绕过限制。
+流式上限对 HTTP 客户端解压后的正文生效；无 Content-Length、分块和压缩响应均不能绕过限制。
+镜像直接运行固定提交的 vendored SimpleMCP，不复制 Bot 仓库中的抓取覆盖文件，也不会退回 uvx 嵌套抓取。
 硬件工具仅看到容器可见的系统信息。时间、搜索、图片搜索沿用固定上游工具实现。
 
 ## 9. 故障处理、凭据轮换和人工核对

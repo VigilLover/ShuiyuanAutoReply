@@ -106,6 +106,24 @@ def describe_model_failure(error: BaseException) -> str:
     return detail[:800]
 
 
+def mcp_text_content(value: Any) -> str:
+    """Unwrap LangChain MCP text blocks without stringifying their envelope."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        texts = []
+        for block in value:
+            if isinstance(block, dict) and block.get("type") == "text":
+                texts.append(str(block.get("text", "")))
+            elif getattr(block, "type", None) == "text":
+                texts.append(str(getattr(block, "text", "")))
+        if texts:
+            return "\n".join(texts)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
+
+
 class MentionGraphState(TypedDict, total=False):
     persona: str
     target_post: object
@@ -515,11 +533,12 @@ class MentionChatModel:
         return mcp_tools
 
     def _consolidate_mcp_tools(self, tools: list[BaseTool]) -> list[BaseTool]:
-        """Expose one web search and one web read tool; omit reply-irrelevant utilities."""
+        """Expose concise public-data tools; omit reply-irrelevant utilities."""
         by_name = {tool.name: tool for tool in tools}
         search = by_name.get("web_search")
         image_search = by_name.get("image_search")
         fetch = by_name.get("fetch_webpage_content")
+        chuangka_menu = by_name.get("get_chuangka_menu")
         result: list[BaseTool] = []
 
         if search or image_search:
@@ -565,15 +584,14 @@ class MentionChatModel:
                         args["include_domains"] = include_domains
                     if exclude_domains:
                         args["exclude_domains"] = exclude_domains
-                    value = await target.ainvoke(args)
-                    if isinstance(value, str):
-                        try:
-                            value = json.loads(value)
-                        except ValueError:
-                            return {
-                                "status": "ok",
-                                "items": [{"text": value[:6000]}],
-                            }
+                    raw_value = mcp_text_content(await target.ainvoke(args))
+                    try:
+                        value = json.loads(raw_value)
+                    except ValueError:
+                        return {
+                            "status": "ok",
+                            "items": [{"text": raw_value[:6000]}],
+                        }
                     rows = (
                         value.get("results", value.get("items", []))
                         if isinstance(value, dict)
@@ -589,6 +607,7 @@ class MentionChatModel:
                         url = row.get("url") or row.get("image")
                         item = {
                             "ref": url,
+                            "url": url,
                             "title": str(row.get("title", ""))[:160],
                             "text": str(
                                 row.get("snippet") or row.get("description") or ""
@@ -622,19 +641,50 @@ class MentionChatModel:
                 cursor: str | None = None,
                 max_length: int = 6000,
                 images: Literal["auto", "none"] = "auto",
+                mode: Literal["auto", "document", "json", "raw"] = "auto",
+                query: str | None = None,
+                json_path: str | None = None,
+                fields: list[str] | None = None,
+                max_results: int = 20,
             ) -> tuple[str, ImageInspectResult | None]:
-                """Read one public webpage or attach one direct image URL for visual understanding."""
+                """Read, clean, query, or page one public webpage or direct image URL."""
                 try:
-                    if not 1 <= max_length <= 6000:
-                        raise ValueError("max_length must be between 1 and 6000")
+                    if not 1 <= max_length <= 12000:
+                        raise ValueError("max_length must be between 1 and 12000")
+                    if not 1 <= max_results <= 100:
+                        raise ValueError("max_results must be between 1 and 100")
                     offset = 0
                     if cursor:
                         state = ShuiyuanToolsWrapper._resume(cursor, "web_read")
-                        if url:
+                        if url and url != state["url"]:
                             raise ValueError(
-                                "Use only cursor and display options when continuing"
+                                "Cursor URL conflicts with the supplied URL"
                             )
+                        requested = {
+                            "mode": mode,
+                            "query": query,
+                            "json_path": json_path,
+                            "fields": fields,
+                            "max_results": max_results,
+                        }
+                        defaults = {
+                            "mode": "auto",
+                            "query": None,
+                            "json_path": None,
+                            "fields": None,
+                            "max_results": 20,
+                        }
+                        for key, value in requested.items():
+                            if value != defaults[key] and value != state[key]:
+                                raise ValueError(
+                                    f"Cursor extraction option conflicts: {key}"
+                                )
                         url, offset = state["url"], state["offset"]
+                        mode = state["mode"]
+                        query = state["query"]
+                        json_path = state["json_path"]
+                        fields = state["fields"]
+                        max_results = state["max_results"]
                     if not url.strip():
                         raise ValueError("url must not be empty")
                     image_url = bool(
@@ -646,6 +696,7 @@ class MentionChatModel:
                             "items": [
                                 {
                                     "ref": url,
+                                    "url": url,
                                     "media": [
                                         {
                                             "ref": "image-1",
@@ -671,33 +722,69 @@ class MentionChatModel:
                             "url": url,
                             "max_length": max_length,
                             "start_index": offset,
+                            "mode": mode,
+                            "query": query,
+                            "json_path": json_path,
+                            "fields": fields,
+                            "max_results": max_results,
                         }
                     )
-                    if isinstance(value, str):
-                        try:
-                            decoded = json.loads(value)
-                        except ValueError:
-                            decoded = None
-                    else:
-                        decoded = value
-                    raw_text = (
-                        decoded.get("content") or decoded.get("text")
+                    raw_value = mcp_text_content(value)
+                    try:
+                        decoded = json.loads(raw_value)
+                    except ValueError:
+                        decoded = None
+                    envelope = (
+                        decoded
                         if isinstance(decoded, dict)
-                        else decoded
+                        and decoded.get("status") in {"ok", "error"}
+                        else None
                     )
-                    text = str(raw_text if raw_text is not None else value)
-                    upstream_more = len(text) >= max_length
-                    text = text[:max_length]
+                    if envelope and envelope.get("status") == "error":
+                        return json.dumps(envelope, ensure_ascii=False), None
+                    if envelope:
+                        text = str(envelope.get("content", ""))
+                        page_start = int(envelope.get("start_index", offset))
+                        upstream_more = bool(envelope.get("truncated"))
+                        next_offset = envelope.get("next_start_index")
+                        source_url = str(envelope.get("url") or url)
+                    else:
+                        text = raw_value[:max_length]
+                        page_start = offset
+                        upstream_more = len(raw_value) >= max_length
+                        next_offset = offset + len(text) if upstream_more else None
+                        source_url = url
                     payload = {
                         "status": "ok",
-                        "items": [{"ref": url, "text": text}],
+                        "items": [
+                            {
+                                "ref": source_url,
+                                "url": source_url,
+                                "content": text,
+                                "page_start": page_start,
+                            }
+                        ],
                     }
+                    if envelope:
+                        for key in (
+                            "content_type",
+                            "mode",
+                            "matched_count",
+                            "warnings",
+                        ):
+                            if envelope.get(key) not in (None, "", [], {}):
+                                payload[key] = envelope[key]
                     if upstream_more:
                         payload["next_cursor"] = ShuiyuanToolsWrapper._cursor(
                             {
                                 "kind": "web_read",
                                 "url": url,
-                                "offset": offset + len(text),
+                                "offset": int(next_offset),
+                                "mode": mode,
+                                "query": query,
+                                "json_path": json_path,
+                                "fields": fields,
+                                "max_results": max_results,
                             }
                         )
                     return json.dumps(payload, ensure_ascii=False), None
@@ -714,6 +801,122 @@ class MentionChatModel:
                     coroutine=web_read,
                     name="web_read",
                     response_format="content_and_artifact",
+                )
+            )
+
+        if chuangka_menu:
+
+            async def get_chuangka_menu(
+                location: Literal["all", "zhutu", "huanyuan"] = "all",
+                category: Literal["all", "ice_cream"] = "all",
+                query: str | None = None,
+                cursor: str | None = None,
+                max_length: int = 6000,
+            ) -> dict[str, Any]:
+                """Read the current ChuangKa menu, optionally limited to ice cream."""
+                try:
+                    if not 1 <= max_length <= 12000:
+                        raise ValueError("max_length must be between 1 and 12000")
+                    offset = 0
+                    if cursor:
+                        state = ShuiyuanToolsWrapper._resume(
+                            cursor, "get_chuangka_menu"
+                        )
+                        requested = {
+                            "location": location,
+                            "category": category,
+                            "query": query,
+                        }
+                        defaults = {
+                            "location": "all",
+                            "category": "all",
+                            "query": None,
+                        }
+                        for key, value in requested.items():
+                            if value != defaults[key] and value != state[key]:
+                                raise ValueError(f"Cursor menu option conflicts: {key}")
+                        location = state["location"]
+                        category = state["category"]
+                        query = state["query"]
+                        offset = state["offset"]
+                    raw_value = mcp_text_content(
+                        await chuangka_menu.ainvoke(
+                            {
+                                "location": location,
+                                "category": category,
+                                "query": query,
+                                "max_length": max_length,
+                                "start_index": offset,
+                            }
+                        )
+                    )
+                    try:
+                        envelope = json.loads(raw_value)
+                    except ValueError as exc:
+                        raise ValueError(
+                            "MCP returned an invalid ChuangKa menu response"
+                        ) from exc
+                    if not isinstance(envelope, dict):
+                        raise ValueError("MCP returned a non-object ChuangKa menu")
+                    if envelope.get("status") == "error":
+                        return envelope
+                    if envelope.get("status") != "ok":
+                        raise ValueError("MCP returned an unknown ChuangKa menu status")
+                    source_urls = [
+                        str(value) for value in envelope.get("source_urls", []) if value
+                    ]
+                    if not source_urls:
+                        raise ValueError("ChuangKa menu response has no source URL")
+                    page_start = int(envelope.get("start_index", offset))
+                    content = str(envelope.get("content", ""))
+                    payload: dict[str, Any] = {
+                        "status": "ok",
+                        "items": [
+                            {
+                                "ref": source_urls[0],
+                                "url": source_urls[0],
+                                "content": content,
+                                "page_start": page_start,
+                                "source_urls": source_urls,
+                            }
+                        ],
+                    }
+                    for key in (
+                        "fetched_at",
+                        "location",
+                        "category",
+                        "query",
+                        "total_products",
+                        "total_by_location",
+                        "matched_count",
+                        "failed_locations",
+                        "warnings",
+                    ):
+                        if envelope.get(key) not in (None, "", [], {}):
+                            payload[key] = envelope[key]
+                    if envelope.get("truncated"):
+                        next_offset = envelope.get("next_start_index")
+                        if next_offset is None:
+                            raise ValueError(
+                                "Truncated ChuangKa menu has no next offset"
+                            )
+                        payload["next_cursor"] = ShuiyuanToolsWrapper._cursor(
+                            {
+                                "kind": "get_chuangka_menu",
+                                "location": location,
+                                "category": category,
+                                "query": query,
+                                "offset": int(next_offset),
+                            }
+                        )
+                    return payload
+                except Exception as exc:
+                    return ShuiyuanToolsWrapper._error(exc)
+
+            result.append(
+                StructuredTool.from_function(
+                    coroutine=get_chuangka_menu,
+                    name="get_chuangka_menu",
                 )
             )
         return result

@@ -590,7 +590,10 @@ class ManagedApiTests(unittest.TestCase):
                     restored_web["active"]["api_format"], "chat_completions"
                 )
                 discovered = [
-                    SimpleNamespace(name="get_system_time", description="查询时间")
+                    SimpleNamespace(name="get_system_time", description="查询时间"),
+                    SimpleNamespace(
+                        name="get_chuangka_menu", description="读取创咖菜单"
+                    ),
                 ]
                 with patch(
                     "shuiyuan_auto_reply.interfaces.api.app.MentionChatModel._load_mcp_tools",
@@ -599,7 +602,16 @@ class ManagedApiTests(unittest.TestCase):
                     mcp = client.get("/api/settings/mcp/web").json()
                 self.assertTrue(mcp["connected"])
                 self.assertEqual(mcp["url"], "http://localhost:58000/sse")
-                self.assertEqual(mcp["tools"], [])
+                self.assertEqual(
+                    mcp["tools"],
+                    [
+                        {
+                            "name": "get_chuangka_menu",
+                            "description": "读取交图、交环创咖当前菜单或冰淇淋菜单",
+                            "enabled": True,
+                        }
+                    ],
+                )
                 create_response = client.post("/api/conversations", json={})
                 self.assertEqual(create_response.status_code, 200)
                 created = create_response.json()

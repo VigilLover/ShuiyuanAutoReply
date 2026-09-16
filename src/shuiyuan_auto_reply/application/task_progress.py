@@ -35,7 +35,10 @@ def source_records(value):
             yield "user:" + str(value.get("user_id", value.get("id"))), value
             return
         if value.get("url") and (
-            value.get("snippet") or value.get("content") or value.get("title")
+            value.get("snippet")
+            or value.get("content")
+            or value.get("text")
+            or value.get("title")
         ):
             parts = urlsplit(value["url"])
             url = urlunsplit(
@@ -47,7 +50,10 @@ def source_records(value):
                     "",
                 )
             )
-            yield "web:" + url, value
+            page_start = value.get("page_start")
+            page_suffix = f":page:{page_start}" if page_start is not None else ""
+            content_suffix = ":content:" + content_digest(value)[:16]
+            yield "web:" + url + page_suffix + content_suffix, value
             return
         for key in ("posts", "results", "items", "users", "user", "output", "text"):
             if key in value:
