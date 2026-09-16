@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCES = {
     "simplemcp": (
         "https://github.com/VigilLover/SimpleMCP-for-ShuiyuanAutoReply.git",
-        "de42d48eb81644604ebade8524af2748c4cc3e6b",
+        "2ab491f5fe4c9a7cec8bf44bafa3363676e31a96",
     ),
     "pgvector": (
         "https://github.com/pgvector/pgvector.git",
