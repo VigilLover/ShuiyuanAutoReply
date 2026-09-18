@@ -8,6 +8,7 @@ import uuid
 from abc import abstractmethod
 from datetime import datetime
 from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple, TypedDict
+from urllib.parse import urlparse
 
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.language_models import BaseChatModel
@@ -61,7 +62,11 @@ from .context_budget import (
 )
 from .image_generation import ImageGenerationService
 from .mention_memory_model import MentionMemoryModel
-from .mention_multimodal import ImageInspectResult, extract_image_urls
+from .mention_multimodal import (
+    SHUIYUAN_HOSTS,
+    ImageInspectResult,
+    extract_image_urls,
+)
 from .shuiyuan_tools_objects import PostShort
 from .shuiyuan_tools_wrapper import ShuiyuanToolsWrapper
 from .tool_catalog import (
@@ -430,7 +435,15 @@ class MentionChatModel:
                 include_domains: list[str] | None = None,
                 exclude_domains: list[str] | None = None,
             ) -> Any:
-                """Search public web text, news, or images through one concise entry point."""
+                """搜索公网网页、新闻或图片。
+
+                何时用：问题涉及站外的事实、资讯或需要找图片素材时；水源社区内容不要
+                用它，改用 forum_search。
+                参数要点：kind="text" 普通网页，"news" 时效新闻，"images" 找图；
+                include_domains/exclude_domains 限定站点；max_results 1–10。
+                返回：items 为结果（ref/url、title、text 摘要、published_at 若有）；
+                图片结果带 media 引用。摘要不等于正文，需要细节时用 web_read 读页面。
+                """
                 try:
                     if not query.strip():
                         raise ValueError("query must not be empty")
@@ -492,6 +505,7 @@ class MentionChatModel:
                             "text": str(
                                 row.get("snippet") or row.get("description") or ""
                             )[:500],
+                            "published_at": row.get("published_at") or None,
                         }
                         if kind == "images" and url:
                             item["media"] = [
@@ -527,7 +541,16 @@ class MentionChatModel:
                 fields: list[str] | None = None,
                 max_results: int = 20,
             ) -> tuple[str, ImageInspectResult | None]:
-                """Read, clean, query, or page one public webpage or direct image URL."""
+                """读取一个公网网页并返回清洗后的正文。
+
+                何时用：web_search 给出的页面需要看正文，或用户直接给了外站链接时。
+                水源社区地址（shuiyuan.sjtu.edu.cn）不能用它，改用 forum_read。
+                参数要点：query 只保留包含关键词的段落；JSON 接口可用 json_path 和
+                fields 只取需要的字段；正文过长时用返回的 next_cursor 继续读。
+                返回：items[0] 含 content（轻量 Markdown）、page_start，以及页面 title、
+                published_at（若页面声明）；直接图片链接只返回 media 引用，images="auto"
+                时才加载图片。
+                """
                 try:
                     if not 1 <= max_length <= 12000:
                         raise ValueError("max_length must be between 1 and 12000")
@@ -567,6 +590,21 @@ class MentionChatModel:
                         max_results = state["max_results"]
                     if not url.strip():
                         raise ValueError("url must not be empty")
+                    if urlparse(url).netloc.lower() in SHUIYUAN_HOSTS:
+                        return (
+                            json.dumps(
+                                {
+                                    "status": "error",
+                                    "code": "use_forum_tools",
+                                    "message": "水源社区内容需要登录，web_read 读不到",
+                                    "hint": "用 forum_read（topic_id+post_number 或 post_id）"
+                                    "读取帖子；用户头像和帖内图片通过 users / forum_read 加载",
+                                    "retryable": False,
+                                },
+                                ensure_ascii=False,
+                            ),
+                            None,
+                        )
                     image_url = bool(
                         re.search(r"\.(?:png|jpe?g|gif|webp)(?:\?|$)", url, re.I)
                     )
@@ -646,6 +684,9 @@ class MentionChatModel:
                         ],
                     }
                     if envelope:
+                        for key in ("title", "published_at"):
+                            if envelope.get(key):
+                                payload["items"][0][key] = envelope[key]
                         for key in (
                             "content_type",
                             "mode",
@@ -693,7 +734,13 @@ class MentionChatModel:
                 cursor: str | None = None,
                 max_length: int = 6000,
             ) -> dict[str, Any]:
-                """Read the current ChuangKa menu, optionally limited to ice cream."""
+                """读取交图／交环创咖当前菜单。
+
+                何时用：用户问创咖有什么、价格或冰淇淋口味时。
+                参数要点：location 选门店，category="ice_cream" 只看冰淇淋，query 按
+                商品名过滤；菜单过长时用 next_cursor 继续读。
+                返回：items[0].content 为菜单文本，附 total_products 与 fetched_at。
+                """
                 try:
                     if not 1 <= max_length <= 12000:
                         raise ValueError("max_length must be between 1 and 12000")

@@ -76,12 +76,11 @@ async def _forum_search_uses_native_snippets_and_opaque_cursor():
 async def _forum_search_rejects_conflicting_structured_filter():
     tools = ShuiyuanToolsWrapper(SimpleNamespace(search_forum=AsyncMock()))
     result = await tools.forum_search(query="user:bob", username="alice")
-    assert result == {
-        "status": "error",
-        "code": "invalid_arguments",
-        "message": "Conflicting user filter",
-        "retryable": False,
-    }
+    assert result["status"] == "error"
+    assert result["code"] == "invalid_arguments"
+    assert result["message"] == "Conflicting user filter"
+    assert result["retryable"] is False
+    assert "hint" in result
 
 
 async def _cursor_accepts_matching_arguments_and_rejects_conflicts():

@@ -6,20 +6,24 @@
 
 - `forum_read(post_id=None, topic_id=None, post_number=None, ..., images="none")` 读取单帖或话题窗口：用话题内楼层号（`topic_id` + `post_number`）或全站帖子 ID（`post_id`）定位。图片默认不下载，只有显式传入 `images="auto"` 或 `images="selected"` 时才加载。
 - 精准读取优先获取 `raw`，缺失时补取详情，再回退为清理后的 HTML 文本。结果包含 `content_source`、回复关系、正文／引用提及、图片、来源和警告。
-- 精准正文每页最多 12000 字符，`next_cursor` 明确指示后续内容；继续读取时使用同一工具的 `cursor`。
-- 搜索正文摘要最多 800 字符，并说明返回结果不保证穷尽。标题可为空；不为标题增加整话题请求。
+- 精准正文每页 8000 字符，话题窗口每帖 1400 字符，`next_cursor` 明确指示后续内容；继续读取时使用同一工具的 `cursor`。每帖附 `reply_to`、`reply_to_author` 与 `replies`。
+- 搜索摘要最多 400 字符，并说明返回结果不保证穷尽。标题可为空；不为标题增加整话题请求。
+- 工具描述统一为中文三段式（何时用／参数要点／返回结构）；错误信封统一为 `status/code/message/retryable`，常见错误附 `hint` 指示模型下一步该换什么调用。
+- 同一批调用里的多个 `users(username=…)` 会自动合并成一次 `usernames` 查询，再按 call_id 拆回；`image_refs` 的 `forum:` 前缀与顺序差异不再造成重复读取。
 - `users(query=None, username=None, usernames=None, user_id=None, include_avatar=False)` 统一处理精确用户名、批量用户名、模糊发现和 user_id 反查；查不到不代表用户不存在（user_id 路径依赖用户发帖记录）。只在需要头像时启用 `include_avatar`。
 - 相同成功查询仅在当前轮复用；批量重试不会重复请求成功用户。非重试性 HTTP 错误不会盲目重试。
 
 ## 上下文和工具配置
 
-`common.runtime.context_token_budget` 默认 24000，必须为正值；它是动态文本输入的近似 token 预算，不是模型的真实总窗口大小。工具 schema、静态规则和提供商多模态配额独立处理。当前指令、调用／返回配对等必要信息可能使极端输入超过估算预算。
+`common.runtime.context_token_budget` 默认 60000，必须为正值；它是工具循环消息的近似 token 预算，不是模型的真实总窗口大小。对话历史固定 4000 token、近期讨论固定 6000 字符，其余全部留给工具循环。
 
-压缩只修改发送给模型的视图：完整结果在本轮内可回读，目标帖引用、最近两组调用和实体映射仍可访问。不设置按任务类型的搜索次数限制。
+超预算时整组丢弃最旧的工具轮（保留当前请求、目标帖与最近三组调用），被丢弃的完整结果仍可在本轮回读并进入收尾证据；保留下来的消息逐字节不变，因此每轮请求与上一轮共享前缀，DeepSeek 磁盘缓存可持续命中。每轮变化的执行控制文本追加在提示词末尾，时间只精确到小时。
+
+时间模型分三层：整轮 `timeout`（默认 900s）、单次模型请求 `model_call_timeout`（默认 180s）、收尾保留 `final_reserve_seconds`（默认 150s）。调查轮剩余时间不足收尾保留时立即转入收尾；收尾轮使用独立的 `DEEPSEEK_MENTION_FINAL_REASONING_EFFORT`。默认 `model_limit=14`、`query_limit=30`、`no_progress_batches=2`。
 
 每次调用模型前都会校验调用／返回配对：同一轮内重复读取命中缓存时，回放的返回使用新的消息 ID，否则图状态按 ID 合并会顶掉较早的那条消息，使一次调用失去返回；出站前若仍存在没有返回的调用或先于调用出现的返回，会补齐或丢弃并记录 `tool.pairing_repaired`。OpenAI 兼容的 Responses 端点遇到这种输入会直接返回 400，失败的是整轮回答而不只是一次调用。
 
-MCP 的 `get_hardware_status` 与对话和检索无关，新配置默认关闭，可在设置页按应用打开。当前时间由执行控制消息直接给出，模型不必为此调用 `get_system_time`。
+当前时间由执行控制消息直接给出，模型不必为此调用 `get_system_time`。SimpleMCP 已移除硬件状态与旧网页读取工具。
 
 默认工具目录包含论坛读取、用户读取和参考素材准备等工具。已有显式 `enabled_tools` 白名单不会自动扩大；需要使用新能力时，应在管理界面的论坛／网页工具设置中启用对应工具。精准读帖和网页读取均可使用各自的 `cursor` 翻页。
 
@@ -31,22 +35,21 @@ MCP 的 `get_hardware_status` 与对话和检索无关，新配置默认关闭�
 
 `web_read(url, mode="auto", query=None, json_path=None, fields=None, max_results=20, images="none")` 是唯一网页读取入口。图片默认不加载，直接图片 URL 或页面图片只有在显式传入 `images="auto"` 时才进入视觉上下文：
 
-- `auto` 根据 Content-Type 和可解析性选择文档、JSON 或普通文本；`document` 提取 HTML 主体并去除导航、页眉页脚、侧栏、表单和隐藏节点；`raw` 只在确需原文时使用。
+- `auto` 根据 Content-Type 和可解析性选择文档、JSON 或普通文本；`document` 提取 HTML 主体（article/main/body）渲染为轻量 Markdown（标题、列表、表格行、代码块、引用），去除导航、页眉页脚、侧栏、表单、Cookie／订阅弹层、评论区和隐藏节点，并返回页面 `title` 与 `published_at`（若页面声明）；`raw` 只在确需原文时使用。
+- 水源社区域名的 URL 会被 `web_read` 直接拒绝并提示改用 `forum_read`，避免无认证抓取。
 - `query` 对文档返回命中块及相邻上下文，对 JSON 集合过滤包含关键词的对象。大型接口优先组合 `json_path` 和 `fields`，避免图片 URL、SKU、库存明细等无关字段占满上下文。
-- 默认每页 6000 字符，最多 12000。分页以 MCP 清洗后的完整表示为基准；`next_cursor` 是绑定 URL、模式、查询和字段投影的不透明游标。继续翻页时可以重复传入相同 URL，但不能改变提取条件。
+- 默认每页 8000 字符，最多 12000。`query` 命中块前后各保留两块上下文。分页以 MCP 清洗后的完整表示为基准；`next_cursor` 是绑定 URL、模式、查询和字段投影的不透明游标。继续翻页时可以重复传入相同 URL，但不能改变提取条件。
 - 每页证据包含 `ref`、`url`、`content` 和 `page_start`。同 URL 的不同页按页偏移和内容分别计入进展，最终生成阶段会保留成功读取的网页证据。
 
 该能力仍是公网只读 HTTP(S)，不提供 Bash、认证请求头、Cookie、任意 HTTP 方法或浏览器脚本执行。
 
 `get_chuangka_menu(location="all", category="all", query=None)` 通过 MCP 读取交图、交环创咖的当前菜单。`location` 可选 `all`、`zhutu`、`huanyuan`；`category` 可选完整菜单 `all` 或冰淇淋菜单 `ice_cream`；`query` 仅按商品名过滤。输出正文只保留商品名和价格。长菜单通过绑定筛选条件的不透明 `cursor` 继续读取，并作为完整网页证据进入最终生成阶段。
 
-## 参考图片
+## 参考图片与生成结果
 
-`prepare_image_references(references)` 接受 1–50 项，每项包含唯一 `key`、`url` 和可选 `label`。返回本轮 `reference_set_id`、成功顺序、逐项错误。成功下载会复用；超时、连接失败、429、5xx 最多尝试 3 次，遵循 Retry-After 和本轮剩余时间。已确认用户的头像 404 时可刷新一次资料，只有 URL 改变后才重试。
+`generate_image(prompt, aspect_ratio="1:1", references=None, allow_partial=False)` 是唯一生图入口。`references` 为 `[{"key","url","label"}]`，程序内部完成下载、校验、去重与编号：成功下载会复用；超时、连接失败、429、5xx 最多尝试 3 次，遵循 Retry-After 和本轮剩余时间；已确认用户的头像 404 时刷新一次资料。任一素材失败时默认不生成并返回 `{"status":"partial","failed":[…],"loaded":[…],"hint":…}`；只有 `allow_partial=true` 才用成功子集生成。
 
-`generate_image(..., reference_set_id=...)` 用成功素材建立实际编号，prompt 使用标签描述对象。部分失败时只纳入成功素材对应对象，最终回复只交付成功生成的图片，不说明未纳入项；全部失败不会改成无参考生成。旧 `reference_images` URL 列表继续支持，但部分失败会先返回准备结果，要求模型调整描述后再生成，防止旧编号错位。
-
-素材集仅在当前轮有效。新一轮修改旧图时需要重新准备。图像生成成功不表示内容已通过身份、人数或细节核验。
+工具返回结构化 JSON：成功为 `{"status":"ok","artifact":"artifact://…","width","height"}`，模型必须用 `![描述](artifact://…)` 嵌入最终回复；失败为 `{"status":"error","code","message"}`。Responses API 路径下生成结果会以 512px 低精度预览附回 `function_call_output`，模型能看到自己生成的图再决定是否重画。生成并发由 `common.runtime.image_concurrency`（默认 2）控制。图像生成成功不表示内容已通过身份、人数或细节核验。
 
 ## 验证与观察
 
@@ -95,9 +98,9 @@ MCP 的 `get_hardware_status` 与对话和检索无关，新配置默认关闭�
 
 ## 按需查看图片
 
-`forum_read` 和 `web_read` 默认使用 `images="none"`，普通读帖、网页读取和文字搜索只返回图片元信息。模型只有在确需看图时才显式传入 `images="auto"`；`forum_read` 还支持 `images="selected"` 和 `image_refs`，按引用选择图片。当前请求直接附带的图片仍自动加载；被回复楼层和普通工具结果中的图片不自动下载。显式 `image_search` 保留展示素材能力。合照使用 `users` → `prepare_image_references` → `generate_image`，不要求逐张识图。
+`forum_read` 和 `web_read` 默认使用 `images="none"`，普通读帖、网页读取和文字搜索只返回图片元信息。模型只有在确需看图时才显式传入 `images="auto"`；`forum_read` 还支持 `images="selected"` 和 `image_refs`，按引用选择图片。当前请求直接附带的图片仍自动加载；被回复楼层和普通工具结果中的图片不自动下载。显式 `image_search` 保留展示素材能力。合照使用 `users(usernames=[…], include_avatar=true)` → `generate_image(references=[…])`，不要求逐张识图。
 
-原图、secure-uploads 和头像走论坛认证路径，失败后不降级成无鉴权公开下载。成功字节和确定性失败在本轮共享；查看图片与准备参考图复用已下载字节。下载、上传或解析失败只记入 `image_failures`、运行事件和管理日志，不加入最终正文；图片不可用不算整轮失败，模型继续依据现有文字回答，也不据此猜测图片内容。
+原图、secure-uploads 和头像走论坛认证路径，失败后不降级成无鉴权公开下载；`secure-uploads/original/…/<sha1>.<ext>` 与 `optimized/…_2_WxH.<ext>` 会先换算成 `upload://<base62(sha1)>.<ext>` 短地址再下载（sha1 直链需要签名，Bot 拿不到）。长边 ≤512px 且 ≤300KB 的图片以 `detail=low` 内联发送，其余经 Files API 上传并缓存 file_id 七天；只有提供商返回 400 才把内联图改走 Files API。成功字节和确定性失败在本轮共享；查看图片与准备参考图复用已下载字节。下载、上传或解析失败只记入 `image_failures`、运行事件和管理日志，不加入最终正文；图片不可用不算整轮失败，模型继续依据现有文字回答，也不据此猜测图片内容。
 
 ## 验证与发布检查
 

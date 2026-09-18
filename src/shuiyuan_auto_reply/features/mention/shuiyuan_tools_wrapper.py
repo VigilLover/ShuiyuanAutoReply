@@ -52,12 +52,22 @@ class ShuiyuanToolsWrapper:
             code = exc.code
         elif isinstance(exc, ValueError):
             code = "invalid_arguments"
-        return {
+        hints = {
+            "not_found": "确认 ref/楼层号或用户名是否正确；不要用相邻楼层猜测",
+            "invalid_arguments": "按工具说明修正参数后重试一次；不要重复同样的调用",
+            "cursor_conflict": "继续翻页时只传 cursor，不要再带其他筛选参数",
+            "search_limit_reached": "换更具体的关键词或加 topic_id/username 缩小范围",
+            "forbidden": "该内容当前账号不可见，忽略它继续作答",
+        }
+        result = {
             "status": "error",
             "code": code,
             "message": value["message"],
             "retryable": value["retryable"],
         }
+        if code in hints:
+            result["hint"] = hints[code]
+        return result
 
     @staticmethod
     def _cursor(value: dict) -> str | None:
@@ -173,7 +183,16 @@ class ShuiyuanToolsWrapper:
         limit: int = 8,
         cursor: str | None = None,
     ) -> dict:
-        """Search Shuiyuan posts or topics with Discourse filters; returns concise snippets and an opaque continuation cursor."""
+        """搜索水源社区的帖子或话题。
+
+        何时用：需要找到讨论某件事的帖子、某人说过的话，或按时间范围回顾时。
+        参数要点：query 支持 Discourse 语法（`in:title`、`@用户名`、`#分类`）；
+        topic_id 限定在一个话题内；username 限定作者；after_date/before_date 用
+        YYYY-MM-DD；kind="topics" 只找话题标题；sort 默认按相关度。
+        返回：items 为命中的帖子（ref、author、text 摘要≤400字、created_at、topic）
+        或话题（ref、title、posts）；命中不保证穷尽，摘要可能截断，需要完整正文时按
+        ref 用 forum_read 精读；有 next_cursor 时只传 cursor 继续翻页。
+        """
         try:
             if limit < 1:
                 raise ValueError("limit must be at least 1")
@@ -242,6 +261,7 @@ class ShuiyuanToolsWrapper:
                         "ref": f"topic:{row['id']}",
                         "title": self._snippet(str(row.get("title", "")), 160),
                         "posts": row.get("posts_count"),
+                        "replies": row.get("reply_count"),
                         "last_posted_at": row.get("last_posted_at"),
                     }
                     for row in source[offset : offset + limit]
@@ -311,7 +331,18 @@ class ShuiyuanToolsWrapper:
         images: Literal["auto", "none", "selected"] = "none",
         image_refs: list[str] | None = None,
     ) -> tuple[str, list[PostShort]]:
-        """Read exact posts or a topic window; load images only when explicitly requested."""
+        """精读一个帖子，或按顺序读取一个话题的楼层。
+
+        何时用：已经知道要看哪一楼（forum_search 返回的 ref、用户给的链接楼层、
+        reply_to），或需要顺着话题从头/从尾读一段时。
+        参数要点：精读用 post_id 或 topic_id+post_number；顺序读用 topic_id 加
+        order/limit，可用 username 只看某人的楼层；同一帖只需读一次，重复读取会直接
+        复用结果。图片默认不加载，只有需要看图时才传 images="auto"（该帖全部图）或
+        images="selected" 并给出 image_refs。
+        返回：items 为帖子（ref、post_id、author、text、created_at、reply_to、media
+        引用）；正文过长时给出 next_cursor，只传 cursor 继续读下一页；complete=true
+        表示话题已读完。
+        """
         try:
             if limit < 1:
                 raise ValueError("limit must be at least 1")
@@ -471,7 +502,15 @@ class ShuiyuanToolsWrapper:
         user_id: int | None = None,
         include_avatar: bool = False,
     ) -> dict:
-        """Resolve one exact username, search names, resolve one numeric ID, or resolve up to 50 exact usernames."""
+        """查询水源用户资料，可选带头像。
+
+        何时用：需要确认用户存在、拿到 user_id、昵称或头像时。
+        参数要点：四种模式只能选一种——username 精确查一个人；usernames 一次精确查
+        多个人（最多 50，多个用户名一律用这个，不要逐个调用）；query 按名字模糊搜索；
+        user_id 反查已知 ID。只在需要头像（例如生成合照）时传 include_avatar=true。
+        返回：items 为用户（user_id、username、name、可选 avatar）；批量模式下每项带
+        input 和 status，查不到的项 status 为 error。
+        """
         try:
             modes = sum(
                 value not in (None, "", [])
