@@ -23,7 +23,6 @@ import httpx
 from openai import AsyncOpenAI
 from PIL import Image, UnidentifiedImageError
 
-from shuiyuan_auto_reply.application.tool_results import current_turn
 from shuiyuan_auto_reply.domain import AttachmentRef, VisualMediaArtifact
 from shuiyuan_auto_reply.infrastructure.image_transport import (
     cached_media_attempt,
@@ -572,11 +571,6 @@ class DeepSeekVisionMediaManager:
                         description=f"来自 {name or '论坛工具'}",
                     )
                 except Exception as exc:
-                    turn = current_turn.get()
-                    if turn and name in {"forum_read", "users", "web_read"}:
-                        turn.notices.append(
-                            "部分请求查看的图片读取失败，不能据此确认图片内容。"
-                        )
                     logging.warning(
                         "Failed to cache forum search image %s from %s: %s",
                         private_url,
@@ -608,11 +602,6 @@ class DeepSeekVisionMediaManager:
                         referer=referer,
                     )
                 except Exception as exc:
-                    turn = current_turn.get()
-                    if turn and name in {"forum_read", "users", "web_read"}:
-                        turn.notices.append(
-                            "部分请求查看的图片读取失败，不能据此确认图片内容。"
-                        )
                     logging.warning(
                         "Failed to cache web search image %s from %s: %s",
                         public_url,

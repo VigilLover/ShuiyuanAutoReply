@@ -444,7 +444,7 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("inspect_images", by_name)
         self.assertEqual(by_name["generate_image"].response_format, "content")
 
-    async def test_forum_read_tool_returns_artifact_for_exact_post_images(self):
+    async def test_forum_read_tool_loads_exact_post_images_only_when_requested(self):
         model = MentionChatModel.__new__(MentionChatModel)
         model.model = MagicMock()
         model.model.get_post_details = AsyncMock(
@@ -456,6 +456,12 @@ class TestMentionChatModelMultimodal(unittest.IsolatedAsyncioTestCase):
         read_tool = {tool.name: tool for tool in tools}["forum_read"]
 
         content, artifact = await read_tool.coroutine(post_id=1)
+
+        self.assertIn("forum:99/7", content)
+        self.assertNotIn("media", content)
+        self.assertEqual(artifact, [])
+
+        content, artifact = await read_tool.coroutine(post_id=1, images="auto")
 
         self.assertIn("forum:99/7", content)
         self.assertEqual(artifact[0].source, "forum_read")

@@ -22,6 +22,7 @@ from shuiyuan_auto_reply.application.handlers import (
 from shuiyuan_auto_reply.bootstrap.settings import ProviderSettings
 from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.domain import (
+    UNKNOWN_REPLY_TEXT,
     ActorRef,
     AttachmentRef,
     Channel,
@@ -332,10 +333,15 @@ class MentionModel(BaseUserActionModel):
                     f"==> [MentionModel] AI replied with DataInspectionFailed: {str(e)}"
                 )
             else:
-                reply = "抱歉，遇到了一些错误。"
                 logging.error(
                     f"==> [MentionModel] AI replied with ValueError: {str(e)}"
                 )
+                raise ReplyGenerationError(
+                    f"{type(e).__name__}: {e}",
+                    fallback_text=self.output_formatter.format_chat(
+                        UNKNOWN_REPLY_TEXT, self.nickname
+                    ),
+                ) from e
         except Exception as e:
             logging.error(f"==> [MentionModel] AI replied with Exception: {str(e)}")
             # Keep the same user-visible fallback text, but let the run lifecycle
@@ -344,7 +350,7 @@ class MentionModel(BaseUserActionModel):
             raise ReplyGenerationError(
                 f"{type(e).__name__}: {e}",
                 fallback_text=self.output_formatter.format_chat(
-                    "抱歉，遇到了一些未知错误。", self.nickname
+                    UNKNOWN_REPLY_TEXT, self.nickname
                 ),
             ) from e
         finally:
@@ -769,9 +775,7 @@ class MentionModel(BaseUserActionModel):
                     # The handler already composed the final, decorated fallback.
                     text = exc.fallback_text
                 else:
-                    text = self.output_formatter.make_unique(
-                        "抱歉，小狼bot遇到了一个错误，暂时无法处理您的请求，请稍后再试 :crying_cat:"
-                    )
+                    text = self.output_formatter.make_unique(UNKNOWN_REPLY_TEXT)
             await transition("publishing", "forum.reply_publishing")
             await self.model.reply_to_post(
                 text, request.forum_context.topic_id, request.forum_context.post_number

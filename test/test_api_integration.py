@@ -20,11 +20,23 @@ class HistoryAwareChat:
         return ReplyResult(f"history={len(context.history)}:{context.request.content}")
 
 
-class FakeContainer:
+class FailingOnceChat(HistoryAwareChat):
     def __init__(self):
+        self.calls = 0
+
+    async def handle(self, context: BotContext) -> ReplyResult:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("provider secret diagnostic")
+        return await super().handle(context)
+
+
+class FakeContainer:
+    def __init__(self, handler=None):
         self.settings = AppSettings()
         self.bot_service = BotService(
-            InMemorySessionRepository(), HandlerRegistry([HistoryAwareChat()])
+            InMemorySessionRepository(),
+            HandlerRegistry([handler or HistoryAwareChat()]),
         )
         self.close_count = 0
 
@@ -103,6 +115,27 @@ class ApiIntegrationTests(unittest.TestCase):
                 "/api/clear", json={"session_id": "a", "token": "wrong"}
             )
             self.assertEqual(clear_forbidden.status_code, 403)
+
+    def test_fatal_generation_failure_is_generic_and_does_not_pollute_history(self):
+        container = FakeContainer(FailingOnceChat())
+
+        async def factory():
+            return container
+
+        with TestClient(create_app(factory)) as client:
+            failed = client.post(
+                "/api/chat",
+                json={"session_id": "a", "token": "t", "message": "first"},
+            )
+            self.assertEqual(failed.status_code, 500)
+            self.assertEqual(failed.json()["detail"], "抱歉，发生了未知错误")
+            self.assertNotIn("provider secret diagnostic", failed.text)
+
+            recovered = client.post(
+                "/api/chat",
+                json={"session_id": "a", "token": "t", "message": "second"},
+            )
+            self.assertEqual(recovered.json()["reply"], "history=0:second")
 
     def test_brand_assets_are_served_as_svg(self):
         container = FakeContainer()

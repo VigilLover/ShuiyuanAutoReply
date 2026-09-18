@@ -92,6 +92,21 @@ def test_web_read_decodes_legacy_mcp_text_block_without_repr_noise():
     assert artifact is None
 
 
+def test_web_read_direct_image_is_loaded_only_when_requested():
+    upstream = SimpleNamespace(name="fetch_webpage_content", ainvoke=AsyncMock())
+    tool = _model()._consolidate_mcp_tools([upstream])[0]
+
+    content, artifact = asyncio.run(tool.coroutine(url="https://example.com/a.png"))
+    assert json.loads(content)["items"][0]["media"][0]["loaded"] is False
+    assert artifact is None
+
+    content, artifact = asyncio.run(
+        tool.coroutine(url="https://example.com/a.png", images="auto")
+    )
+    assert json.loads(content)["items"][0]["media"][0]["loaded"] is True
+    assert artifact.image_urls == ["https://example.com/a.png"]
+
+
 def test_web_read_uses_structured_envelope_and_exact_cursor():
     first = {
         "status": "ok",
