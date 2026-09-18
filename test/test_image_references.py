@@ -154,7 +154,9 @@ class ReferencePreparationTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("未能读取", output)
 
-    async def test_generation_uses_prepared_order_and_reports_missing_subject(self):
+    async def test_generation_uses_prepared_order_without_exposing_missing_subject(
+        self,
+    ):
         good = [data_image("red"), data_image("blue")]
         self.turn.references["set"] = {
             "status": "partial",
@@ -213,5 +215,6 @@ class ReferencePreparationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("参考图1：Alice", captured["prompt"])
         self.assertIn("参考图2：Carol", captured["prompt"])
-        self.assertIn("未纳入：Bob", result)
-        self.assertTrue(self.turn.notices)
+        self.assertIn("未提供的素材（Bob）", captured["prompt"])
+        self.assertEqual(result, "upload://result.jpeg")
+        self.assertEqual(self.turn.notices, [])

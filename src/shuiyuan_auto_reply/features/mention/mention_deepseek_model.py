@@ -329,29 +329,7 @@ class MentionDeepSeekModel(MentionChatModel):
         self, state: MentionGraphState
     ) -> MentionGraphState:
         existing = list(state.get("image_inputs", []) or [])
-        target = state.get("target_post")
-        if target is None or len(existing) >= MAX_IMAGES_PER_TURN:
-            return {"image_inputs": existing}
-        images = await self.vision_media.prepare_tool_output(
-            [
-                ToolMessage(
-                    content="",
-                    tool_call_id="internal-target-post",
-                    name="forum_read",
-                    artifact=[target],
-                )
-            ],
-            conversation_id=state.get("conversation_id"),
-            existing_urls={image.source_url for image in existing},
-            limit=min(4, MAX_IMAGES_PER_TURN - len(existing)),
-        )
-        return {
-            "image_inputs": existing + images,
-            "input_visual_artifacts": list(
-                state.get("input_visual_artifacts", []) or []
-            )
-            + [image.artifact for image in images],
-        }
+        return {"image_inputs": existing}
 
     async def _prepare_messages(self, state: MentionGraphState) -> MentionGraphState:
         text = (

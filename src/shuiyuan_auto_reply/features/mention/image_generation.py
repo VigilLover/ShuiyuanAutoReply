@@ -892,7 +892,6 @@ def create_image_generation_tool(model, *, state_store=None):
             return "图片生成失败: 未能读取可用的参考图片. " + json.dumps(
                 prepared.get("items", []) if prepared else [], ensure_ascii=False
             )
-        reference_notice = ""
         if prepared:
             good = [item for item in prepared["items"] if item["status"] == "ok"]
             missing = [item for item in prepared["items"] if item["status"] != "ok"]
@@ -903,7 +902,6 @@ def create_image_generation_tool(model, *, state_store=None):
             if missing:
                 labels = "、".join(item["label"] for item in missing)
                 prompt += f"\n仅使用上述 {len(good)} 项成功素材；未提供的素材（{labels}）及其对应对象不纳入生成，不猜测其形象。"
-                reference_notice = f"参考素材 {len(good)}/{len(prepared['items'])} 项可用；未纳入：{labels}。"
         total_ref_bytes = sum(
             len(value.split(",", 1)[1]) * 3 // 4 for value in reference_data_urls
         )
@@ -1099,11 +1097,8 @@ def create_image_generation_tool(model, *, state_store=None):
                     width=width,
                     height=height,
                 )
-                if turn and reference_notice:
-                    turn.notices.append(reference_notice)
                 return (
-                    f"图片生成成功：{artifact.uri}。请在最终回复中使用该地址展示图片。"
-                    + reference_notice,
+                    f"图片生成成功：{artifact.uri}。请在最终回复中使用该地址展示图片。",
                     artifact,
                 )
             except Exception as exc:
@@ -1113,11 +1108,7 @@ def create_image_generation_tool(model, *, state_store=None):
         try:
             response = await model.upload_image(upload_bytes)
             logger.info("Uploaded to Shuiyuan: %s", response.short_path)
-            if turn and reference_notice:
-                turn.notices.append(reference_notice)
-            return response.short_path + (
-                "\n" + reference_notice if reference_notice else ""
-            )
+            return response.short_path
         except Exception as exc:
             logger.error("Shuiyuan upload failed: %s", exc)
             return f"图片生成失败: 上传到水源异常 {exc}"

@@ -321,10 +321,10 @@ class ShuiyuanToolsWrapper:
         order: Literal["latest", "oldest"] = "latest",
         limit: int = 10,
         cursor: str | None = None,
-        images: Literal["auto", "none", "selected"] = "auto",
+        images: Literal["auto", "none", "selected"] = "none",
         image_refs: list[str] | None = None,
     ) -> tuple[str, list[PostShort]]:
-        """Read exact posts or a topic window. Exact reads attach up to four images for multimodal understanding; topic lists stay text-only."""
+        """Read exact posts or a topic window; load images only when explicitly requested."""
         try:
             if limit < 1:
                 raise ValueError("limit must be at least 1")

@@ -640,7 +640,7 @@ class MentionChatModel:
                 url: str = "",
                 cursor: str | None = None,
                 max_length: int = 6000,
-                images: Literal["auto", "none"] = "auto",
+                images: Literal["auto", "none"] = "none",
                 mode: Literal["auto", "document", "json", "raw"] = "auto",
                 query: str | None = None,
                 json_path: str | None = None,
@@ -1360,21 +1360,7 @@ class MentionChatModel:
         self, state: MentionGraphState
     ) -> MentionGraphState:
         existing = list(state.get("image_inputs", []) or [])
-        target = state.get("target_post")
-        if not state.get("supports_multimodal") or target is None:
-            return {"image_inputs": existing}
-        limit = min(4, self._env_positive_int("MIMO_MULTIMODAL_MAX_IMAGES", 4))
-        if len(existing) >= limit:
-            return {"image_inputs": existing[:limit]}
-        images = await collect_post_image_inputs(
-            [target],
-            shuiyuan_model=self.model,
-            origin="target_post",
-            max_images=limit - len(existing),
-            existing_urls=self._existing_image_source_urls(state),
-            existing_byte_count=self._existing_image_byte_count(state),
-        )
-        return {"image_inputs": existing + images}
+        return {"image_inputs": existing}
 
     @staticmethod
     async def _prepare_messages(state: MentionGraphState) -> MentionGraphState:

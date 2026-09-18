@@ -172,6 +172,11 @@ async def _forum_read_attaches_images_only_for_exact_reads():
 
     content, artifacts = await tools.forum_read(post_id=10)
     payload = json.loads(content)
+    assert "media" not in payload["items"][0]
+    assert artifacts == []
+
+    content, artifacts = await tools.forum_read(post_id=10, images="auto")
+    payload = json.loads(content)
     assert payload["items"][0]["media"][0]["url"] == "upload://one.png"
     assert artifacts[0].image_urls == ["upload://one.png"]
 
