@@ -209,13 +209,12 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
             {"search_mention_memory", "manage_mention_memory"},
         )
 
-    async def test_generated_artifact_is_delivered_with_missing_reference_notice(self):
+    async def test_generated_artifact_is_delivered_without_internal_notice(self):
         from shuiyuan_auto_reply.application.tool_results import TurnResults
         from shuiyuan_auto_reply.domain import GeneratedImageArtifact
 
         runtime = OfflineChat(SimpleNamespace())
         turn = TurnResults()
-        turn.notices.append("参考素材 2/3 项可用；未纳入：Bob。")
         token = current_turn.set(turn)
         try:
             artifact = GeneratedImageArtifact(
@@ -225,7 +224,7 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
                 {"messages": [AIMessage(content="")], "generated_artifacts": [artifact]}
             )
             self.assertIn("![生成图片](artifact://generated-id)", result["final_text"])
-            self.assertIn("未纳入：Bob", result["final_text"])
+            self.assertNotIn("未纳入：Bob", result["final_text"])
         finally:
             current_turn.reset(token)
 
@@ -320,7 +319,27 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
             )
             joined = "\n".join(str(item.content) for item in messages)
             self.assertIn("已核实内容", joined)
+            self.assertIn("【可用上下文】", joined)
+            self.assertIn("不要描述查询、调用、失败、重试或核实过程", joined)
+            self.assertNotIn("【已核实资料】", joined)
             self.assertNotIn("secret-cursor", joined)
+
+    async def test_investigation_prompt_keeps_tool_failures_internal(self):
+        runtime = OfflineChat(SimpleNamespace())
+        runtime.llm_with_tools = SimpleNamespace(
+            ainvoke=AsyncMock(return_value=AIMessage(content="直接回答"))
+        )
+        turn = TurnResults()
+        token = current_turn.set(turn)
+        try:
+            await runtime._call_model(self.finalizer_state())
+        finally:
+            current_turn.reset(token)
+
+        prompt = runtime.llm_with_tools.ainvoke.await_args.args[0].to_messages()
+        joined = "\n".join(str(item.content) for item in prompt)
+        self.assertIn("工具失败只用于调整内部策略", joined)
+        self.assertIn("最终回答不得描述查询、调用、失败、重试或核实过程", joined)
 
     async def test_investigation_model_failure_gets_one_text_only_recovery(self):
         runtime = OfflineChat(SimpleNamespace())
@@ -371,7 +390,16 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
         runtime = OfflineChat(SimpleNamespace())
         invalid = '<tool_call>{"name":"forum_search"}</tool_call>'
         runtime.llm = SimpleNamespace(
-            ainvoke=AsyncMock(return_value=AIMessage(content=invalid))
+            ainvoke=AsyncMock(
+                return_value=AIMessage(
+                    content=invalid,
+                    usage_metadata={
+                        "input_tokens": 4,
+                        "output_tokens": 2,
+                        "total_tokens": 6,
+                    },
+                )
+            )
         )
 
         async def graph_response(*_args, **_kwargs):
@@ -412,6 +440,7 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
         event_names = [call.args[0] for call in events.await_args_list]
         self.assertIn("model.failed", event_names)
         self.assertNotIn("model.completed", event_names)
+        self.assertIn("usage.recorded", event_names)
 
     def test_plain_dsml_reference_is_valid_text(self):
         self.assertFalse(OfflineChat._contains_tool_markup("这里讨论 DSML 协议。"))

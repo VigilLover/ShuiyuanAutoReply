@@ -217,4 +217,3 @@ class ReferencePreparationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("参考图2：Carol", captured["prompt"])
         self.assertIn("未提供的素材（Bob）", captured["prompt"])
         self.assertEqual(result, "upload://result.jpeg")
-        self.assertEqual(self.turn.notices, [])

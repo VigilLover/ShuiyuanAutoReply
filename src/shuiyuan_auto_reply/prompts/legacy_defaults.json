@@ -62,5 +62,37 @@
   "7652b27adfce5fbec010cc22a2c7da4206da12fe2944972ba354ee8ff5e89f8c": {
     "persona_id": "存档读取",
     "scope": "web"
+  },
+  "6bdac6be83795b872f8c5759ee61dd8f884ea44ba82b52a4305a510163c432d4": {
+    "persona_id": "wolf_lumine",
+    "scope": "forum"
+  },
+  "02d4fc27877bc0dd422db2f6c11bb8e5bef3774e8eb6a17a82b72a601cb7f4d7": {
+    "persona_id": "wolf_lumine",
+    "scope": "forum"
+  },
+  "2b188bd636eac63acd904d4a1836d42895534c63ead4faf067292ed5dc08030e": {
+    "persona_id": "存档读取",
+    "scope": "forum"
+  },
+  "0b893af687335a26aa434880bf76a32e21534cd3d1f77870c48181f9ff5d2e7f": {
+    "persona_id": "存档读取",
+    "scope": "forum"
+  },
+  "464b580d0568695647cd09a6c3a2855f935d3cc1912701eff0f7e1ff1269040d": {
+    "persona_id": "wolf_lumine",
+    "scope": "web"
+  },
+  "9ca7f37c050b1047cc3ad1959488a96f24cf9b6ee263c324bef0b7740fe35dae": {
+    "persona_id": "wolf_lumine",
+    "scope": "web"
+  },
+  "d468d7d9d6afa696e5ee299a52c0fc1fdf7d9348d7e2fa59f4bfd6a25e760096": {
+    "persona_id": "存档读取",
+    "scope": "web"
+  },
+  "633ca03bbbfceeae35fba200edbc0a4cf37588b57e5b3663b4301b5aca04e309": {
+    "persona_id": "存档读取",
+    "scope": "web"
   }
 }

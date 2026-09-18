@@ -36,7 +36,6 @@ class TurnResults:
     pending: dict[str, asyncio.Task] = field(default_factory=dict)
     references: dict[str, Any] = field(default_factory=dict)
     cursors: dict[str, Any] = field(default_factory=dict)
-    notices: list[str] = field(default_factory=list)
     topic_coverage: dict[int, set[int]] = field(default_factory=dict)
     completed_topics: set[int] = field(default_factory=set)
     topic_titles: dict[int, str] = field(default_factory=dict)
