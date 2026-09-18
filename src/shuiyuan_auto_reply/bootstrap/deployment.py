@@ -42,6 +42,7 @@ DEFAULTS = {
     "mcp": {"enabled": True, "url": ""},
     "runtime": {
         "concurrency": 3,
+        "image_concurrency": 2,
         "queue_limit": 100,
         "timeout": 900,
         "poll_interval": 5,
@@ -202,6 +203,7 @@ def load_deployment(
         "embedding": ("dims", "batch_size", "concurrency", "timeout", "attempts"),
         "runtime": (
             "concurrency",
+            "image_concurrency",
             "queue_limit",
             "timeout",
             "poll_interval",

@@ -59,7 +59,7 @@ from .context_budget import (
     repair_tool_pairing,
     text_value,
 )
-from .image_generation import ImageGenerationService, create_image_generation_tool
+from .image_generation import ImageGenerationService
 from .mention_memory_model import MentionMemoryModel
 from .mention_multimodal import ImageInspectResult, extract_image_urls
 from .shuiyuan_tools_objects import PostShort
@@ -217,11 +217,8 @@ class MentionChatModel:
         # LangGraph runtime objects are initialized after subclass sets self.llm.
         self.graph: Optional[CompiledStateGraph] = None
         self.llm_with_tools = None
-        self.openai_tools: List[Dict[str, Any]] = []
-        # Provider-owned tools are always bound but deliberately omitted from
-        # the user-facing tool catalog and local ToolNode.
-        self.hidden_provider_tools: List[Dict[str, Any]] = []
-        self.provider_tool_choice: str | None = None
+        # Subclasses may point this at a client tuned for the final answer.
+        self.llm_final: BaseChatModel | None = None
         self.tools: List[BaseTool] = []
         self.memory_model = MentionMemoryModel(self.embeddings)
         self.model = model
@@ -854,45 +851,18 @@ class MentionChatModel:
                     )
                 )
 
-        # 注册图片生成工具 (本地实现, 生成后自动上传水源并返回 Markdown)
+        # The image tool needs the state store for artifacts; without it the
+        # runtime is a text-only harness (tests, offline evaluation).
         if getattr(self, "state_store", None) is not None:
-            gen_img_func = ImageGenerationService(self.model, self.state_store).generate
-        else:
-            # Compatibility path for direct legacy construction and its snapshots.
-            legacy_generate = create_image_generation_tool(self.model)
-
-            async def gen_img_func(
-                prompt: str,
-                aspect_ratio: str = "1:1",
-                references: list[dict[str, str]] | None = None,
-                allow_partial: bool = False,
-            ) -> str:
-                """Generate an image from a prompt and optional labeled references.
-
-                Reference loading, validation, deduplication, and ordering happen
-                internally. Failed references stop generation unless
-                ``allow_partial`` is explicitly true.
-                """
-                return await legacy_generate(
-                    prompt=prompt,
-                    aspect_ratio=aspect_ratio,
-                    references=references,
-                    allow_partial=allow_partial,
+            service = ImageGenerationService(self.model, self.state_store)
+            tools.append(
+                StructuredTool.from_function(
+                    coroutine=service.generate,
+                    name="generate_image",
+                    description=inspect.getdoc(service.generate),
+                    response_format="content_and_artifact",
                 )
-
-        tools.append(
-            StructuredTool.from_function(
-                coroutine=gen_img_func,
-                name="generate_image",
-                description=inspect.getdoc(gen_img_func)
-                or "根据文字描述生成图片并保存为本地 Artifact.",
-                response_format=(
-                    "content_and_artifact"
-                    if getattr(self, "state_store", None) is not None
-                    else "content"
-                ),
             )
-        )
 
         logging.info(
             "Loaded %d Shuiyuan tool(s): %s",
@@ -959,11 +929,6 @@ class MentionChatModel:
                 for tool in shuiyuan_tools
             ]
             + [{"name": tool.name, "source": "memory"} for tool in memory_tools]
-            + [
-                {"name": str(tool.get("type")), "source": "provider-native"}
-                for tool in self.openai_tools
-                if tool.get("type")
-            ]
         )
         for item in tool_catalog:
             if item["source"] == "mcp":
@@ -996,32 +961,15 @@ class MentionChatModel:
                 for tool in other_function_like_tools
                 if tool.name in self.enabled_tools
             ]
-            self.openai_tools = [
-                tool
-                for tool in self.openai_tools
-                if str(tool.get("type", "")) in self.enabled_tools
-            ]
 
-        all_function_like_tools = enabled_mcp_tools + other_function_like_tools
-        all_tools = (
-            all_function_like_tools
-            + self.openai_tools
-            + getattr(self, "hidden_provider_tools", [])
-        )
-        self.tools = all_function_like_tools
+        all_tools = enabled_mcp_tools + other_function_like_tools
+        self.tools = all_tools
         logging.info(
-            "Binding LLM with %d function-like tool(s), %d memory tool(s), "
-            "and %d visible/%d hidden provider-native tool(s)",
-            len(all_function_like_tools),
+            "Binding LLM with %d tool(s) including %d memory tool(s)",
+            len(all_tools),
             len(memory_tools),
-            len(self.openai_tools),
-            len(getattr(self, "hidden_provider_tools", [])),
         )
-        bind_kwargs: dict[str, Any] = {}
-        provider_tool_choice = getattr(self, "provider_tool_choice", None)
-        if provider_tool_choice is not None:
-            bind_kwargs["tool_choice"] = provider_tool_choice
-        self.llm_with_tools = self.llm.bind_tools(all_tools, **bind_kwargs)
+        self.llm_with_tools = self.llm.bind_tools(all_tools)
         self.graph = self._build_graph()
         logging.info("Mention LangGraph agent initialized")
 
@@ -1790,7 +1738,11 @@ class MentionChatModel:
         model_started_at = time.monotonic()
         await emit_event("model.started", {})
         try:
-            model = self.llm if final_phase else self.llm_with_tools
+            model = (
+                (getattr(self, "llm_final", None) or self.llm)
+                if final_phase
+                else self.llm_with_tools
+            )
             if turn:
                 import time
 

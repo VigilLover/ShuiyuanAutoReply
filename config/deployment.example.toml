@@ -8,6 +8,8 @@ query_limit = 40
 model_limit = 24
 final_reserve_seconds = 60
 concurrency = 3
+# 同时进行的生图请求数（中转站按请求计费，过高会拖慢单张耗时）
+image_concurrency = 2
 queue_limit = 100
 timeout = 900
 poll_interval = 5

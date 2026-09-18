@@ -1,191 +1,40 @@
 import logging
 from dataclasses import replace
-from typing import Any, Iterable
+from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.outputs import ChatResult
-from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, ToolMessage
 
-from shuiyuan_auto_reply.application.events import emit_event
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.bootstrap.settings import DeepSeekApiFormat, ProviderSettings
+from shuiyuan_auto_reply.infrastructure.llm.deepseek import (
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_DEFAULT_MODEL,
+    DeepSeekChatOpenAI,
+    as_responses_image_block,
+    build_chat_model,
+    build_deepseek_content,
+    build_deepseek_responses_content,
+    tool_output_blocks,
+)
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
-from .deepseek_vision import (
-    MAX_IMAGES_PER_TURN,
-    DeepSeekVisionMediaManager,
-    build_deepseek_content,
-)
+from .deepseek_vision import MAX_IMAGES_PER_TURN, DeepSeekVisionMediaManager
 from .mention_chat_model import MentionChatModel, MentionGraphState
 from .mention_multimodal import extract_image_urls
 
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_DEFAULT_MODEL = "deepseek-flash"
-DEEPSEEK_DEFAULT_MAX_RETRIES = 3
-DEEPSEEK_DEFAULT_THINKING = "enabled"
-DEEPSEEK_DEFAULT_REASONING_EFFORT = "max"
+# Backwards-compatible aliases for tests and callers of the previous module layout.
+_mk_deepseek_llm = build_chat_model
+_as_responses_image_block = as_responses_image_block
+_tool_output_blocks = tool_output_blocks
 
-
-def _as_responses_image_block(block: dict[str, Any]) -> dict[str, Any]:
-    """Convert the stored Chat/Vision image block to Responses input format."""
-    block_type = block.get("type")
-    if block_type == "input_image":
-        return dict(block)
-    if block_type == "file":
-        return {"type": "input_image", "file_id": block["file_id"]}
-    if block_type == "image_url":
-        image_url = block.get("image_url")
-        if isinstance(image_url, dict):
-            result = {"type": "input_image", "image_url": image_url.get("url", "")}
-            if image_url.get("detail"):
-                result["detail"] = image_url["detail"]
-            return result
-        return {"type": "input_image", "image_url": image_url}
-    raise ValueError(f"Unsupported DeepSeek image block: {block_type!r}")
-
-
-def build_deepseek_responses_content(
-    text: str, images: Iterable[Any]
-) -> list[dict[str, Any]]:
-    content: list[dict[str, Any]] = []
-    for index, image in enumerate(images, 1):
-        label = image.description or image.source_url
-        if image.source_kind in {"web_search", "forum_search"}:
-            label = (
-                f"{label}；展示标识 {image.artifact.uri}。"
-                "最终回复需要展示此图时，只能把该展示标识作为图片地址"
-            )
-        content.append({"type": "input_text", "text": f"【图片 {index}：{label}】"})
-        content.append(_as_responses_image_block(image.content_block))
-    if text:
-        content.append({"type": "input_text", "text": text})
-    return content
-
-
-def _tool_output_blocks(content: Any) -> list[dict[str, Any]]:
-    """Keep tool text while restricting output to Responses-compatible blocks."""
-    if isinstance(content, str):
-        return [{"type": "input_text", "text": content}]
-    if isinstance(content, list):
-        blocks: list[dict[str, Any]] = []
-        for item in content:
-            if isinstance(item, str):
-                blocks.append({"type": "input_text", "text": item})
-            elif isinstance(item, dict) and item.get("type") in {"text", "input_text"}:
-                blocks.append({"type": "input_text", "text": str(item.get("text", ""))})
-            else:
-                blocks.append({"type": "input_text", "text": str(item)})
-        return blocks
-    return [{"type": "input_text", "text": str(content)}]
-
-
-class DeepSeekChatOpenAI(ChatOpenAI):
-    """ChatOpenAI variant that preserves DeepSeek thinking metadata.
-
-    DeepSeek requires assistant ``reasoning_content`` to be sent back after
-    thinking-mode tool calls. LangChain's generic OpenAI adapter currently drops
-    this provider-specific field, so keep it in ``AIMessage.additional_kwargs``
-    and re-inject it into later chat-completion payloads.
-    """
-
-    def _get_request_payload(
-        self,
-        input_: Any,
-        *,
-        stop: list[str] | None = None,
-        **kwargs: Any,
-    ) -> dict:
-        messages = self._convert_input(input_).to_messages()
-        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-
-        if "max_completion_tokens" in payload:
-            payload["max_tokens"] = payload.pop("max_completion_tokens")
-
-        payload_messages = payload.get("messages", [])
-        for source_message, payload_message in zip(
-            messages, payload_messages, strict=False
-        ):
-            if isinstance(source_message, HumanMessage) and isinstance(
-                source_message.content, list
-            ):
-                # DeepSeek's Vision endpoint accepts provider-specific ``file``
-                # blocks that generic OpenAI adapters may otherwise normalize away.
-                payload_message["content"] = source_message.content
-            if not isinstance(source_message, AIMessage):
-                continue
-            reasoning_content = source_message.additional_kwargs.get(
-                "reasoning_content"
-            )
-            if reasoning_content and "reasoning_content" not in payload_message:
-                payload_message["reasoning_content"] = reasoning_content
-
-        return payload
-
-    def _create_chat_result(
-        self,
-        response: Any,
-        generation_info: dict | None = None,
-    ) -> ChatResult:
-        response_dict = (
-            response if isinstance(response, dict) else response.model_dump()
-        )
-        reasoning_by_index = [
-            (choice.get("message") or {}).get("reasoning_content")
-            for choice in response_dict.get("choices", [])
-        ]
-
-        result = super()._create_chat_result(response, generation_info)
-        for generation, reasoning_content in zip(
-            result.generations, reasoning_by_index, strict=False
-        ):
-            if reasoning_content:
-                generation.message.additional_kwargs["reasoning_content"] = (
-                    reasoning_content
-                )
-        return result
-
-
-def _mk_deepseek_llm(
-    api_key: str,
-    model_name: str,
-    provider_settings: ProviderSettings | None = None,
-) -> ChatOpenAI:
-    current = provider_settings or ProviderSettings()
-    current.validate_deepseek_options()
-    thinking = current.deepseek_thinking
-    reasoning_effort = current.deepseek_reasoning_effort
-    max_tokens = current.deepseek_max_tokens
-
-    common_kwargs: dict[str, Any] = {
-        "model": model_name,
-        "api_key": api_key,
-        "base_url": (current.mention_base_url or "").strip().rstrip("/")
-        or DEEPSEEK_BASE_URL,
-        "max_retries": DEEPSEEK_DEFAULT_MAX_RETRIES,
-    }
-    if DeepSeekApiFormat(current.deepseek_api_format) is DeepSeekApiFormat.RESPONSES:
-        kwargs = {
-            **common_kwargs,
-            "use_responses_api": True,
-            "output_version": "v1",
-            "reasoning": {
-                "effort": reasoning_effort if thinking == "enabled" else "none"
-            },
-        }
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
-        return ChatOpenAI(**kwargs)
-
-    kwargs = {
-        **common_kwargs,
-        "extra_body": {"thinking": {"type": thinking}},
-    }
-    if thinking == "enabled":
-        kwargs["reasoning_effort"] = reasoning_effort
-    if max_tokens is not None:
-        kwargs["max_tokens"] = max_tokens
-
-    return DeepSeekChatOpenAI(**kwargs)
+__all__ = [
+    "DEEPSEEK_BASE_URL",
+    "DEEPSEEK_DEFAULT_MODEL",
+    "DeepSeekChatOpenAI",
+    "MentionDeepSeekModel",
+    "build_deepseek_content",
+    "build_deepseek_responses_content",
+]
 
 
 class MentionDeepSeekModel(MentionChatModel):
@@ -235,14 +84,20 @@ class MentionDeepSeekModel(MentionChatModel):
         if not api_key:
             raise ValueError("Please set the DEEPSEEK_API_KEY environment variable.")
 
-        self.llm = _mk_deepseek_llm(
-            api_key,
-            (current.deepseek_model or "").strip() or DEEPSEEK_DEFAULT_MODEL,
-            current,
+        model_name = (current.deepseek_model or "").strip() or DEEPSEEK_DEFAULT_MODEL
+        self.llm = build_chat_model(api_key, model_name, current)
+        # The final answer never plans tool calls, so it can run at its own effort.
+        self.llm_final = (
+            self.llm
+            if current.deepseek_final_reasoning_effort
+            == current.deepseek_reasoning_effort
+            else build_chat_model(
+                api_key,
+                model_name,
+                current,
+                effort=current.deepseek_final_reasoning_effort,
+            )
         )
-        if self.api_format is DeepSeekApiFormat.RESPONSES:
-            self.hidden_provider_tools = [{"type": "web_search"}]
-            self.provider_tool_choice = "auto"
         self.supports_multimodal = True
         self.multimodal_search_image_limit = MAX_IMAGES_PER_TURN
         self.vision_media = DeepSeekVisionMediaManager(
@@ -358,33 +213,40 @@ class MentionDeepSeekModel(MentionChatModel):
             tool_messages.append(message)
         tool_messages.reverse()
         tool_messages = [
-            m for m in tool_messages if m.name in {"forum_read", "users", "web_read"}
+            m
+            for m in tool_messages
+            if m.name in {"forum_read", "users", "web_read", "generate_image"}
         ]
         if not tool_messages:
             return {"image_inputs": existing}
-        if not self.uses_responses_api:
-            new_images = await self.vision_media.prepare_tool_output(
-                tool_messages,
+
+        async def images_for(message: ToolMessage, limit: int, existing_urls: set):
+            if message.name == "generate_image":
+                artifact = getattr(message, "artifact", None)
+                if artifact is None or limit <= 0:
+                    return []
+                preview = self.vision_media.prepare_generated(artifact)
+                return [preview] if preview else []
+            return await self.vision_media.prepare_tool_output(
+                [message],
                 conversation_id=state.get("conversation_id"),
-                existing_urls={image.source_url for image in existing},
-                limit=remaining,
+                existing_urls=existing_urls,
+                limit=limit,
             )
-        else:
-            new_images = []
-            replacements: list[ToolMessage] = []
-            existing_urls = {image.source_url for image in existing}
-            for message in tool_messages:
-                message_images = await self.vision_media.prepare_tool_output(
-                    [message],
-                    conversation_id=state.get("conversation_id"),
-                    existing_urls=existing_urls,
-                    limit=remaining - len(new_images),
-                )
-                if not message_images:
-                    continue
-                new_images.extend(message_images)
-                existing_urls.update(image.source_url for image in message_images)
-                output = _tool_output_blocks(message.content)
+
+        new_images = []
+        replacements: list[ToolMessage] = []
+        existing_urls = {image.source_url for image in existing}
+        for message in tool_messages:
+            message_images = await images_for(
+                message, remaining - len(new_images), existing_urls
+            )
+            if not message_images:
+                continue
+            new_images.extend(message_images)
+            existing_urls.update(image.source_url for image in message_images)
+            if self.uses_responses_api:
+                output = tool_output_blocks(message.content)
                 for index, image in enumerate(message_images, 1):
                     output.append(
                         {
@@ -392,12 +254,15 @@ class MentionDeepSeekModel(MentionChatModel):
                             "text": f"【工具图片 {index}：{image.description or image.source_url}】",
                         }
                     )
-                    output.append(_as_responses_image_block(image.content_block))
+                    output.append(as_responses_image_block(image.content_block))
                 replacements.append(message.model_copy(update={"content": output}))
         if not new_images:
             return {"image_inputs": existing}
         visual_artifacts = list(state.get("response_visual_artifacts", []) or [])
-        visual_artifacts.extend(image.artifact for image in new_images)
+        # Generated previews are already delivered through generated_artifacts.
+        visual_artifacts.extend(
+            image.artifact for image in new_images if image.source_kind != "generated"
+        )
         result: MentionGraphState = {
             "image_inputs": existing + new_images,
             "response_visual_artifacts": visual_artifacts,
@@ -418,13 +283,16 @@ class MentionDeepSeekModel(MentionChatModel):
     async def _call_model(self, state: MentionGraphState) -> MentionGraphState:
         try:
             result = await super()._call_model(state)
-        except Exception:
+        except Exception as exc:
             url_images = [
                 image
                 for image in state.get("image_inputs", []) or []
                 if image.content_block.get("type") == "image_url"
             ]
-            if not url_images:
+            # Only a provider rejection of the image payload justifies re-sending
+            # through the Files API; timeouts and other failures must not double
+            # the spend of an already slow round.
+            if not url_images or getattr(exc, "status_code", None) != 400:
                 raise
             logging.warning(
                 "DeepSeek could not read %d image URL(s); retrying once with Files API",
@@ -468,37 +336,7 @@ class MentionDeepSeekModel(MentionChatModel):
                         rewritten.append(block)
                 message.content = rewritten
             result = await super()._call_model(state)
-        if self.uses_responses_api:
-            response = (result.get("messages") or [None])[-1]
-            await self._emit_native_web_search_events(response)
         return result
-
-    async def _emit_native_web_search_events(self, response: Any) -> None:
-        for item in getattr(response, "content", []) or []:
-            item_type = (
-                item.get("type")
-                if isinstance(item, dict)
-                else getattr(item, "type", None)
-            )
-            if item_type != "web_search_call":
-                continue
-            await emit_event(
-                "provider.tool.completed",
-                {
-                    "provider": "deepseek",
-                    "name": "web_search",
-                    "call_id": (
-                        item.get("id")
-                        if isinstance(item, dict)
-                        else getattr(item, "id", None)
-                    ),
-                    "status": (
-                        item.get("status")
-                        if isinstance(item, dict)
-                        else getattr(item, "status", None)
-                    ),
-                },
-            )
 
     def parse_model_output(self, raw_output: Any) -> str:
         """

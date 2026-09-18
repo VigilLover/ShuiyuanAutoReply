@@ -30,7 +30,10 @@ class OfflineChat(MentionChatModel):
             enabled=False, memory_key=str, graph_config=lambda key: {}
         )
         self.pipeline = ChatOrchestrator(self)
+        # The image tool registers only with a store; a stub is enough for the catalog.
+        self.state_store = SimpleNamespace()
         self.tools = self._load_shuiyuan_tools()
+        self.state_store = None
         self.graph = self._build_graph()
         self.prompt = ChatPromptTemplate.from_messages(
             [
