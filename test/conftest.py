@@ -23,3 +23,13 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "live" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _reset_forum_read_cache():
+    """The forum client's cross-turn read cache is process-wide; isolate tests."""
+    from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
+
+    ShuiyuanModel.clear_read_cache()
+    yield
+    ShuiyuanModel.clear_read_cache()

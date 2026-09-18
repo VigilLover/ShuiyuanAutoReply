@@ -388,6 +388,9 @@ def test_monitor_api_and_sse_cursor(tmp_path):
 
 def test_three_topics_execute_concurrently_with_isolated_events(tmp_path):
     async def run():
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
+        limit = int(get_deployment().section("runtime")["concurrency"])
         entered, release = asyncio.Event(), asyncio.Event()
         active = 0
 
@@ -395,7 +398,7 @@ def test_three_topics_execute_concurrently_with_isolated_events(tmp_path):
             nonlocal active
             active += 1
             await emit_event("tool.started", {"name": context.request.request_id})
-            if active == 3:
+            if active == limit:
                 entered.set()
             await release.wait()
             return ReplyResult("done")
@@ -411,13 +414,13 @@ def test_three_topics_execute_concurrently_with_isolated_events(tmp_path):
         model.model.get_post_details.side_effect = post
         tasks = [
             asyncio.create_task(model._new_action_routine(action(i, i)))
-            for i in range(1, 5)
+            for i in range(1, limit + 2)
         ]
         try:
             await asyncio.wait_for(entered.wait(), 2)
-            assert active == 3
+            assert active == limit
             snapshot = await store.forum_monitor()
-            assert sum(r["status"] == "running" for r in snapshot["runs"]) == 3
+            assert sum(r["status"] == "running" for r in snapshot["runs"]) == limit
             for r in snapshot["runs"]:
                 events = await store.list_events_for_conversation(r["conversation_id"])
                 tools = [e for e in events if e.event_type == "tool.started"]
@@ -527,9 +530,13 @@ def test_prechecks_are_bounded_and_do_not_create_early_records(tmp_path, monkeyp
 
     async def run():
         model, store = await setup(tmp_path)
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
+        # Prechecks share the reply concurrency limit from [common.runtime].
+        limit = int(get_deployment().section("runtime")["concurrency"])
         queue = ForumQueue(tmp_path / "state.sqlite3", "bot")
         await queue.initialize()
-        await queue.enqueue([action(i, i) for i in range(1, 5)], 4)
+        await queue.enqueue([action(i, i) for i in range(1, limit + 2)], limit + 1)
         entered, release = asyncio.Event(), asyncio.Event()
         current = maximum = 0
 
@@ -537,7 +544,7 @@ def test_prechecks_are_bounded_and_do_not_create_early_records(tmp_path, monkeyp
             nonlocal current, maximum
             current += 1
             maximum = max(current, maximum)
-            if current == 3:
+            if current == limit:
                 entered.set()
             await release.wait()
             current -= 1
@@ -547,7 +554,7 @@ def test_prechecks_are_bounded_and_do_not_create_early_records(tmp_path, monkeyp
         worker = asyncio.create_task(model.watch_new_action_routine())
         try:
             await asyncio.wait_for(entered.wait(), 2)
-            assert current == maximum == 3
+            assert current == maximum == limit
             assert (await store.forum_monitor())["runs"] == []
             assert await store.list_conversations() == []
         finally:
@@ -555,7 +562,7 @@ def test_prechecks_are_bounded_and_do_not_create_early_records(tmp_path, monkeyp
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
             await BaseUserActionModel.aclose(model)
-        assert maximum == 3
+        assert maximum == limit
 
     asyncio.run(run())
 

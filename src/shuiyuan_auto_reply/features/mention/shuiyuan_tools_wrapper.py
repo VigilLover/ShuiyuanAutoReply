@@ -145,13 +145,13 @@ class ShuiyuanToolsWrapper:
         return query.strip()
 
     @staticmethod
-    def _snippet(value: str, limit: int = 240) -> str:
+    def _snippet(value: str, limit: int = 400) -> str:
         soup = BeautifulSoup(value or "", "html.parser")
         text = " ".join(soup.get_text(" ", strip=True).split())
         return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
     @staticmethod
-    def _text_page(content: str, offset: int, limit: int = 5200) -> tuple[str, int]:
+    def _text_page(content: str, offset: int, limit: int = 8000) -> tuple[str, int]:
         end = min(len(content), offset + limit)
         if end < len(content):
             boundary = content.rfind("\n\n", offset + limit // 2, end)
@@ -406,7 +406,7 @@ class ShuiyuanToolsWrapper:
             items = []
             for value in short:
                 text_offset = offset if exact else 0
-                text_limit = 900
+                text_limit = 1400
                 page_end = text_offset + text_limit
                 if exact:
                     page, page_end = self._text_page(

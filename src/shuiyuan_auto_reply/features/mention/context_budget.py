@@ -93,29 +93,10 @@ def repair_tool_pairing(messages):
     return result, repaired
 
 
-def project_messages(messages, budget: int = 24_000, *, preserve_first: bool = True):
-    """Keep call/result pairing, save full evidence before shortening the projection."""
-    messages = list(messages)
-    if count_tokens_approximately(messages) <= budget:
-        return messages
-    turn = current_turn.get()
-    if turn is None:
-        return messages  # Never discard evidence without a readable backing store.
-    # The caller's original messages are immutable evidence, never edit in place.
-    projected = []
-    for index, message in enumerate(messages):
-        # Keep current request (first human) intact. Tool payloads are independently readable.
-        if (
-            preserve_first and index == 0 and isinstance(message, HumanMessage)
-        ) or getattr(message, "name", None) == "target_post":
-            projected.append(message)
-        else:
-            content = compact_content(message.content, 1800)
-            projected.append(message.model_copy(update={"content": content}))
-    if count_tokens_approximately(projected) <= budget:
-        return projected
-    groups = []
-    for message in projected:
+def _group(messages):
+    """Split into atomic units: a tool-calling AI message travels with its results."""
+    groups: list[list] = []
+    for message in messages:
         if (
             isinstance(message, ToolMessage)
             and groups
@@ -125,58 +106,104 @@ def project_messages(messages, budget: int = 24_000, *, preserve_first: bool = T
             groups[-1].append(message)
         else:
             groups.append([message])
-    # Preserve target reference and the newest two atomic tool interaction blocks.
+    return groups
+
+
+# Once over budget, drop enough of the oldest tool rounds to land well under it so
+# the next several requests grow from a stable prefix instead of shifting again.
+_DROP_TARGET = 0.6
+_KEEP_LATEST_GROUPS = 3
+_FALLBACK_TOOL_CHARS = 300
+
+
+def project_messages(messages, budget: int = 60_000, *, preserve_first: bool = True):
+    """Fit the tool loop into ``budget`` without rewriting what is kept.
+
+    Retained messages are byte-identical to previous rounds so the provider's
+    prefix cache keeps hitting; full evidence stays readable through the turn
+    store for the finalizer.  Only when the newest rounds alone exceed the
+    budget are their bodies shortened.
+    """
+    messages = list(messages)
+    if count_tokens_approximately(messages) <= budget:
+        return messages
+    turn = current_turn.get()
+    if turn is None:
+        return messages  # Never discard evidence without a readable backing store.
+    groups = _group(messages)
     tool_groups = [
         i
         for i, group in enumerate(groups)
         if isinstance(group[0], AIMessage) and group[0].tool_calls
     ]
-    protected = set(tool_groups[-2:])
+    protected = set(tool_groups[-_KEEP_LATEST_GROUPS:])
     protected.update(
         i
         for i, group in enumerate(groups)
         if getattr(group[0], "name", None) == "target_post"
     )
-    if preserve_first:
+    if preserve_first and groups and isinstance(groups[0][0], HumanMessage):
         protected.add(0)
-    retained = []
-    for i, group in enumerate(groups):
-        if (
-            i not in protected
-            and count_tokens_approximately(
-                [m for g in groups[i:] for m in g] + [m for g in retained for m in g]
+    target = budget * _DROP_TARGET
+    retained = list(groups)
+    dropped = 0
+    for index in tool_groups:
+        if index in protected:
+            continue
+        if count_tokens_approximately([m for g in retained for m in g]) <= target:
+            break
+        group = groups[index]
+        turn.save(
+            [
+                {
+                    "type": m.type,
+                    "content": m.content,
+                    "calls": getattr(m, "tool_calls", []),
+                }
+                for m in group
+            ]
+        )
+        retained.remove(group)
+        dropped += 1
+    result = [m for g in retained for m in g]
+    # Loose text messages (not the request, target or a tool round) are rare
+    # and carry no pairing constraint, so shorten them before any tool body.
+    if count_tokens_approximately(result) > budget:
+        loose = {
+            id(m)
+            for i, g in enumerate(retained)
+            if i not in protected
+            and not (isinstance(g[0], AIMessage) and g[0].tool_calls)
+            for m in g
+            if not isinstance(m, ToolMessage)
+        }
+        result = [
+            (
+                m.model_copy(update={"content": compact_content(m.content, 1800)})
+                if id(m) in loose
+                else m
             )
-            > budget - 1500
-        ):
-            turn.save(
-                [
-                    {
-                        "type": m.type,
-                        "content": m.content,
-                        "calls": getattr(m, "tool_calls", []),
-                    }
-                    for m in group
-                ]
-            )
-        else:
-            retained.append(group)
-    groups = retained
-    result = [m for g in groups for m in g]
-    # Huge latest batches keep every tool_call_id, shrinking bodies rather than deleting responses.
+            for m in result
+        ]
+    # The newest rounds alone can exceed the budget; shrink bodies but keep
+    # every tool_call_id answered so the request stays valid.
     if count_tokens_approximately(result) > budget:
         result = [
             (
-                m.model_copy(update={"content": compact_content(m.content, 300)})
+                m.model_copy(
+                    update={"content": compact_content(m.content, _FALLBACK_TOOL_CHARS)}
+                )
                 if isinstance(m, ToolMessage)
                 else m
             )
             for m in result
         ]
     logging.info(
-        "Context projection: estimated_tokens=%d -> %d budget=%d evidence=%d",
+        "Context projection: estimated_tokens=%d -> %d budget=%d dropped_rounds=%d evidence=%d",
         count_tokens_approximately(messages),
         count_tokens_approximately(result),
         budget,
+        dropped,
         len(turn.results),
     )
     return result

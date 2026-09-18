@@ -80,9 +80,51 @@ class ShuiyuanModel:
     _shared_session: ClassVar[Optional[aiohttp.ClientSession]] = None
     _session_init_lock: ClassVar[Optional[asyncio.Lock]] = None
     _request_chain: ClassVar[Optional[asyncio.Future]] = None
-    _request_interval: ClassVar[float] = 1.0
+    # Discourse allows far more than this per authenticated user; the gap only
+    # keeps bursts of parallel tool reads polite.
+    _request_interval: ClassVar[float] = 0.6
     _last_request_ts: ClassVar[float] = 0.0
     _active_instances: ClassVar[int] = 0
+    # Cross-turn read cache: topic metadata and user profiles change slowly and
+    # are re-read by every reply in the same topic; search pages are cached
+    # briefly so a burst of parallel tool calls does not repeat one query.
+    _read_cache: ClassVar[dict] = {}
+    _read_cache_ttl: ClassVar[dict[str, float]] = {
+        "topic": 60.0,
+        "user": 600.0,
+        "search": 60.0,
+    }
+    _read_cache_limit: ClassVar[int] = 512
+
+    @classmethod
+    def _cached(cls, kind: str, key: object):
+        entry = cls._read_cache.get((kind, key))
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if time.monotonic() >= expires_at:
+            cls._read_cache.pop((kind, key), None)
+            return None
+        return value
+
+    @classmethod
+    def _remember(cls, kind: str, key: object, value) -> None:
+        if len(cls._read_cache) >= cls._read_cache_limit:
+            now = time.monotonic()
+            for cache_key in [
+                k for k, (expires_at, _) in cls._read_cache.items() if expires_at <= now
+            ]:
+                cls._read_cache.pop(cache_key, None)
+            while len(cls._read_cache) >= cls._read_cache_limit:
+                cls._read_cache.pop(next(iter(cls._read_cache)))
+        cls._read_cache[(kind, key)] = (
+            time.monotonic() + cls._read_cache_ttl[kind],
+            value,
+        )
+
+    @classmethod
+    def clear_read_cache(cls) -> None:
+        cls._read_cache.clear()
 
     def __init__(self):
         """
@@ -364,6 +406,9 @@ class ShuiyuanModel:
         :param topic_id: The ID of the topic to retrieve.
         :return: An instance of TopicDetails containing the topic information.
         """
+        cached = self._cached("topic", topic_id)
+        if cached is not None:
+            return cached
         response = await self._rate_limited_request(
             "get", f"{get_topic_url}/{topic_id}.json"
         )
@@ -371,7 +416,9 @@ class ShuiyuanModel:
             raise ReadFailure(response.status)
 
         data = await response.json()
-        return from_dict(TopicDetails, data)
+        topic = from_dict(TopicDetails, data)
+        self._remember("topic", topic_id, topic)
+        return topic
 
     async def get_user_by_username(self, username: str) -> Optional[User]:
         """
@@ -380,11 +427,16 @@ class ShuiyuanModel:
         :param username: The username of the user to retrieve.
         :return: An instance of User containing the user information.
         """
+        cache_key = username.strip().casefold()
+        cached = self._cached("user", cache_key)
+        if cached is not None:
+            return cached or None
         response = await self._rate_limited_request(
             "get", f"{get_user_url}/{username}.json"
         )
         if response.status == 404:
             logging.warning(f"User '{username}' not found.")
+            self._remember("user", cache_key, False)
             return None
         elif response.status != 200:
             raise ReadFailure(response.status)
@@ -393,7 +445,9 @@ class ShuiyuanModel:
         user_fields = data.get("user")
         if not user_fields:
             return None
-        return from_dict(User, user_fields)
+        user = from_dict(User, user_fields)
+        self._remember("user", cache_key, user)
+        return user
 
     async def get_post_details(self, post_id: int) -> PostDetails:
         """
@@ -862,6 +916,10 @@ class ShuiyuanModel:
             raise ValueError("Search query must not be empty")
         if not 1 <= page <= 10:
             raise ValueError("Search page must be between 1 and 10")
+        cache_key = (query.strip(), page)
+        cached = self._cached("search", cache_key)
+        if cached is not None:
+            return cached
         response = await self._rate_limited_request(
             "get", post_search_url, params={"q": query.strip(), "page": page}
         )
@@ -870,6 +928,7 @@ class ShuiyuanModel:
         data = await response.json()
         if not isinstance(data, dict) or not isinstance(data.get("posts", []), list):
             raise ReadFailure(502)
+        self._remember("search", cache_key, data)
         return data
 
     async def read_topic_posts(
