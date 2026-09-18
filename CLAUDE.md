@@ -46,7 +46,7 @@ Boundary rules (enforced by `test/test_architecture_boundaries.py`): `applicatio
 
 ### Provider selection and the agent graph
 
-`bootstrap/providers.py:MentionProviderFactory` is the only place that picks a concrete chat provider (`deepseek`, `tongyi`, `openrouter`, `mimo` → `features/mention/mention_<provider>_model.py`). All of them subclass `features/mention/mention_chat_model.py:MentionChatModel`, which builds a LangGraph `StateGraph`:
+`bootstrap/providers.py:MentionProviderFactory` is the only place that builds the chat model. DeepSeek is the sole chat provider (`features/mention/mention_deepseek_model.py:MentionDeepSeekModel`, either Responses API or chat completions per `DEEPSEEK_MENTION_API_FORMAT`). It subclasses `features/mention/mention_chat_model.py:MentionChatModel`, which builds a LangGraph `StateGraph`:
 
 ```
 retrieve_style_context → load_topic_context → load_long_term_memory → [load_current_images → load_replied_post_images]
@@ -77,7 +77,7 @@ Managed prompts are composed by `infrastructure/prompts/profiles.py:render_profi
 
 ### Legacy flat packages
 
-`shuiyuan/`, `database/`, `tarot/`, `fortune/`, `ashare/`, `openrouter/`, `wc/`, `embeddings.py`, `retry.py`, and `constants.py` predate the ports-and-adapters refactor. They are still the real forum client, Postgres/Neo4j managers, and feature models used by `features/` and `infrastructure/`; treat them as infrastructure, do not import them from `application/` or `domain/`, and prefer adding new adapters under `infrastructure/` rather than growing them.
+`shuiyuan/`, `database/`, `embeddings.py`, `retry.py`, and `constants.py` predate the ports-and-adapters refactor. They are still the real forum client and Postgres/Neo4j managers used by `features/` and `infrastructure/`; treat them as infrastructure, do not import them from `application/` or `domain/`, and prefer adding new adapters under `infrastructure/` rather than growing them.
 
 ## Deployment and release contract
 

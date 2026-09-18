@@ -184,9 +184,9 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_secret_vault_encrypts_values_and_only_exposes_metadata(self):
         vault = LocalSecretVault(self.store, Path(self.temp.name) / "master.key")
-        await vault.set("web:openrouter", "sk-example-1234")
-        self.assertEqual(await vault.get("web:openrouter"), "sk-example-1234")
-        metadata = await vault.metadata("web:openrouter")
+        await vault.set("web:deepseek", "sk-example-1234")
+        self.assertEqual(await vault.get("web:deepseek"), "sk-example-1234")
+        metadata = await vault.metadata("web:deepseek")
         self.assertEqual(metadata["last_four"], "1234")
         self.assertNotIn(b"sk-example-1234", self.path.read_bytes())
         self.assertEqual(
@@ -198,7 +198,6 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
             providers=ProviderSettings(
                 deepseek_api_key="same-key",
                 deepseek_model="deepseek-primary",
-                deepseek_fallback_model="deepseek-fallback",
                 deepseek_api_format=DeepSeekApiFormat.RESPONSES,
             )
         )

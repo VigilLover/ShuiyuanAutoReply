@@ -29,18 +29,8 @@ class ShuiyuanToolsWrapper:
     A wrapper around the ShuiyuanModel to provide tool functions for LLM agents.
     """
 
-    def __init__(
-        self,
-        shuiyuan_model: ShuiyuanModel,
-        allowed_operations: dict[str, set[str]] | None = None,
-    ):
+    def __init__(self, shuiyuan_model: ShuiyuanModel):
         self.shuiyuan_model = shuiyuan_model
-        self.allowed_operations = allowed_operations or {}
-
-    def _require_operation(self, tool: str, operation: str) -> None:
-        allowed = self.allowed_operations.get(tool)
-        if allowed is not None and operation not in allowed:
-            raise PermissionError(f"{tool} operation is disabled: {operation}")
 
     @staticmethod
     def _ok(items: list[dict], **metadata) -> dict:
@@ -62,8 +52,6 @@ class ShuiyuanToolsWrapper:
             code = exc.code
         elif isinstance(exc, ValueError):
             code = "invalid_arguments"
-        elif isinstance(exc, PermissionError):
-            code = "operation_disabled"
         return {
             "status": "error",
             "code": code,
@@ -240,7 +228,6 @@ class ShuiyuanToolsWrapper:
                     topic=turn.topic_titles.get(completed_topic),
                     complete=True,
                 )
-            self._require_operation("forum_search", kind)
             data = await cached_query(
                 f"forum_search:{search_query}:{page}",
                 lambda: self.shuiyuan_model.search_forum(search_query, page=page),
@@ -362,7 +349,6 @@ class ShuiyuanToolsWrapper:
                     "order": order,
                 }
             exact = post_id is not None or post_number is not None
-            self._require_operation("forum_read", "exact" if exact else "topic")
             if exact and username is not None:
                 raise ValueError("username is available only for topic list reads")
             if images == "selected" and not image_refs:
@@ -497,16 +483,6 @@ class ShuiyuanToolsWrapper:
                 )
             if user_id is not None and user_id <= 0:
                 raise ValueError("user_id must be positive")
-            operation = (
-                "query"
-                if query is not None
-                else (
-                    "username"
-                    if username is not None
-                    else "usernames" if usernames is not None else "user_id"
-                )
-            )
-            self._require_operation("users", operation)
             if usernames is not None:
                 if not usernames or len(usernames) > 50:
                     raise ValueError("Provide 1 to 50 usernames")

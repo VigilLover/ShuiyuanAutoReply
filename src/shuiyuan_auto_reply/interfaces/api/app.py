@@ -791,12 +791,6 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
                 if configured is not None and name not in configured
             ]
         vault = request.app.state.container.secret_vault
-        env_names = {
-            "openrouter": "OPENROUTER_API_KEY",
-            "deepseek": "DEEPSEEK_API_KEY",
-            "tongyi": "DASHSCOPE_API_KEY",
-            "mimo": "MIMO_API_KEY",
-        }
         for profile in profiles:
             for value in (profile["draft"], profile["active"]):
                 value["provider"] = "deepseek"
@@ -816,7 +810,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             if metadata.get("configured"):
                 metadata["source"] = "ui"
             else:
-                environment_value = os.getenv(env_names[provider])
+                environment_value = os.getenv("DEEPSEEK_API_KEY")
                 metadata.update(
                     {
                         "configured": bool(environment_value),
@@ -927,13 +921,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         secret = await request.app.state.container.secret_vault.get(
             f"{scope}:{provider}"
         )
-        env_names = {
-            "openrouter": "OPENROUTER_API_KEY",
-            "deepseek": "DEEPSEEK_API_KEY",
-            "tongyi": "DASHSCOPE_API_KEY",
-            "mimo": "MIMO_API_KEY",
-        }
-        if not (secret or os.getenv(env_names[provider])):
+        if not (secret or os.getenv("DEEPSEEK_API_KEY")):
             return {"ok": False, "message": "缺少 API Key"}
         candidate = None
         handler = None

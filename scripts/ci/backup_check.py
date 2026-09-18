@@ -64,8 +64,7 @@ def main():
     root = files("shuiyuan_auto_reply")
     for name in [
         "assets/pet_responses.json",
-        "assets/tarot_img/1.jpg",
-        "assets/fonts/Noto_Sans_SC/static/NotoSansSC-Regular.ttf",
+        "prompts/manifest.json",
         "interfaces/api/static/index.html",
     ]:
         assert root.joinpath(name).is_file(), name
