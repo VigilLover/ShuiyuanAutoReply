@@ -22,6 +22,7 @@ from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.bootstrap import ApplicationContainer, AppSettings
 from shuiyuan_auto_reply.bootstrap.settings import DeepSeekApiFormat
 from shuiyuan_auto_reply.domain import (
+    UNKNOWN_REPLY_TEXT,
     ActorRef,
     AttachmentRef,
     Channel,
@@ -265,9 +266,7 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
             raise
         except Exception as exc:
             logger.exception("处理消息时发生错误")
-            raise HTTPException(
-                status_code=500, detail=f"内部服务器错误: {str(exc)}"
-            ) from exc
+            raise HTTPException(status_code=500, detail=UNKNOWN_REPLY_TEXT) from exc
         return ChatResponse(session_id=payload.session_id, reply=result.text)
 
     @api.post("/api/clear", response_model=ClearResponse)

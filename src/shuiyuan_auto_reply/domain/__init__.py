@@ -3,6 +3,7 @@
 from .conversation import ActorRef, Channel, ConversationRef, ForumContextRef
 from .message import AttachmentRef, ChatMessage, DispatchMode, ReplyRequest
 from .response import (
+    UNKNOWN_REPLY_TEXT,
     ForumMediaRef,
     GeneratedImageArtifact,
     ReplyGenerationError,
@@ -23,5 +24,6 @@ __all__ = [
     "ReplyGenerationError",
     "ReplyRequest",
     "ReplyResult",
+    "UNKNOWN_REPLY_TEXT",
     "VisualMediaArtifact",
 ]

@@ -84,6 +84,23 @@ from .tool_catalog import (
     migrate_tool_names,
 )
 
+_DIAGNOSTIC_DATA_URL = re.compile(r"data:[^;\s]+;base64,[A-Za-z0-9+/=]+")
+_DIAGNOSTIC_BEARER = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+")
+_DIAGNOSTIC_SECRET_FIELD = re.compile(
+    r"(?i)(api[_-]?key|apikey|authorization|cookie|set[_-]?cookie|secret)"
+    r"(\s*[\"']?\s*[:=]\s*[\"']?)([^\"',\s};&]+)"
+)
+_DIAGNOSTIC_API_KEY = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b")
+
+
+def _redact_diagnostic_text(value: str) -> str:
+    value = _DIAGNOSTIC_DATA_URL.sub("[DATA_URL_REDACTED]", value)
+    value = _DIAGNOSTIC_BEARER.sub("Bearer [REDACTED]", value)
+    value = _DIAGNOSTIC_SECRET_FIELD.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", value
+    )
+    return _DIAGNOSTIC_API_KEY.sub("[REDACTED]", value)
+
 
 def describe_model_failure(error: BaseException) -> str:
     """Bounded, readable provider failure: type, message and HTTP body when present.
@@ -103,7 +120,7 @@ def describe_model_failure(error: BaseException) -> str:
         body = ""
     if body:
         detail = f"{detail} | body={body}"
-    return detail[:800]
+    return _redact_diagnostic_text(detail)[:800]
 
 
 def mcp_text_content(value: Any) -> str:
@@ -2020,14 +2037,19 @@ class MentionChatModel:
             if not final_phase:
                 turn.control.stop(turn.progress, "model_or_time_failure")
                 return await self._call_model(state)
-            response = AIMessage(content="目前未能完成可靠核实，暂时无法给出完整结论。")
-        if final_phase and (
-            getattr(response, "tool_calls", None)
-            or not getattr(response, "content", None)
-        ):
-            response = AIMessage(
-                content="目前已有资料仍不足以形成可靠的完整结论；本次查询已停止。"
+            raise
+        invalid_final_response = bool(
+            final_phase
+            and (
+                getattr(response, "tool_calls", None)
+                or not getattr(response, "content", None)
+                or self._contains_tool_markup(
+                    text_value(getattr(response, "content", ""))
+                )
             )
+        )
+        if invalid_final_response:
+            response = AIMessage(content="")
         if (
             turn
             and not getattr(response, "tool_calls", None)
@@ -2048,13 +2070,22 @@ class MentionChatModel:
                 },
             )
         usage = getattr(response, "usage_metadata", None) or {}
-        await emit_event(
-            "model.completed",
-            {
-                "usage": usage,
-                "elapsed_seconds": round(time.monotonic() - model_started_at, 3),
-            },
-        )
+        if invalid_final_response:
+            await emit_event(
+                "model.failed",
+                {
+                    "phase": turn.progress.phase if turn else "final",
+                    "error": "invalid final response",
+                },
+            )
+        else:
+            await emit_event(
+                "model.completed",
+                {
+                    "usage": usage,
+                    "elapsed_seconds": round(time.monotonic() - model_started_at, 3),
+                },
+            )
         if usage:
             await emit_event("usage.recorded", usage)
         if not getattr(response, "content", None) and not getattr(

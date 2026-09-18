@@ -235,7 +235,7 @@ def test_unexpected_chat_failure_is_recorded_as_a_failed_run(tmp_path):
         assert "run.generation_failed" in events
         assert events.index("run.generation_failed") < events.index("run.failed")
         published = model.model.reply_to_post.await_args.args[0]
-        assert "抱歉，遇到了一些未知错误。" in published
+        assert "抱歉，发生了未知错误" in published
         assert "小狼bot遇到了一个错误" not in published
         # The friendly fallback keeps the normal chat signature.
         assert "Pumpkin Edition" in published

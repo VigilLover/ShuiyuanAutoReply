@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from .message import AttachmentRef
 
+UNKNOWN_REPLY_TEXT = "抱歉，发生了未知错误"
+
 
 @dataclass(frozen=True, slots=True)
 class GeneratedImageArtifact:
