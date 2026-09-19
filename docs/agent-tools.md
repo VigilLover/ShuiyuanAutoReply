@@ -83,10 +83,11 @@
 
 | 配置 | 默认值 |
 |---|---:|
-| `no_progress_batches` | 3 |
-| `query_limit` | 40 |
-| `model_limit` | 24 |
-| `final_reserve_seconds` | 60 |
+| `no_progress_batches` | 2 |
+| `query_limit` | 30 |
+| `model_limit` | 14 |
+| `final_reserve_seconds` | 150 |
+| `model_call_timeout` | 180 |
 
 `query_limit` 计数外部只读工具调度，批量查询算一次调度；底层请求和缓存命中另行观测，不能将工具次数当成 HTTP 次数。素材准备与图片生成不消耗论坛检索配额，但仍受模型轮次、总时限和媒体预算约束。同一工具的游标续读仍参与无进展检测。
 
