@@ -48,11 +48,12 @@ class MentionDeepSeekModel(MentionChatModel):
         )
 
     def _get_multimodal_prompt_rules(self) -> str:
+        # Non-empty enables the shared【图片理解】capability block; the text itself
+        # is only used for legacy (non-managed) prompts.
         return (
-            "【原生视觉理解规则】\n"
-            "1. 当前用户附带图片和 forum_read 精读结果中的图片会自动作为视觉输入。\n"
-            "2. forum_search 只返回媒体引用；需要看图时用 forum_read 精读对应帖子。\n"
-            "3. 只有实际载入的图片可用于判断；图片标签只用于区分来源。\n\n"
+            "【图片理解】\n"
+            "1. 当前用户附带的图片自动进入视觉输入；工具结果中的图片只在显式请求时载入。\n"
+            "2. 只有实际载入的图片可用于判断，图片标签只用于区分来源。\n\n"
         )
 
     def __init__(

@@ -57,9 +57,9 @@
 
 观察 `context.evidence` 的结果数及缓存命中数、`image.references_prepared` 的成功／失败计数，以及上下文投影的估算 token 日志。线上验证应另外安排，不在离线测试中调用论坛或付费生图服务。
 
-## 托管提示词与迁移（规则版本 5）
+## 托管提示词与迁移（规则版本 6）
 
-运行配置支持 `managed` 和 `legacy`。托管模式每次构建 Runtime 都组合当前代码规则、独立人设和补充要求；人设中的花括号按普通文本处理。旧完整 `system_prompt` 仍保留，供审阅和旧版本读取。已有完整自定义提示词保持 legacy，不猜测拆分内容。
+规则版本 6 把论坛／网页系统模板压缩到约 5KB：合并重复的「不编造」「不复述过程」条目，工具章节改为「先想缺什么，再用最少调用补齐；同一资料只读一次；多个用户一次查」，删除已失效的 `prepare_image_references`、`get_user`、`reference_set_id` 等说法；`legacy_defaults.json` 收录了 v4／v5 模板指纹，旧默认提示词首次读取时自动识别为 managed 并显示 `migration_required`。运行配置支持 `managed` 和 `legacy`。托管模式每次构建 Runtime 都组合当前代码规则、独立人设和补充要求；人设中的花括号按普通文本处理。旧完整 `system_prompt` 仍保留，供审阅和旧版本读取。已有完整自定义提示词保持 legacy，不猜测拆分内容。
 
 系统用 `prompts/legacy_defaults.json` 的历史精确 SHA256 和当前默认模板识别可自动迁移的配置。active 与 draft 分别迁移，revision 不因启动或读取而增加。迁移写入使用比较并交换，避免覆盖同时保存的草稿。
 
