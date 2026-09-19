@@ -77,6 +77,9 @@ def profile_metadata(profile: dict, scope: str) -> dict:
                 "application/retrieval_control.py",
                 "application/task_progress.py",
                 "features/mention/mention_chat_model.py",
+                "features/mention/context.py",
+                "features/mention/tools_runtime.py",
+                "features/mention/finalize.py",
             )
         )
     )

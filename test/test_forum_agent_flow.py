@@ -199,7 +199,7 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(removed, catalog)
 
     async def test_settings_tool_list_has_no_stale_names(self):
-        from shuiyuan_auto_reply.interfaces.api.app import RUNTIME_TOOL_NAMES
+        from shuiyuan_auto_reply.interfaces.api.routes.tools import RUNTIME_TOOL_NAMES
 
         runtime = OfflineChat(SimpleNamespace())
         registered = {tool.name for tool in runtime.tools}

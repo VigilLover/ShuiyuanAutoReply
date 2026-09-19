@@ -8,6 +8,11 @@ from langchain_core.messages.utils import count_tokens_approximately
 
 from shuiyuan_auto_reply.application.tool_results import current_turn
 
+# Token budget for prior conversation turns and character budget for the
+# recent-discussion block; both are fixed so the dynamic tool loop owns the rest.
+HISTORY_TOKEN_BUDGET = 4000
+RECENT_CHARS = 6000
+
 
 def text_value(value) -> str:
     return (

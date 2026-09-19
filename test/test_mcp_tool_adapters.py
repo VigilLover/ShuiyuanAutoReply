@@ -4,10 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from shuiyuan_auto_reply.application.tool_results import TurnResults, current_turn
-from shuiyuan_auto_reply.features.mention.mention_chat_model import (
-    MentionChatModel,
-    mcp_text_content,
-)
+from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
+from shuiyuan_auto_reply.features.mention.tools_runtime import mcp_text_content
 
 
 def _model():

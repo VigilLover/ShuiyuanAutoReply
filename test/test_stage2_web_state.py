@@ -439,7 +439,7 @@ class PromptInspectionTests(unittest.IsolatedAsyncioTestCase):
             search=AsyncMock(side_effect=ConnectionError("neo4j unavailable"))
         )
         with patch(
-            "shuiyuan_auto_reply.features.mention.mention_chat_model.emit_event",
+            "shuiyuan_auto_reply.features.mention.context.emit_event",
             new_callable=AsyncMock,
         ) as emit:
             result = await model._retrieve_style_context(
@@ -595,7 +595,7 @@ class ManagedApiTests(unittest.TestCase):
                     ),
                 ]
                 with patch(
-                    "shuiyuan_auto_reply.interfaces.api.app.MentionChatModel._load_mcp_tools",
+                    "shuiyuan_auto_reply.interfaces.api.routes.tools.MentionChatModel._load_mcp_tools",
                     new=AsyncMock(return_value=discovered),
                 ):
                     mcp = client.get("/api/settings/mcp/web").json()
