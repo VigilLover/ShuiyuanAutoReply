@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shuiyuan-auto-reply"
-version = "0.1.0"
-description = "A project for automatic replies using LangChain and OpenRouter."
+version = "1.1.0"
+description = "A Discourse forum auto-reply bot built on LangChain/LangGraph and DeepSeek."
 authors = [{ name = "Hydroiodic_Acid", email = "liao_chengfan@sjtu.edu.cn" }]
 requires-python = ">=3.12"
 dependencies = [
