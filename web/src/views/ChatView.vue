@@ -25,6 +25,7 @@ import RunProgress from '../components/RunProgress.vue'
 import ForumConversation from '../components/ForumConversation.vue'
 import { useForumMonitor } from '../stores/forum'
 import { activeRun, mergeRun, type ForumRun } from '../forum'
+import { EVENT_CATEGORIES, eventCategory } from '../runs'
 import { useConversations } from '../stores/conversations'
 
 const store = useConversations()
@@ -33,6 +34,8 @@ const input = ref('')
 const editing = ref(false)
 const title = ref('')
 const activeTab = ref<'chat' | 'trace'>('chat')
+const traceFilter = ref('')
+const traceCategories = [...new Set(Object.values(EVENT_CATEGORIES))]
 const sessionMenuOpen = ref(false)
 const sidebarCollapsed = ref(false)
 const messagesElement = ref<HTMLElement | null>(null)
@@ -80,6 +83,7 @@ const selectedEvents = computed(() => {
   const live = forumRuns.value.flatMap(run => forum.events[run.id] || [])
   return [...new Map([...saved, ...live].map(event => [event.id, event])).values()].sort((a, b) => a.id - b.id)
 })
+const filteredEvents = computed(() => traceFilter.value ? selectedEvents.value.filter(event => eventCategory(event.type) === traceFilter.value) : selectedEvents.value)
 const shellStyle = computed(() => ({ '--composer-space': `${composerSpace.value}px` }))
 const personaId = computed(() => store.selected?.conversation.persona_id || store.conversations[0]?.persona_id || 'persona')
 const personaLabel = computed(() => personaId.value.toUpperCase())
@@ -463,11 +467,15 @@ function onMessagesScroll() {
 
       <div v-else class="trace-view">
         <div class="trace-toolbar">
-          <span>执行事件</span><small>{{ selectedEvents.length }} records</small>
+          <span>执行事件</span><small>{{ filteredEvents.length }} / {{ selectedEvents.length }}</small>
+          <div class="trace-filter" role="tablist" aria-label="按类型筛选">
+            <button :class="{ active: !traceFilter }" @click="traceFilter = ''">全部</button>
+            <button v-for="category in traceCategories" :key="category" :class="{ active: traceFilter === category }" @click="traceFilter = category">{{ category }}</button>
+          </div>
         </div>
-        <div v-if="selectedEvents.length || store.selected?.events_has_more" class="trace-table">
+        <div v-if="filteredEvents.length || store.selected?.events_has_more" class="trace-table">
           <button v-if="store.selected?.events_has_more" class="load-more" @click="store.loadOlderEvents()">加载更早的事件</button>
-          <div v-for="event in selectedEvents" :key="event.id" class="trace-table-row">
+          <div v-for="event in filteredEvents" :key="event.id" class="trace-table-row">
             <time>{{ new Date(event.created_at).toLocaleTimeString() }}</time>
             <span class="event-kind"><small v-if="store.channel === 'forum'">#{{ runsById[event.run_id]?.request.post_number || '历史' }} · </small>{{ event.type }}</span>
             <PromptEvent v-if="event.type === 'model.prompt_prepared'" :payload="event.payload" />

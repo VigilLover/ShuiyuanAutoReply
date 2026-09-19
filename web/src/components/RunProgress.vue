@@ -2,12 +2,14 @@
 import { computed } from 'vue'
 import {
   PhCaretRight,
-  PhCircle,
+  PhCheckCircle,
   PhClock,
-  PhTerminalWindow,
+  PhImage,
   PhWarningCircle,
+  PhWrench,
 } from '@phosphor-icons/vue'
 import type { RunEvent } from '../api'
+import { STOP_REASON_LABELS, formatSeconds, formatTokens, groupRounds, runSummary, type Round, type ToolStep } from '../runs'
 import BrandLoader from './BrandLoader.vue'
 import PromptEvent from './PromptEvent.vue'
 
@@ -17,145 +19,140 @@ const props = defineProps<{
   statusLabel?: string
 }>()
 
-const visibleEvents = computed(() => props.events.filter(event => event.type !== 'message.completed'))
-const currentEvent = computed(() => visibleEvents.value.at(-1))
-const completed = computed(() => !props.running && visibleEvents.value.some(event => event.type === 'run.completed'))
+const rounds = computed(() => groupRounds(props.events))
+const summary = computed(() => runSummary(props.events))
+const completed = computed(() => !props.running && props.events.some(event => event.type === 'run.completed'))
+const failed = computed(() => !props.running && props.events.some(event => event.type === 'run.failed'))
+const currentRound = computed(() => rounds.value.at(-1))
 
-const labels: Record<string, string> = {
-  'context.topic_loaded': '加载话题标题',
-  'run.accepted': '收到指令',
-  'run.generated': '回复生成完成',
-  'run.generation_failed': '回复生成失败',
-  'run.interrupted': '执行中断',
-  'run.needs_review': '发送结果待确认',
-  'forum.reply_publishing': '正在发布回复',
-  'run.started': '开始处理',
+const stageLabels: Record<string, string> = {
+  'context.topic_loaded': '加载话题',
   'context.style_loaded': '检索历史发言',
-  'context.style_failed': '历史发言检索失败',
   'context.forum_loaded': '加载论坛上下文',
-  'context.forum_skipped': '跳过论坛上下文',
   'memory.loaded': '加载长期记忆',
   'model.prompt_prepared': '准备模型输入',
-  'model.started': '调用模型',
+  'model.started': '等待模型',
   'model.completed': '模型响应完成',
-  'usage.recorded': '记录 Token 用量',
   'tool.started': '调用工具',
   'tool.completed': '工具执行完成',
   'tool.failed': '工具执行失败',
   'image.generated': '生成图片',
   'forum.image_uploaded': '上传论坛图片',
+  'forum.reply_publishing': '正在发布回复',
   'forum.reply_published': '发布论坛回复',
   'run.completed': '处理完成',
   'run.failed': '处理失败',
+  'run.needs_review': '发送结果待确认',
 }
 
-function label(event?: RunEvent) {
-  return event ? labels[event.type] || event.type : '准备处理'
-}
+const currentStage = computed(() => {
+  const last = props.events.at(-1)
+  if (!last) return '准备处理'
+  if (last.type === 'model.started') {
+    const step = currentRound.value
+    return step ? `第 ${step.index} 轮 · 等待模型${step.phase === 'final' ? '（收尾）' : ''}` : '等待模型'
+  }
+  if (last.type === 'tool.started') return `调用 ${String(last.payload?.name || '工具')}`
+  return stageLabels[last.type] || last.type
+})
 
-function stringify(value: unknown) {
+function stringify(value: unknown): string {
   if (typeof value === 'string') return value
   if (value == null) return ''
-  return JSON.stringify(value, null, 2)
+  try { return JSON.stringify(value, null, 2) } catch { return String(value) }
 }
 
-function detail(event?: RunEvent) {
-  if (!event) return ''
-  const payload = event.payload || {}
-  if (event.type === 'tool.started') {
-    const args = stringify(payload.arguments)
-    return `${payload.name || 'unknown'}${args ? ` ${args}` : ''}`
-  }
-  if (event.type === 'tool.completed' || event.type === 'tool.failed') {
-    return `${payload.name || 'unknown'}${payload.output ? ` ${stringify(payload.output)}` : ''}`
-  }
-  if (event.type === 'context.style_loaded') {
-    return `${payload.persona || 'persona'} · 命中 ${payload.count ?? 0} 条 · limit ${payload.limit ?? 8}`
-  }
-  if (event.type === 'context.style_failed') return stringify(payload.message || payload.error)
-  if (event.type === 'memory.loaded') return `${payload.chars ?? 0} 字符`
-  if (event.type === 'model.prompt_prepared') return `${payload.message_count ?? 0} 条消息 · ${payload.scope || 'unknown'}`
-  if (event.type === 'usage.recorded') {
-    return `输入 ${payload.input_tokens ?? 0} · 输出 ${payload.output_tokens ?? 0} tokens`
-  }
-  return Object.keys(payload).length ? stringify(payload) : ''
+function argsPreview(step: ToolStep): string {
+  const args = step.arguments
+  if (!args || typeof args !== 'object') return stringify(args)
+  return Object.entries(args as Record<string, unknown>)
+    .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)
+    .join('  ')
 }
 
-const usage = computed(() => {
-  const totals = { input: 0, output: 0 }
-  for (const event of visibleEvents.value) {
-    if (event.type !== 'usage.recorded') continue
-    totals.input += Number(event.payload.input_tokens || 0)
-    totals.output += Number(event.payload.output_tokens || 0)
+function prettyOutput(step: ToolStep): string {
+  try {
+    return JSON.stringify(JSON.parse(step.output), null, 2)
+  } catch {
+    return step.output
   }
-  return totals
-})
-
-const duration = computed(() => {
-  const timestamps = visibleEvents.value
-    .map(event => Date.parse(event.created_at))
-    .filter(value => Number.isFinite(value))
-  if (timestamps.length < 2) return null
-  return Math.max(0, timestamps.at(-1)! - timestamps[0])
-})
-
-function durationText(milliseconds: number | null) {
-  if (milliseconds == null) return '—'
-  if (milliseconds < 1000) return `${milliseconds}ms`
-  return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 1 : 0)}s`
 }
 
-function tokenText(value: number) {
-  return new Intl.NumberFormat('zh-CN').format(value)
+function roundLabel(round: Round): string {
+  if (round.failed) return `第 ${round.index} 轮 · 模型调用失败`
+  if (round.phase === 'final') return `第 ${round.index} 轮 · 收尾回答`
+  return `第 ${round.index} 轮${round.tools.length ? ` · ${round.tools.length} 次工具调用` : ' · 直接作答'}`
 }
 
-function isFailed(event: RunEvent) {
-  return event.type.endsWith('.failed') || event.type === 'run.failed'
-}
+const stopLabel = computed(() => summary.value.stopReason ? (STOP_REASON_LABELS[summary.value.stopReason] || summary.value.stopReason) : '')
 </script>
 
 <template>
-  <section class="run-progress" :class="{ complete: completed, running }">
+  <section class="run-progress" :class="{ complete: completed, running, failed }">
     <div class="run-progress-head">
       <BrandLoader v-if="running" compact />
-      <PhWarningCircle v-else-if="!completed" :size="18" />
-      <strong>{{ statusLabel || (running ? '正在执行' : completed ? '已执行' : '执行已结束') }}</strong>
-      <template v-if="completed">
-        <span class="run-stat"><PhClock :size="13" />{{ durationText(duration) }}</span>
-        <span class="run-stat">输入 {{ tokenText(usage.input) }}</span>
-        <span class="run-stat">输出 {{ tokenText(usage.output) }} tokens</span>
+      <PhWarningCircle v-else-if="failed" :size="17" class="run-icon-failed" />
+      <PhCheckCircle v-else :size="17" class="run-icon-done" />
+      <strong>{{ statusLabel || (running ? '正在执行' : completed ? '已执行' : failed ? '执行失败' : '执行已结束') }}</strong>
+      <small v-if="running">{{ currentStage }}</small>
+      <template v-else>
+        <span class="run-stat"><PhClock :size="12" />{{ formatSeconds(summary.elapsed) }}</span>
+        <span class="run-stat">{{ summary.rounds }} 轮 · {{ summary.queries }} 次查询</span>
+        <span class="run-stat" :title="`输入 ${formatTokens(summary.inputTokens)} · 输出 ${formatTokens(summary.outputTokens)} · 推理 ${formatTokens(summary.reasoningTokens)} · 缓存命中 ${formatTokens(summary.cacheReadTokens)}`">
+          {{ formatTokens(summary.inputTokens + summary.outputTokens) }} tokens
+          <em v-if="summary.inputTokens">· 缓存 {{ Math.round((summary.cacheReadTokens / summary.inputTokens) * 100) }}%</em>
+        </span>
+        <span v-if="stopLabel" class="run-stat">{{ stopLabel }}</span>
       </template>
-      <small v-else>{{ label(currentEvent) }}</small>
     </div>
 
-    <details v-if="running && currentEvent" class="current-run-step">
-      <summary>
-        <PhTerminalWindow :size="15" />
-        <span>{{ label(currentEvent) }}</span>
-        <code>{{ detail(currentEvent) }}</code>
-        <PhCaretRight class="step-caret" :size="13" />
-      </summary>
-      <PromptEvent v-if="currentEvent.type === 'model.prompt_prepared'" :payload="currentEvent.payload" open />
-      <pre v-else-if="detail(currentEvent)">{{ detail(currentEvent) }}</pre>
-    </details>
-
-    <details v-if="visibleEvents.length" class="run-history">
+    <details v-if="rounds.length" class="run-history" :open="running">
       <summary>
         <PhCaretRight class="history-caret" :size="13" />
-        {{ running ? `查看已执行的 ${visibleEvents.length} 步` : `查看 ${visibleEvents.length} 个执行步骤` }}
+        {{ running ? `已执行 ${rounds.length} 轮` : `查看 ${rounds.length} 轮执行过程` }}
       </summary>
-      <div class="run-step-list">
-        <details v-for="event in visibleEvents" :key="`${event.id}:${event.type}`" class="run-step" :class="{ failed: isFailed(event) }">
-          <summary>
-            <PhCircle class="run-step-marker" :size="6" weight="fill" />
-            <strong>{{ label(event) }}</strong>
-            <code>{{ detail(event) }}</code>
-            <PhCaretRight class="step-caret" :size="12" />
-          </summary>
-          <PromptEvent v-if="event.type === 'model.prompt_prepared'" :payload="event.payload" open />
-          <pre v-else-if="detail(event)">{{ detail(event) }}</pre>
-        </details>
-      </div>
+      <ol class="run-round-list">
+        <li v-for="round in rounds" :key="round.index" class="run-round" :class="{ failed: round.failed, final: round.phase === 'final' }">
+          <header class="run-round-head">
+            <strong>{{ roundLabel(round) }}</strong>
+            <span v-if="round.elapsed !== undefined" class="run-round-stat"><PhClock :size="11" />{{ formatSeconds(round.elapsed) }}</span>
+            <span v-if="round.inputTokens" class="run-round-stat" :title="`推理 ${formatTokens(round.reasoningTokens)} tokens`">
+              ↓{{ formatTokens(round.inputTokens) }} ↑{{ formatTokens(round.outputTokens) }}
+              <em v-if="round.cacheReadTokens">· 缓存 {{ formatTokens(round.cacheReadTokens) }}</em>
+            </span>
+            <PromptEvent v-if="round.prompt" :payload="round.prompt.payload" class="run-round-prompt" />
+          </header>
+          <p v-if="round.failed" class="run-round-error">{{ round.failed }}</p>
+          <ul v-if="round.tools.length" class="run-tool-list">
+            <li v-for="step in round.tools" :key="step.key" class="run-tool" :class="step.status">
+              <details>
+                <summary>
+                  <PhImage v-if="step.name === 'generate_image'" :size="13" />
+                  <PhWrench v-else :size="13" />
+                  <strong>{{ step.name }}</strong>
+                  <code>{{ argsPreview(step) }}</code>
+                  <span class="run-tool-meta">
+                    <em v-if="step.elapsed !== undefined">{{ formatSeconds(step.elapsed) }}</em>
+                    <em v-if="step.status === 'failed'" class="run-tool-failed">失败</em>
+                    <em v-else-if="step.status === 'running'" class="run-tool-running">运行中</em>
+                  </span>
+                  <PhCaretRight class="step-caret" :size="12" />
+                </summary>
+                <p v-if="step.hint" class="run-tool-hint">{{ step.hint }}</p>
+                <img
+                  v-if="step.artifactId"
+                  class="run-tool-image"
+                  :src="`/api/artifacts/${step.artifactId}`"
+                  alt="生成图片"
+                  loading="lazy"
+                />
+                <pre v-if="step.arguments">{{ stringify(step.arguments) }}</pre>
+                <pre v-if="step.output">{{ prettyOutput(step) }}</pre>
+              </details>
+            </li>
+          </ul>
+        </li>
+      </ol>
     </details>
   </section>
 </template>

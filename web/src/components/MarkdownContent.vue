@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import type { Attachment } from '../api'
+import { FORUM_HOSTS, prepareReplyMarkdown } from '../bbcode'
 
 const props = withDefaults(defineProps<{
   content: string
@@ -61,6 +62,14 @@ function localizeInlineImages(document: Document, consumed: Set<string>) {
     }
     if (!sourceUrl.startsWith('http://') && !sourceUrl.startsWith('https://')) {
       applyImageHints(image)
+      continue
+    }
+    let host = ''
+    try { host = new URL(sourceUrl).hostname } catch { /* keep as link */ }
+    if (FORUM_HOSTS.has(host)) {
+      // Forum uploads render for a logged-in admin; keep them as images.
+      applyImageHints(image)
+      image.dataset.previewUrl = sourceUrl
       continue
     }
     const link = document.createElement('a')
@@ -126,7 +135,7 @@ function appendRemainingAttachments(document: Document, consumed: Set<string>) {
 }
 
 function renderMarkdown() {
-  const source = props.content || ''
+  const source = prepareReplyMarkdown(props.content || '')
   const parsed = marked.parse(source, {
     async: false,
     breaks: true,
@@ -134,6 +143,8 @@ function renderMarkdown() {
   }) as string
   const sanitized = DOMPurify.sanitize(parsed, {
     USE_PROFILES: { html: true },
+    ADD_TAGS: ['details', 'summary', 'cite'],
+    ADD_ATTR: ['target', 'rel'],
     FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'form'],
     FORBID_ATTR: ['style'],
   })
@@ -143,7 +154,7 @@ function renderMarkdown() {
   appendRemainingAttachments(document, consumed)
   return DOMPurify.sanitize(document.querySelector('#markdown-root')?.innerHTML || sanitized, {
     USE_PROFILES: { html: true },
-    ADD_TAGS: ['details', 'summary'],
+    ADD_TAGS: ['details', 'summary', 'cite'],
     ADD_ATTR: ['target', 'rel', 'width', 'height', 'loading', 'decoding', 'data-preview-url', 'data-deferred-src', 'data-artifact-id'],
     FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'form'],
     FORBID_ATTR: ['style'],

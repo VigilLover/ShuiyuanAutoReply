@@ -311,10 +311,34 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
 
     @api.get("/api/bootstrap")
     async def bootstrap():
+        from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
+
+        runtime = get_deployment().section("runtime")
+        providers = AppSettings().providers
         return {
             "app": "ShuiyuanAutoReply",
             "channels": ["web", "forum"],
             "web_enabled": True,
+            # Deployment-level knobs shown read-only in the settings page.
+            "runtime": {
+                key: runtime[key]
+                for key in (
+                    "concurrency",
+                    "image_concurrency",
+                    "timeout",
+                    "model_call_timeout",
+                    "final_reserve_seconds",
+                    "context_token_budget",
+                    "model_limit",
+                    "query_limit",
+                    "no_progress_batches",
+                )
+            },
+            "reasoning": {
+                "investigate": providers.deepseek_reasoning_effort,
+                "final": providers.deepseek_final_reasoning_effort,
+                "request_timeout": providers.deepseek_request_timeout,
+            },
         }
 
     def _store(request: Request):

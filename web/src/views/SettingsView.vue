@@ -57,6 +57,7 @@ const mcp = ref<any>({ url: null, configured: false, connected: false, error: nu
 const mcpLoading = ref(false)
 const activeSection = ref<'model' | 'prompt' | 'tools'>('model')
 const modelConfigs = ref<any>({ chat: [], image: [], active: {} })
+const runtimeInfo = ref<any>(null)
 const configEditor = ref<ModelConfigDraft | null>(null)
 const configProbe = ref<{ ok: boolean; models: string[]; message: string } | null>(null)
 const configBusy = ref(false)
@@ -114,6 +115,7 @@ function countText(value: unknown) {
 async function load() {
   profiles.value = await api('/api/settings/profiles')
   snapshotDrafts()
+  api<any>('/api/bootstrap').then(value => { runtimeInfo.value = value }).catch(() => { runtimeInfo.value = null })
   await loadModelConfigs()
   await loadScopeSettings()
 }
@@ -360,7 +362,7 @@ onMounted(load)
           <button :class="{ 'scope-selected': scope === 'web' }" @click="changeScope('web')"><PhChatCircleText :size="20" /><div>网页对话<small>独立会话 Runtime</small></div></button>
           <button :class="{ 'scope-selected': scope === 'forum' }" @click="changeScope('forum')"><PhGlobe :size="20" /><div>论坛自动回复<small>论坛 Worker Runtime</small></div></button>
           <p>配置</p>
-          <button :class="{ active: activeSection === 'model' }" @click="activeSection = 'model'"><PhCpu :size="20" /><div>模型<small>Provider 与密钥</small></div></button>
+          <button :class="{ active: activeSection === 'model' }" @click="activeSection = 'model'"><PhCpu :size="20" /><div>模型<small>DeepSeek 端点与密钥</small></div></button>
           <button :class="{ active: activeSection === 'prompt' }" @click="activeSection = 'prompt'"><PhTextT :size="20" /><div>提示词<small>System Prompt</small></div></button>
           <button :class="{ active: activeSection === 'tools' }" @click="activeSection = 'tools'"><PhPlugsConnected :size="20" /><div>工具与 MCP<small>能力开关</small></div></button>
         </aside>
@@ -433,6 +435,16 @@ onMounted(load)
               </div>
             </div>
 
+            <div v-if="runtimeInfo?.runtime" class="runtime-limits">
+              <div class="tool-group-title"><div><h3>运行参数</h3><p>来自部署配置，只读；修改 deployment.toml / .env 后重启生效</p></div></div>
+              <dl class="runtime-limits-grid">
+                <div><dt>推理强度</dt><dd>调查 {{ runtimeInfo.reasoning?.investigate }} · 收尾 {{ runtimeInfo.reasoning?.final }}</dd></div>
+                <div><dt>单次模型请求</dt><dd>{{ runtimeInfo.runtime.model_call_timeout }}s（收尾保留 {{ runtimeInfo.runtime.final_reserve_seconds }}s）</dd></div>
+                <div><dt>整轮预算</dt><dd>{{ runtimeInfo.runtime.timeout }}s · {{ runtimeInfo.runtime.model_limit }} 轮 · {{ runtimeInfo.runtime.query_limit }} 次查询</dd></div>
+                <div><dt>并发</dt><dd>回复 {{ runtimeInfo.runtime.concurrency }} · 生图 {{ runtimeInfo.runtime.image_concurrency }}</dd></div>
+                <div><dt>上下文预算</dt><dd>{{ runtimeInfo.runtime.context_token_budget }} tokens · 连续 {{ runtimeInfo.runtime.no_progress_batches }} 批无新证据即收尾</dd></div>
+              </dl>
+            </div>
             <label v-if="defaultKeyVisible" class="full-field config-default-key">
               <span>默认端点密钥（仅默认文字模型使用；配置自带的密钥优先）</span>
               <input v-model="current().draft.api_key" type="password" :placeholder="current().secret?.configured ? `已配置 ····${current().secret.last_four}` : '输入新密钥'" />
