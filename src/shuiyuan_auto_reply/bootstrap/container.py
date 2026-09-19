@@ -194,12 +194,7 @@ class ApplicationContainer:
             observer_factory=lambda: SQLiteExecutionObserver(
                 state_store,
                 provider=provider_settings.mention_provider,
-                model={
-                    "openrouter": provider_settings.openrouter_mention_model,
-                    "deepseek": provider_settings.deepseek_model,
-                    "tongyi": provider_settings.dashscope_model,
-                    "mimo": provider_settings.mimo_model,
-                }.get(provider_settings.mention_provider),
+                model=provider_settings.deepseek_model,
             ),
         )
         return chat_handler, service
@@ -240,14 +235,8 @@ class ApplicationContainer:
             if self.secret_vault
             else None
         )
-        key_fields = {
-            "openrouter": "openrouter_api_key",
-            "deepseek": "deepseek_api_key",
-            "tongyi": "dashscope_api_key",
-            "mimo": "mimo_api_key",
-        }
         if secret:
-            settings = replace(settings, **{key_fields[provider]: secret})
+            settings = replace(settings, deepseek_api_key=secret)
         return await apply_profile_endpoint(
             settings, scope, profile, store=self.state_store, vault=self.secret_vault
         )
@@ -280,27 +269,16 @@ class ApplicationContainer:
                 "web", cls._profile_defaults(current)
             )
             effective = await container._settings_for_profile("web", profile["active"])
-            configured_keys = {
-                "openrouter": effective.openrouter_api_key,
-                "deepseek": effective.deepseek_api_key,
-                "tongyi": effective.dashscope_api_key,
-                "mimo": effective.mimo_api_key,
-            }
-            if not configured_keys.get(effective.mention_provider):
+            if not effective.deepseek_api_key:
                 logging.warning(
                     "Web runtime is waiting for a %s API key",
                     effective.mention_provider,
                 )
                 chat_model = None
             else:
-                factory_method = (
-                    MentionProviderFactory.create_api
-                    if effective.mention_provider == "openrouter"
-                    else MentionProviderFactory.create
-                )
 
                 def build_chat():
-                    return factory_method(
+                    return MentionProviderFactory.create(
                         forum_model,
                         "wolf_lumine",
                         effective,

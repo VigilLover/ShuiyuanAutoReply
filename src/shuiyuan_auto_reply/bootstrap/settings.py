@@ -16,13 +16,6 @@ def _text(name: str, default: str) -> str:
     return default if value is None else value
 
 
-def _cascading_text(primary: str, fallback: str, default: str) -> str:
-    value = _value(primary)
-    if value is not None:
-        return value
-    return _text(fallback, default)
-
-
 def _flag(name: str, default: bool = False) -> bool:
     value = _value(name)
     if value is None:
@@ -47,12 +40,10 @@ class DeepSeekApiFormat(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ProviderSettings:
-    mention_provider: str = field(
-        default_factory=lambda: _text("MENTION_CHAT_PROVIDER", "deepseek")
-        .strip()
-        .lower()
-    )
-    # Empty means the provider's own endpoint; the settings UI can point a stored
+    """DeepSeek is the only chat provider; embeddings are configured elsewhere."""
+
+    mention_provider: str = "deepseek"
+    # Empty means DeepSeek's own endpoint; the settings UI can point a stored
     # configuration at any OpenAI-compatible base URL.
     mention_base_url: str | None = field(
         default_factory=lambda: _value("MENTION_BASE_URL")
@@ -60,13 +51,6 @@ class ProviderSettings:
     deepseek_api_key: str | None = field(
         default_factory=lambda: _value("DEEPSEEK_API_KEY")
     )
-    dashscope_api_key: str | None = field(
-        default_factory=lambda: _value("DASHSCOPE_API_KEY")
-    )
-    openrouter_api_key: str | None = field(
-        default_factory=lambda: _value("OPENROUTER_API_KEY")
-    )
-    mimo_api_key: str | None = field(default_factory=lambda: _value("MIMO_API_KEY"))
     deepseek_model: str = field(
         default_factory=lambda: _text("DEEPSEEK_MENTION_MODEL", "deepseek-flash")
     )
@@ -80,57 +64,27 @@ class ProviderSettings:
             .lower()
         )
     )
-    # Retained only for loading older saved profiles; DeepSeek Vision never uses it.
-    deepseek_fallback_model: str = "deepseek-v4-flash"
     deepseek_thinking: str = field(
         default_factory=lambda: _text("DEEPSEEK_MENTION_THINKING", "enabled")
         .strip()
         .lower()
     )
+    # Effort for investigation rounds (tool planning) and for the final answer.
     deepseek_reasoning_effort: str = field(
-        default_factory=lambda: _text("DEEPSEEK_MENTION_REASONING_EFFORT", "max")
+        default_factory=lambda: _text("DEEPSEEK_MENTION_REASONING_EFFORT", "high")
+        .strip()
+        .lower()
+    )
+    deepseek_final_reasoning_effort: str = field(
+        default_factory=lambda: _text("DEEPSEEK_MENTION_FINAL_REASONING_EFFORT", "high")
         .strip()
         .lower()
     )
     _deepseek_max_tokens: str | None = field(
         default_factory=lambda: _value("DEEPSEEK_MENTION_MAX_TOKENS"), repr=False
     )
-    dashscope_model: str = field(
-        default_factory=lambda: _text(
-            "DASHSCOPE_MENTION_MODEL", "qwen3.5-plus-2026-02-15"
-        )
-    )
-    dashscope_fallback_model: str = field(
-        default_factory=lambda: _text(
-            "DASHSCOPE_MENTION_FALLBACK_MODEL", "qwen3.5-plus"
-        )
-    )
-    openrouter_mention_model: str = field(
-        default_factory=lambda: _cascading_text(
-            "OPENROUTER_MENTION_MODEL",
-            "OPENROUTER_MODEL",
-            "google/gemini-3.1-flash-lite-preview",
-        )
-    )
-    openrouter_proxy: str | None = field(
-        default_factory=lambda: _value("OPENROUTER_PROXY")
-    )
-    mimo_model: str = field(
-        default_factory=lambda: _text("MIMO_MENTION_MODEL", "mimo-v2.5")
-    )
-    mimo_thinking: str = field(
-        default_factory=lambda: _text("MIMO_MENTION_THINKING", "enabled")
-        .strip()
-        .lower()
-    )
-    _mimo_max_tokens: str | None = field(
-        default_factory=lambda: _value("MIMO_MENTION_MAX_TOKENS"), repr=False
-    )
-    _mimo_max_retries: str | None = field(
-        default_factory=lambda: _value("MIMO_MENTION_MAX_RETRIES"), repr=False
-    )
-    _mimo_multimodal_search_images: str | None = field(
-        default_factory=lambda: _value("MIMO_MULTIMODAL_MAX_SEARCH_IMAGES"),
+    _deepseek_request_timeout: str | None = field(
+        default_factory=lambda: _value("DEEPSEEK_MENTION_REQUEST_TIMEOUT"),
         repr=False,
     )
     pet_model: str = field(
@@ -139,30 +93,12 @@ class ProviderSettings:
     mcp_server_url: str | None = field(default_factory=lambda: _value("MCP_SERVER_URL"))
 
     def validate_forum(self) -> None:
-        allowed = {"deepseek", "tongyi", "openrouter", "mimo"}
-        if self.mention_provider not in allowed:
+        if self.mention_provider != "deepseek":
             raise ValueError(
-                "MENTION_CHAT_PROVIDER must be one of "
-                f"{', '.join(sorted(allowed))}; got {self.mention_provider!r}."
+                f"MENTION_CHAT_PROVIDER must be deepseek; got {self.mention_provider!r}."
             )
-        keys = {
-            "deepseek": self.deepseek_api_key,
-            "tongyi": self.dashscope_api_key,
-            "openrouter": self.openrouter_api_key,
-            "mimo": self.mimo_api_key,
-        }
-        if not keys[self.mention_provider]:
-            env_name = {
-                "deepseek": "DEEPSEEK_API_KEY",
-                "tongyi": "DASHSCOPE_API_KEY",
-                "openrouter": "OPENROUTER_API_KEY",
-                "mimo": "MIMO_API_KEY",
-            }[self.mention_provider]
-            raise ValueError(f"Please set the {env_name} environment variable.")
-
-    def validate_api(self) -> None:
-        if not self.openrouter_api_key:
-            raise ValueError("Please set the OPENROUTER_API_KEY environment variable.")
+        if not self.deepseek_api_key:
+            raise ValueError("Please set the DEEPSEEK_API_KEY environment variable.")
 
     def validate_deepseek_options(self) -> None:
         try:
@@ -173,12 +109,15 @@ class ProviderSettings:
             ) from exc
         if self.deepseek_thinking not in {"enabled", "disabled"}:
             raise ValueError("DEEPSEEK_MENTION_THINKING must be enabled or disabled")
-        if self.deepseek_reasoning_effort not in {"high", "max"}:
-            raise ValueError("DEEPSEEK_MENTION_REASONING_EFFORT must be high or max")
-
-    def validate_mimo_options(self) -> None:
-        if self.mimo_thinking not in {"enabled", "disabled"}:
-            raise ValueError("MIMO_MENTION_THINKING must be enabled or disabled")
+        for name, value in (
+            ("DEEPSEEK_MENTION_REASONING_EFFORT", self.deepseek_reasoning_effort),
+            (
+                "DEEPSEEK_MENTION_FINAL_REASONING_EFFORT",
+                self.deepseek_final_reasoning_effort,
+            ),
+        ):
+            if value not in {"low", "high", "max"}:
+                raise ValueError(f"{name} must be low, high or max")
 
     @staticmethod
     def _parse_optional_positive(name: str, raw: str | None) -> int | None:
@@ -199,28 +138,13 @@ class ProviderSettings:
         )
 
     @property
-    def mimo_max_tokens(self) -> int | None:
-        return self._parse_optional_positive(
-            "MIMO_MENTION_MAX_TOKENS", self._mimo_max_tokens
-        )
-
-    @property
-    def mimo_max_retries(self) -> int:
+    def deepseek_request_timeout(self) -> int:
+        """Hard cap for one model request in seconds; the turn deadline still applies."""
         return (
             self._parse_optional_positive(
-                "MIMO_MENTION_MAX_RETRIES", self._mimo_max_retries
+                "DEEPSEEK_MENTION_REQUEST_TIMEOUT", self._deepseek_request_timeout
             )
-            or 3
-        )
-
-    @property
-    def mimo_multimodal_search_images(self) -> int:
-        return (
-            self._parse_optional_positive(
-                "MIMO_MULTIMODAL_MAX_SEARCH_IMAGES",
-                self._mimo_multimodal_search_images,
-            )
-            or 2
+            or 180
         )
 
 

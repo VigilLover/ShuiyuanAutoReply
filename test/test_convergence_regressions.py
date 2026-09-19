@@ -101,7 +101,11 @@ class ConvergenceRegressions(unittest.IsolatedAsyncioTestCase):
                 )
             self.assertEqual(turn.progress.phase, "final")
             self.assertEqual(turn.control.stop_reason, "no_new_evidence")
-            self.assertEqual(model.search_forum.await_count, 4)
+            # First search yields evidence; the next two empty batches stop the
+            # loop (no_progress_batches=2), so the fourth keyword is never run.
+            self.assertEqual(
+                model.search_forum.await_count, 1 + turn.control.no_progress_batches
+            )
         finally:
             current_turn.reset(token)
 

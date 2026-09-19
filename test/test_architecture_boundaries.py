@@ -49,3 +49,14 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             if any(name.startswith("examples") for name in project_imports(path)):
                 offenders.append(str(path.relative_to(ROOT)))
         self.assertEqual(offenders, [])
+
+    def test_features_does_not_import_interfaces(self):
+        # Interfaces (CLI, worker, API) are entry points that wire features
+        # together; a feature depending back on one would make composition
+        # order-dependent and block reusing the feature from another interface.
+        offenders = []
+        for path in (ROOT / "features").rglob("*.py"):
+            for imported in project_imports(path):
+                if imported.startswith("shuiyuan_auto_reply.interfaces"):
+                    offenders.append(f"{path.relative_to(ROOT)} -> {imported}")
+        self.assertEqual(offenders, [])

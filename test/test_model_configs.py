@@ -268,7 +268,8 @@ def test_probe_reports_models_and_a_missing_target(api, monkeypatch):
         return ["alpha", "gpt-image-2.5-sunburst"]
 
     monkeypatch.setattr(
-        "shuiyuan_auto_reply.interfaces.api.app.list_provider_models", fake_probe
+        "shuiyuan_auto_reply.interfaces.api.routes.model_configs.list_provider_models",
+        fake_probe,
     )
     found = api.client.post(
         "/api/settings/model-configs/probe",
@@ -302,7 +303,8 @@ def test_probe_surfaces_endpoint_failures(api, monkeypatch):
         raise ValueError("HTTP 401")
 
     monkeypatch.setattr(
-        "shuiyuan_auto_reply.interfaces.api.app.list_provider_models", failing
+        "shuiyuan_auto_reply.interfaces.api.routes.model_configs.list_provider_models",
+        failing,
     )
     failed = api.client.post(
         "/api/settings/model-configs/probe",

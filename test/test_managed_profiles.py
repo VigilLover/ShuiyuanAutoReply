@@ -36,7 +36,7 @@ def test_persona_braces_are_literal_and_rules_remain():
     rendered = template.format(**{key: "" for key in template.input_variables}).content
     assert "Hello {unknown}" in rendered
     assert "{other}" in rendered
-    assert "【按需获取资料】" in rendered
+    assert "【工具使用说明】" in rendered
 
 
 def test_profile_preview_and_migration_only_change_prompt_draft(tmp_path):

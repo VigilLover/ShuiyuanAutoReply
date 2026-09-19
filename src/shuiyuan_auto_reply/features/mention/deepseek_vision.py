@@ -46,6 +46,13 @@ SUPPORTED_MIME_TYPES = {
 MAX_IMAGES_PER_TURN = 20
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 REMOTE_FILE_SECONDS = 7 * 24 * 60 * 60
+# DeepSeek downsizes ``detail: low`` inputs to 512px and bills at most 384 tokens
+# per image, so avatars and thumbnails go inline instead of through the Files API.
+INLINE_MAX_EDGE = 512
+INLINE_MAX_BYTES = 300 * 1024
+# Previews of generated images shown back to the model: small JPEG, low detail.
+PREVIEW_MAX_EDGE = 512
+PREVIEW_JPEG_QUALITY = 80
 
 _MARKDOWN_IMAGE_RE = re.compile(
     r"!\[[^\]]*]\(\s*(?P<url>https?://[^)\s]+)", re.IGNORECASE
@@ -363,6 +370,76 @@ class DeepSeekVisionMediaManager:
         )
         return file_id
 
+    @staticmethod
+    def inline_block(data: bytes, mime_type: str) -> dict[str, Any]:
+        """A Chat/Vision ``image_url`` block carrying the bytes at low detail."""
+        encoded = base64.b64encode(data).decode("ascii")
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime_type};base64,{encoded}", "detail": "low"},
+        }
+
+    async def content_block(
+        self, artifact: VisualMediaArtifact, data: bytes | None = None
+    ) -> dict[str, Any]:
+        """Pick the cheapest transport for an image: inline for small, Files API otherwise."""
+        width, height = artifact.width, artifact.height
+        if data is None and artifact.byte_count <= INLINE_MAX_BYTES:
+            try:
+                data = Path(artifact.local_path).read_bytes()
+            except OSError:
+                data = None
+        if data is not None and (width is None or height is None):
+            try:
+                _mime, width, height = sniff_image(data)
+            except VisionMediaError:
+                width = height = None
+        if (
+            data is not None
+            and len(data) <= INLINE_MAX_BYTES
+            and width is not None
+            and height is not None
+            and max(width, height) <= INLINE_MAX_EDGE
+        ):
+            return self.inline_block(data, artifact.mime_type)
+        return {"type": "file", "file_id": await self.ensure_file_id(artifact)}
+
+    @staticmethod
+    def preview_bytes(data: bytes) -> bytes:
+        """Downscale to a small JPEG so a generated image can be shown back cheaply."""
+        with Image.open(io.BytesIO(data)) as image:
+            image.thumbnail((PREVIEW_MAX_EDGE, PREVIEW_MAX_EDGE))
+            output = io.BytesIO()
+            image.convert("RGB").save(
+                output, format="JPEG", quality=PREVIEW_JPEG_QUALITY
+            )
+        return output.getvalue()
+
+    def prepare_generated(self, artifact: Any) -> DeepSeekVisionInput | None:
+        """Show a freshly generated image back to the model at preview size."""
+        try:
+            data = self.preview_bytes(Path(artifact.local_path).read_bytes())
+        except (OSError, UnidentifiedImageError, ValueError) as exc:
+            logging.warning("Cannot preview generated image %s: %s", artifact, exc)
+            return None
+        visual = VisualMediaArtifact(
+            artifact_id=artifact.artifact_id,
+            mime_type=artifact.mime_type,
+            local_path=artifact.local_path,
+            byte_count=artifact.byte_count,
+            source_kind="generated",
+            source_url=artifact.uri,
+            width=getattr(artifact, "width", None),
+            height=getattr(artifact, "height", None),
+        )
+        return DeepSeekVisionInput(
+            source_url=artifact.uri,
+            source_kind="generated",
+            content_block=self.inline_block(data, "image/jpeg"),
+            artifact=visual,
+            description=f"本轮 generate_image 的生成结果预览（{artifact.uri}）",
+        )
+
     async def prepare_attachment(
         self, attachment: AttachmentRef
     ) -> DeepSeekVisionInput:
@@ -373,11 +450,10 @@ class DeepSeekVisionMediaManager:
         if record is None or not record.available:
             raise VisionMediaError("用户上传图片不存在")
         artifact = self.artifact_from_record(record)
-        file_id = await self.ensure_file_id(artifact)
         return DeepSeekVisionInput(
             source_url=artifact.source_url or artifact.uri,
             source_kind=artifact.source_kind,
-            content_block={"type": "file", "file_id": file_id},
+            content_block=await self.content_block(artifact),
             artifact=artifact,
             description=artifact.filename or "用户上传图片",
         )
@@ -409,11 +485,10 @@ class DeepSeekVisionMediaManager:
             source_url=normalized,
             filename=Path(urlparse(normalized).path).name or None,
         )
-        file_id = await self.ensure_file_id(artifact)
         return DeepSeekVisionInput(
             source_url=normalized,
             source_kind=source_kind,
-            content_block={"type": "file", "file_id": file_id},
+            content_block=await self.content_block(artifact, data),
             artifact=artifact,
             description=description,
         )
@@ -433,11 +508,10 @@ class DeepSeekVisionMediaManager:
             source_url=None,
             filename=filename,
         )
-        file_id = await self.ensure_file_id(artifact)
         return DeepSeekVisionInput(
             source_url=artifact.uri,
             source_kind=source_kind,
-            content_block={"type": "file", "file_id": file_id},
+            content_block=await self.content_block(artifact, data),
             artifact=artifact,
             description=filename,
         )
@@ -505,11 +579,10 @@ class DeepSeekVisionMediaManager:
                 response_headers.get("content-type", "").split(";", 1)[0]
             ),
         )
-        file_id = await self.ensure_file_id(artifact)
         return DeepSeekVisionInput(
             source_url=url,
             source_kind=source_kind,
-            content_block={"type": "file", "file_id": file_id},
+            content_block=await self.content_block(artifact, data),
             artifact=artifact,
             description=description,
         )
@@ -630,22 +703,9 @@ class DeepSeekVisionMediaManager:
         return [str(item) for item in getattr(value, "image_urls", []) or []]
 
 
-def build_deepseek_content(
-    text: str, images: Iterable[DeepSeekVisionInput]
-) -> list[dict[str, Any]]:
-    content: list[dict[str, Any]] = []
-    for index, image in enumerate(images, 1):
-        label = image.description or image.source_url
-        if image.source_kind in {"web_search", "forum_search"}:
-            label = (
-                f"{label}；展示标识 {image.artifact.uri}。"
-                "最终回复需要展示此图时，只能把该展示标识作为图片地址"
-            )
-        content.append({"type": "text", "text": f"【图片 {index}：{label}】"})
-        content.append(image.content_block)
-    if text:
-        content.append({"type": "text", "text": text})
-    return content
+from shuiyuan_auto_reply.infrastructure.llm.deepseek import (  # noqa: E402
+    build_deepseek_content,
+)
 
 
 @bounded_media

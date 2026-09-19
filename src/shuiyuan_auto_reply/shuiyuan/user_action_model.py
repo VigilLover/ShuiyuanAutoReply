@@ -108,7 +108,7 @@ class BaseUserActionModel:
         queue = ForumQueue(state_directory() / "state.sqlite3", self.username)
         await queue.initialize()
         active = set()
-        prechecks = asyncio.Semaphore(3)
+        prechecks = asyncio.Semaphore(max(1, int(config["concurrency"])))
         store = getattr(self, "state_store", None)
         if store is not None:
             await store.recover_forum_runs(self.username)

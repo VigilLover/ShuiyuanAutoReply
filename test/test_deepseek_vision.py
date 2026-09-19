@@ -144,7 +144,25 @@ class VisionContractTests(unittest.TestCase):
 
 
 class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_downloaded_public_image_uses_files_api_on_first_request(self):
+    def _public_download(self, manager, data, artifact):
+        async def respond(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, content=data, headers={"content-type": "image/png"}
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        return (
+            patch(
+                "shuiyuan_auto_reply.features.mention.deepseek_vision._assert_public_host",
+                new=AsyncMock(),
+            ),
+            patch(
+                "shuiyuan_auto_reply.features.mention.deepseek_vision.httpx.AsyncClient",
+                return_value=client,
+            ),
+        )
+
+    async def test_small_public_image_is_sent_inline_at_low_detail(self):
         data = png_bytes()
         artifact = VisualMediaArtifact(
             artifact_id="asset-public",
@@ -157,35 +175,86 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
         manager = DeepSeekVisionMediaManager.__new__(DeepSeekVisionMediaManager)
         manager._register_bytes = AsyncMock(return_value=artifact)
         manager.ensure_file_id = AsyncMock(return_value="file_asset_public")
-
-        async def respond(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                content=data,
-                headers={"content-type": "image/png"},
-            )
-
-        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-        with (
-            patch(
-                "shuiyuan_auto_reply.features.mention.deepseek_vision._assert_public_host",
-                new=AsyncMock(),
-            ),
-            patch(
-                "shuiyuan_auto_reply.features.mention.deepseek_vision.httpx.AsyncClient",
-                return_value=client,
-            ),
-        ):
+        host_patch, client_patch = self._public_download(manager, data, artifact)
+        with host_patch, client_patch:
             result = await manager.prepare_public_url(
                 "https://cdn.example/result.png",
                 conversation_id="conversation-1",
             )
 
+        manager.ensure_file_id.assert_not_awaited()
+        self.assertEqual(result.content_block["type"], "image_url")
+        self.assertEqual(result.content_block["image_url"]["detail"], "low")
+        self.assertTrue(
+            result.content_block["image_url"]["url"].startswith(
+                "data:image/png;base64,"
+            )
+        )
+
+    async def test_large_public_image_uses_files_api(self):
+        output = io.BytesIO()
+        Image.new("RGB", (1400, 900), "#5c86e8").save(output, format="PNG")
+        data = output.getvalue()
+        artifact = VisualMediaArtifact(
+            artifact_id="asset-large",
+            mime_type="image/png",
+            local_path="/tmp/asset-large.png",
+            byte_count=len(data),
+            source_kind="web_search",
+            source_url="https://cdn.example/large.png",
+            width=1400,
+            height=900,
+        )
+        manager = DeepSeekVisionMediaManager.__new__(DeepSeekVisionMediaManager)
+        manager._register_bytes = AsyncMock(return_value=artifact)
+        manager.ensure_file_id = AsyncMock(return_value="file_asset_large")
+        host_patch, client_patch = self._public_download(manager, data, artifact)
+        with host_patch, client_patch:
+            result = await manager.prepare_public_url(
+                "https://cdn.example/large.png",
+                conversation_id="conversation-1",
+            )
+
         manager.ensure_file_id.assert_awaited_once_with(artifact)
         self.assertEqual(
-            result.content_block,
-            {"type": "file", "file_id": "file_asset_public"},
+            result.content_block, {"type": "file", "file_id": "file_asset_large"}
         )
+
+    async def test_generated_image_is_previewed_back_to_the_model(self):
+        from shuiyuan_auto_reply.domain import GeneratedImageArtifact
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "generated.png"
+            Image.new("RGB", (1024, 1024), "#ff8800").save(path, format="PNG")
+            artifact = GeneratedImageArtifact(
+                "generated-1", "image/png", str(path), path.stat().st_size, 1024, 1024
+            )
+            manager = DeepSeekVisionMediaManager.__new__(DeepSeekVisionMediaManager)
+            preview = manager.prepare_generated(artifact)
+
+            self.assertEqual(preview.source_kind, "generated")
+            self.assertEqual(preview.content_block["image_url"]["detail"], "low")
+            self.assertIn("artifact://generated-1", preview.description)
+
+            model = MentionDeepSeekModel.__new__(MentionDeepSeekModel)
+            model.api_format = DeepSeekApiFormat.RESPONSES
+            model.vision_media = manager
+            message = ToolMessage(
+                content='{"status": "ok", "artifact": "artifact://generated-1"}',
+                tool_call_id="call-gen",
+                name="generate_image",
+                artifact=artifact,
+            )
+            result = await model._collect_tool_output_images(
+                {"image_inputs": [], "messages": [message], "conversation_id": "c"}
+            )
+
+        replacement = result["messages"][0]
+        self.assertEqual(replacement.content[-1]["type"], "input_image")
+        self.assertTrue(replacement.content[-1]["image_url"].startswith("data:"))
+        self.assertEqual(replacement.content[-1]["detail"], "low")
+        # Previews never become response attachments; generated_artifacts carry them.
+        self.assertEqual(result["response_visual_artifacts"], [])
 
     async def test_json_escaped_tool_image_in_text_is_not_loaded(self):
         artifact = VisualMediaArtifact(

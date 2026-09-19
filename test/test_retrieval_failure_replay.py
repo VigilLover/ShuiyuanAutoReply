@@ -135,10 +135,15 @@ async def _replay_large_topic_retrieval_and_finalizer_repair():
         read_topic_post_page=AsyncMock(side_effect=read_topic),
     )
     runtime = RetrievalReplayChat(model)
-    with patch(
-        "shuiyuan_auto_reply.features.mention.mention_chat_model.emit_event",
-        new_callable=AsyncMock,
-    ) as emit:
+    emit = AsyncMock()
+    with (
+        patch(
+            "shuiyuan_auto_reply.features.mention.mention_chat_model.emit_event", emit
+        ),
+        patch("shuiyuan_auto_reply.features.mention.context.emit_event", emit),
+        patch("shuiyuan_auto_reply.features.mention.tools_runtime.emit_event", emit),
+        patch("shuiyuan_auto_reply.features.mention.finalize.emit_event", emit),
+    ):
         result = await runtime.get_pumpkin_response(
             None,
             None,

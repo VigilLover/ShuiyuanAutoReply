@@ -1,13 +1,17 @@
 # Copy to config/deployment.toml. Paths are relative to this file.
 [common.runtime]
-context_token_budget = 24000
-no_progress_batches = 3
-continuation_limit = 1
-continuation_batch_limit = 2
-query_limit = 40
-model_limit = 24
-final_reserve_seconds = 60
-concurrency = 3
+# 发给模型的动态上下文预算（近似 token）；超出时整组丢弃最旧的工具轮，保持前缀稳定以命中缓存
+context_token_budget = 60000
+# 连续多少批读取没有新证据就转入收尾
+no_progress_batches = 2
+query_limit = 30
+model_limit = 14
+# 整轮预算中为收尾回答保留的秒数；单次模型请求的硬上限秒数
+final_reserve_seconds = 150
+model_call_timeout = 180
+# 同时处理的回复数；同时进行的生图请求数（中转站按请求计费，过高会拖慢单张耗时）
+concurrency = 4
+image_concurrency = 2
 queue_limit = 100
 timeout = 900
 poll_interval = 5

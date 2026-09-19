@@ -54,6 +54,7 @@ Then commit the regenerated `src/shuiyuan_auto_reply/interfaces/api/static/` out
 
 - `application/` must not import `aiohttp`, `fastapi`, `sqlalchemy`, `neo4j`, `neomodel`, or `infrastructure`
 - `domain/` stays framework-free (only stdlib `dataclasses`/`enum` plus domain modules)
+- `features/` must not import `interfaces` (interfaces wire features together, not the reverse)
 - Production code must not import `examples`
 
 When changing ports, providers, or dependency direction, extend `test_port_contracts.py` / architecture tests rather than only fixing the import.

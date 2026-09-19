@@ -208,18 +208,6 @@ class DeepSeekRequestContractTests(unittest.TestCase):
             {"type": "input_image", "file_id": "file_tool_1"},
         )
 
-    def test_native_web_search_binding_is_provider_side(self):
-        model = _mk_deepseek_llm(
-            "test-key",
-            DEEPSEEK_DEFAULT_MODEL,
-            _settings(DeepSeekApiFormat.RESPONSES),
-        )
-
-        bound = model.bind_tools([{"type": "web_search"}], tool_choice="auto")
-
-        self.assertEqual(bound.kwargs["tools"], [{"type": "web_search"}])
-        self.assertEqual(bound.kwargs["tool_choice"], "auto")
-
     def test_final_text_excludes_reasoning_and_search_control_blocks(self):
         model = MentionDeepSeekModel.__new__(MentionDeepSeekModel)
         raw = [
@@ -233,7 +221,8 @@ class DeepSeekRequestContractTests(unittest.TestCase):
 
 
 class DeepSeekToolImageContractTests(unittest.IsolatedAsyncioTestCase):
-    async def test_native_web_search_is_hidden_and_never_added_to_tool_node(self):
+    async def test_no_provider_native_tools_are_bound(self):
+        """DeepSeek ignores built-in Responses tools, so only functions are bound."""
         model = MentionDeepSeekModel.__new__(MentionDeepSeekModel)
         model.provider_settings = SimpleNamespace(mcp_server_url=None)
         model.enabled_tools = None
@@ -242,17 +231,13 @@ class DeepSeekToolImageContractTests(unittest.IsolatedAsyncioTestCase):
         model.prompt_scope = SimpleNamespace(value="web")
         model._load_shuiyuan_tools = MagicMock(return_value=[])
         model.memory_model = SimpleNamespace(initialize=AsyncMock(), tools=[])
-        model.openai_tools = []
-        model.hidden_provider_tools = [{"type": "web_search"}]
-        model.provider_tool_choice = "auto"
-        bound = SimpleNamespace(with_retry=MagicMock(return_value="bound"))
-        model.llm = SimpleNamespace(bind_tools=MagicMock(return_value=bound))
+        model.llm = SimpleNamespace(bind_tools=MagicMock(return_value="bound"))
         model._build_graph = MagicMock(return_value="graph")
 
         await model.initialize_agent()
 
-        bound_tools = model.llm.bind_tools.call_args.args[0]
-        self.assertEqual(bound_tools[-1], {"type": "web_search"})
+        model.llm.bind_tools.assert_called_once_with([])
+        self.assertEqual(model.llm_with_tools, "bound")
         self.assertEqual([tool.name for tool in model.tools], [])
         model.state_store.replace_tool_catalog.assert_awaited_once_with("web", [])
 

@@ -303,7 +303,7 @@ class MentionModel(BaseUserActionModel):
         logging.info(
             f"==> [MentionModel] Triggered AI spawn with prompt: '{raw}' for user: {user.username}"
         )
-        # Let the Tongyi model respond based on conversation and similar responses
+        # Generate the reply from conversation context and retrieved style examples
         artifacts = ()
         input_artifacts = ()
         runtime = await self._acquire_chat_runtime()

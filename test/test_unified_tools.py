@@ -7,10 +7,7 @@ from shuiyuan_auto_reply.application.tool_results import TurnResults, current_tu
 from shuiyuan_auto_reply.features.mention.shuiyuan_tools_wrapper import (
     ShuiyuanToolsWrapper,
 )
-from shuiyuan_auto_reply.features.mention.tool_catalog import (
-    legacy_forum_operations,
-    migrate_tool_names,
-)
+from shuiyuan_auto_reply.features.mention.tool_catalog import migrate_tool_names
 
 
 def _post(*, post_id=10, number=3, raw="正文", image=""):
@@ -79,12 +76,11 @@ async def _forum_search_uses_native_snippets_and_opaque_cursor():
 async def _forum_search_rejects_conflicting_structured_filter():
     tools = ShuiyuanToolsWrapper(SimpleNamespace(search_forum=AsyncMock()))
     result = await tools.forum_search(query="user:bob", username="alice")
-    assert result == {
-        "status": "error",
-        "code": "invalid_arguments",
-        "message": "Conflicting user filter",
-        "retryable": False,
-    }
+    assert result["status"] == "error"
+    assert result["code"] == "invalid_arguments"
+    assert result["message"] == "Conflicting user filter"
+    assert result["retryable"] is False
+    assert "hint" in result
 
 
 async def _cursor_accepts_matching_arguments_and_rejects_conflicts():
@@ -216,15 +212,6 @@ async def _users_preserves_batch_order_and_item_status():
     assert result["items"][2]["code"] == "not_found"
 
 
-async def _old_allowlist_maps_without_opening_other_merged_operations():
-    tools = ShuiyuanToolsWrapper(
-        SimpleNamespace(),
-        allowed_operations={"users": {"username"}},
-    )
-    result = await tools.users(query="alice")
-    assert result["code"] == "operation_disabled"
-
-
 def test_forum_search_uses_native_snippets_and_opaque_cursor():
     asyncio.run(_forum_search_uses_native_snippets_and_opaque_cursor())
 
@@ -253,15 +240,11 @@ def test_users_preserves_batch_order_and_item_status():
     asyncio.run(_users_preserves_batch_order_and_item_status())
 
 
-def test_old_allowlist_maps_without_opening_other_merged_operations():
-    asyncio.run(_old_allowlist_maps_without_opening_other_merged_operations())
-
-
-def test_legacy_capabilities_map_to_equivalent_unified_operations():
-    names = ["search_posts", "search_user_by_id"]
-    assert migrate_tool_names(names) == ["forum_search", "users"]
-    assert legacy_forum_operations(names) == {
-        "forum_search": {"posts", "topics"},
-        "forum_read": set(),
-        "users": {"user_id"},
-    }
+def test_legacy_tool_names_map_to_unified_tools():
+    names = [
+        "search_posts",
+        "search_user_by_id",
+        "get_users",
+        "prepare_image_references",
+    ]
+    assert migrate_tool_names(names) == ["forum_search", "users", "generate_image"]

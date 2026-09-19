@@ -140,3 +140,25 @@ class CookieJarDistributionTests(unittest.IsolatedAsyncioTestCase):
         _apply_cookies(jar, {"JSESSIONID": "s"})
         sent = set(jar.filter_cookies(URL("https://example.com")))
         self.assertEqual(sent, set())
+
+
+class ReadCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_search_and_user_reads_are_cached_across_turns(self):
+        model = ShuiyuanModel.__new__(ShuiyuanModel)
+        page = SimpleNamespace(
+            status=200, json=AsyncMock(return_value={"posts": [], "topics": []})
+        )
+        missing = SimpleNamespace(status=404, json=AsyncMock(return_value={}))
+        model._rate_limited_request = AsyncMock(side_effect=[page, missing])
+
+        first = await model.search_forum("小狼", page=1)
+        second = await model.search_forum("小狼", page=1)
+        self.assertIs(first, second)
+        self.assertIsNone(await model.get_user_by_username("ghost"))
+        self.assertIsNone(await model.get_user_by_username("Ghost"))
+        self.assertEqual(model._rate_limited_request.await_count, 2)
+
+        ShuiyuanModel.clear_read_cache()
+        model._rate_limited_request = AsyncMock(return_value=page)
+        await model.search_forum("小狼", page=1)
+        self.assertEqual(model._rate_limited_request.await_count, 1)

@@ -10,14 +10,13 @@ import re
 import socket as _socket
 import time
 import uuid
-from datetime import datetime
+import weakref
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 from PIL import Image
 
 from shuiyuan_auto_reply.application.tool_results import current_turn
-from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.domain import GeneratedImageArtifact
 from shuiyuan_auto_reply.infrastructure.image_transport import (
     ImageDownloadError,
@@ -37,7 +36,6 @@ _MAX_TOTAL_REFERENCE_BYTES = 20 * 1024 * 1024
 _MAX_REFERENCE_LONG_EDGE = 1024
 _REFERENCE_JPEG_QUALITY = 80
 _DEFAULT_IMAGE_MODEL = "gpt-image-2"
-_FIXED_IMAGE_SIZE = "1K"
 _DEFAULT_TIMEOUT_SECONDS = 600.0
 _DEFAULT_MAX_API_ATTEMPTS = 3
 _MAX_CONFIGURED_API_ATTEMPTS = 10
@@ -737,394 +735,167 @@ async def resolve_image_endpoint(state_store=None) -> tuple[str, str, str]:
     return api_url, api_key, image_model
 
 
-def create_image_generation_tool(model, *, state_store=None):
-    """
-    创建一个与 ShuiyuanModel 绑定的文生图工具函数.
+def _generation_gate() -> asyncio.Semaphore:
+    """Per-loop semaphore sized by ``[common.runtime].image_concurrency``."""
+    from shuiyuan_auto_reply.bootstrap.deployment import get_deployment
 
-    :param model: ShuiyuanModel 实例, 用于调用 upload_image 上传图片到水源.
-    :return: async callable, 可作为 StructuredTool 的 coroutine.
-    """
-    generation_gate = asyncio.Semaphore(1)
+    loop = asyncio.get_running_loop()
+    gate = _generation_gates.get(loop)
+    if gate is None:
+        limit = int(get_deployment().section("runtime").get("image_concurrency", 2))
+        gate = asyncio.Semaphore(max(1, limit))
+        _generation_gates[loop] = gate
+    return gate
 
-    async def generate_image(
-        prompt: str,
-        aspect_ratio: str = "1:1",
-        image_size: str = "1K",
-        reference_images: str | list[str] | None = None,
-        output_dir: str | None = None,
-        reference_set_id: str | None = None,
-        references: list[dict[str, str]] | None = None,
-        allow_partial: bool = False,
-    ) -> str:
-        """
-        根据用户的文字描述生成图片并返回可展示结果；网页仅保存本地 Artifact，论坛由发布流程上传。
 
-        这是生成图片的唯一方式。如果你没有调用此工具，你没有任何图片可以展示。
-        绝对禁止在没有调用本工具的情况下编造或输出任何图片链接。
+_generation_gates: (
+    "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]"
+) = weakref.WeakKeyDictionary()
 
-        【重要】你必须使用 Markdown 图片语法将返回的短链接嵌入最终回复：`![描述](短链接)`
-        例如返回 `upload://zuyICpNdsQZCsV4cWeOwgcDLLak.jpeg`，你在回复中写 `![生成的图片](upload://zuyICpNdsQZCsV4cWeOwgcDLLak.jpeg)`
 
-        提示词(prompt)编写规则（根据是否有参考图区别对待）：
-        - 有参考图（reference_images 非空）：prompt 简要准确描述用户要求，保留用户明确指定的风格、布局及修改要求，不擅自添加要求，让参考图提供形象依据，并且强调"根据给定的参考图生成图片"。
-        - 需要参考水源用户头像时，已知用户名使用 get_user(include_avatar=True)，不确定名称才搜索。用 prepare_image_references 准备选中素材，以标签描述对象并传 reference_set_id；不要自行添加数字编号。
-        - 无参考图（reference_images 为空）：必须用纯中文进行极其详细的画面描述，涵盖外貌、服饰、姿态、光影、背景、氛围等。如果绘画对象是人物，画风默认二次元精美插画，强调"唯美、精细、干净通透"，避免过度锐化、畸变与崩坏。若用户提供设定/附件/印象，必须将关键元素具象化融入画面。
+def _result(status: str, **fields) -> str:
+    return json.dumps(
+        {
+            "status": status,
+            **{k: v for k, v in fields.items() if v not in (None, "", [])},
+        },
+        ensure_ascii=False,
+    )
 
-        :param prompt: 详细的纯中文生图提示词。
-        :param aspect_ratio: 画面宽高比，默认 1:1。支持 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9, 1:4, 4:1, 1:8, 8:1。
-        :param image_size: 保留用于兼容已有工具调用；当前始终使用固定 1K 分辨率，传入其他值会被忽略。
-        :param reference_images: 参考图片 URL 列表。传入 Python 列表格式如 ["upload://xxx.jpeg"]，支持 upload://、http(s)://、data: 等格式。
-        :param reference_set_id: prepare_image_references 返回的本轮素材集 ID；与 reference_images 互斥。使用标签描述素材，不自行编排编号。
-        :param output_dir: 可选的自定义输出目录，用于保存生成的图片备份。
-        :return: 图片的短链接。你必须用 `![描述](链接)` 格式嵌入回复中。
-        """
-        api_url, api_key, image_model = await resolve_image_endpoint(state_store)
-        if not api_key:
-            return "图片生成失败: IMAGE_GEN_API_KEY 未配置."
-        if not api_url:
-            return "图片生成失败: IMAGE_GEN_API_URL 未配置."
 
-        # ── prompt 参数守卫 ──
-        prompt = str(prompt).strip()
-        if not prompt:
-            return "图片生成失败: prompt 不能为空，请提供图片描述."
-        if len(prompt) < 10:
-            return (
-                f"图片生成失败: prompt 过短（仅 {len(prompt)} 个字符），"
-                "请提供至少 10 个字符的详细图片描述."
-            )
-        if prompt.isdigit():
-            return "图片生成失败: prompt 不能为纯数字，请提供有效的图片描述."
-        if len(set(prompt)) <= 2:
-            return "图片生成失败: prompt 无意义（字符种类过少），请提供有效的图片描述."
+def _failure(code: str, message: str, *, hint: str | None = None) -> str:
+    return _result("error", code=code, message=message, hint=hint, retryable=False)
 
-        request_id = uuid.uuid4().hex[:12]
 
-        if state_store is not None and output_dir:
-            logger.warning("Ignoring output_dir for managed image generation")
-            output_dir = None
-
-        if aspect_ratio not in _SUPPORTED_ASPECT_RATIOS:
-            aspect_ratio = "1:1"
-        if image_size != _FIXED_IMAGE_SIZE:
-            logger.info(
-                "Ignoring requested image_size=%s; using fixed image_size=%s",
-                image_size,
-                _FIXED_IMAGE_SIZE,
-            )
-        image_size = _FIXED_IMAGE_SIZE
-
-        if reference_images is None:
-            pass
-        elif isinstance(reference_images, list):
-            reference_images = [
-                item for item in reference_images if isinstance(item, str) and item
-            ]
-        elif isinstance(reference_images, str):
-            text = reference_images.strip()
-            if text.startswith("["):
-                try:
-                    parsed_references = json.loads(text)
-                    reference_images = (
-                        [
-                            item
-                            for item in parsed_references
-                            if isinstance(item, str) and item
-                        ]
-                        if isinstance(parsed_references, list)
-                        else [text]
-                    )
-                except (json.JSONDecodeError, TypeError):
-                    reference_images = [text] if text else None
-            else:
-                reference_images = [text] if text else None
-        else:
-            reference_images = None
-
-        from .image_references import prepare_references
-
-        turn = current_turn.get()
-        if (
-            sum(
-                bool(value)
-                for value in (reference_set_id, reference_images, references)
-            )
-            > 1
-        ):
-            return "图片生成失败: references、reference_images 与 reference_set_id 只能使用一个."
-        prepared = None
-        if reference_set_id:
-            prepared = turn.references.get(reference_set_id) if turn else None
-            if prepared is None:
-                return "图片生成失败: 素材集不存在或不属于本轮，请重新 prepare_image_references."
-        elif references:
-            prepared = await prepare_references(
-                references,
-                model=model,
-                strict_remote=state_store is not None,
-            )
-            if prepared["status"] == "partial" and not allow_partial:
-                public = {
-                    k: v
-                    for k, v in prepared.items()
-                    if k not in {"data_urls", "reference_set_id"}
-                }
-                return "部分参考素材读取失败，尚未生成：" + json.dumps(
-                    public, ensure_ascii=False
-                )
-        elif reference_images:
-            prepared = await prepare_references(
-                [
-                    {"key": str(i + 1), "url": url, "label": f"原参考图{i + 1}"}
-                    for i, url in enumerate(reference_images)
-                ],
-                model=model,
-                strict_remote=state_store is not None,
-            )
-            if prepared["status"] == "partial" and not allow_partial:
-                public = {k: v for k, v in prepared.items() if k != "data_urls"}
-                return "部分参考素材读取失败，尚未生成：" + json.dumps(
-                    public, ensure_ascii=False
-                )
-        reference_data_urls = prepared["data_urls"] if prepared else []
-        use_edit_endpoint = bool(reference_images or reference_set_id or references)
-        if use_edit_endpoint and not reference_data_urls:
-            return "图片生成失败: 未能读取可用的参考图片. " + json.dumps(
-                prepared.get("items", []) if prepared else [], ensure_ascii=False
-            )
-        if prepared:
-            good = [item for item in prepared["items"] if item["status"] == "ok"]
-            missing = [item for item in prepared["items"] if item["status"] != "ok"]
-            mapping = "\n".join(
-                f"参考图{i + 1}：{item['label']}" for i, item in enumerate(good)
-            )
-            prompt += "\n\n【实际参考素材对应关系】\n" + mapping
-            if missing:
-                labels = "、".join(item["label"] for item in missing)
-                prompt += f"\n仅使用上述 {len(good)} 项成功素材；未提供的素材（{labels}）及其对应对象不纳入生成，不猜测其形象。"
-        total_ref_bytes = sum(
-            len(value.split(",", 1)[1]) * 3 // 4 for value in reference_data_urls
+async def _submit_image_request(
+    *,
+    request_url: str,
+    api_key: str,
+    image_model: str,
+    prompt: str,
+    size: str,
+    reference_data_urls: list[str],
+    request_id: str,
+) -> bytes | str:
+    """Call the Images API with retries; returns bytes or a failure JSON string."""
+    timeout_seconds = _image_timeout_seconds()
+    max_api_attempts = _image_max_api_attempts()
+    retry_base_delay_seconds = _image_retry_base_delay_seconds()
+    edit_images: list[tuple[bytes, str, str]] = []
+    for index, data_url in enumerate(reference_data_urls):
+        reference_bytes, mime_type, extension = _decode_data_url(data_url)
+        edit_images.append(
+            (reference_bytes, mime_type, f"reference_{index}{extension}")
         )
-
-        image_operation = "edits" if use_edit_endpoint else "generations"
-        request_url = _image_api_endpoint(api_url, image_operation)
-        timeout_seconds = _image_timeout_seconds()
-        max_api_attempts = _image_max_api_attempts()
-        retry_base_delay_seconds = _image_retry_base_delay_seconds()
-        image_size_value = _openai_image_size(aspect_ratio)
-        if use_edit_endpoint:
-            edit_images: list[tuple[bytes, str, str]] = []
-            for index, data_url in enumerate(reference_data_urls):
-                reference_bytes, mime_type, extension = _decode_data_url(data_url)
-                edit_images.append(
-                    (reference_bytes, mime_type, f"reference_{index}{extension}")
-                )
-            payload_bytes_len = total_ref_bytes
-        else:
-            payload = {
-                "model": image_model,
-                "prompt": prompt,
-                "size": image_size_value,
-            }
-            request_body = json.dumps(
-                payload,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            payload_bytes_len = len(request_body)
-        logger.info(
-            "Submitting image generation: request_id=%s model=%s endpoint=%s reference_images=%d "
-            "reference_bytes=%d request_bytes=%d timeout=%.0fs max_attempts=%d "
-            "retry_base_delay=%.1fs prompt_preview=%r",
-            request_id,
-            image_model,
-            image_operation,
-            len(reference_data_urls),
-            total_ref_bytes,
-            payload_bytes_len,
-            timeout_seconds,
-            max_api_attempts,
-            retry_base_delay_seconds,
-            prompt[:200],
-        )
-
-        queued_at = time.monotonic()
-        image_bytes = b""
-        last_error = ""
-        async with generation_gate:
-            logger.info(
-                "Image generation request acquired single-flight slot after %.2fs, request_id=%s",
-                time.monotonic() - queued_at,
+    request_body = json.dumps(
+        {"model": image_model, "prompt": prompt, "size": size},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    logger.info(
+        "Submitting image generation: request_id=%s model=%s endpoint=%s "
+        "reference_images=%d timeout=%.0fs max_attempts=%d prompt_preview=%r",
+        request_id,
+        image_model,
+        "edits" if edit_images else "generations",
+        len(edit_images),
+        timeout_seconds,
+        max_api_attempts,
+        prompt[:200],
+    )
+    last_error = ""
+    for attempt in range(max_api_attempts):
+        if attempt:
+            wait_seconds = retry_base_delay_seconds * (2 ** (attempt - 1))
+            logger.warning(
+                "Retrying image API call (attempt %d/%d) in %.1fs request_id=%s; "
+                "the upstream may still bill or complete the prior request",
+                attempt + 1,
+                max_api_attempts,
+                wait_seconds,
                 request_id,
             )
-            for attempt in range(max_api_attempts):
-                if attempt:
-                    wait_seconds = retry_base_delay_seconds * (2 ** (attempt - 1))
-                    logger.warning(
-                        "Retrying image API call (attempt %d/%d) in %.1fs request_id=%s; "
-                        "the upstream may still bill or complete the prior request",
-                        attempt + 1,
-                        max_api_attempts,
-                        wait_seconds,
-                        request_id,
+            await asyncio.sleep(wait_seconds)
+        started_at = time.monotonic()
+        try:
+            if edit_images:
+                form = aiohttp.FormData()
+                form.add_field("model", image_model)
+                form.add_field("prompt", prompt)
+                form.add_field("size", size)
+                for reference_bytes, mime_type, filename in edit_images:
+                    form.add_field(
+                        "image[]",
+                        reference_bytes,
+                        filename=filename,
+                        content_type=mime_type,
                     )
-                    await asyncio.sleep(wait_seconds)
-                started_at = time.monotonic()
-                try:
-                    if use_edit_endpoint:
-                        request_body = aiohttp.FormData()
-                        request_body.add_field("model", image_model)
-                        request_body.add_field("prompt", prompt)
-                        request_body.add_field("size", image_size_value)
-                        for reference_bytes, mime_type, filename in edit_images:
-                            request_body.add_field(
-                                "image[]",
-                                reference_bytes,
-                                filename=filename,
-                                content_type=mime_type,
-                            )
-                        image_bytes = await _request_image_bytes_multipart(
-                            request_url,
-                            api_key,
-                            request_body,
-                            timeout_seconds=timeout_seconds,
-                        )
-                    else:
-                        image_bytes = await _request_image_bytes(
-                            request_url,
-                            api_key,
-                            request_body,
-                            timeout_seconds=timeout_seconds,
-                        )
-                    logger.info(
-                        "Image API request completed: request_id=%s attempt=%d duration=%.2fs image_bytes=%d",
-                        request_id,
-                        attempt + 1,
-                        time.monotonic() - started_at,
-                        len(image_bytes),
-                    )
-                    break
-                except _ImageAPIError as exc:
-                    last_error = str(exc)
-                    if exc.retryable and attempt < max_api_attempts - 1:
-                        logger.warning(
-                            "Image API retryable response (attempt %d/%d): %s",
-                            attempt + 1,
-                            max_api_attempts,
-                            exc,
-                        )
-                        continue
-                    logger.error("Image API response failed: %s", exc)
-                    return f"图片生成失败: {exc}"
-                except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
-                    last_error = f"{type(exc).__name__}: {exc}"
-                    logger.warning(
-                        "Image API transient error (attempt %d/%d): %s",
-                        attempt + 1,
-                        max_api_attempts,
-                        last_error,
-                    )
-                    if attempt < max_api_attempts - 1:
-                        continue
-                    if isinstance(exc, aiohttp.ServerDisconnectedError):
-                        return (
-                            f"图片生成失败: API 连接异常（{max_api_attempts} 次尝试均失败），"
-                            "服务端可能仍在后台完成并产生图片，但当前客户端连接已经断开，"
-                            "无法接收该次 response；未提供断线续取能力，"
-                            "已执行的重试均为独立请求。"
-                            f"最后错误: {last_error}"
-                        )
-                    return (
-                        f"图片生成失败: API 连接异常（{max_api_attempts} 次尝试均失败）"
-                        f"，最后错误: {last_error}"
-                    )
-                except Exception as exc:
-                    logger.exception("Image API call failed")
-                    return f"图片生成失败: API 调用异常 {exc}"
+                image_bytes = await _request_image_bytes_multipart(
+                    request_url, api_key, form, timeout_seconds=timeout_seconds
+                )
             else:
-                return f"图片生成失败: API 调用异常 {last_error}"
-
-        try:
-            extension, upload_bytes = _prepare_image_upload(image_bytes)
+                image_bytes = await _request_image_bytes(
+                    request_url, api_key, request_body, timeout_seconds=timeout_seconds
+                )
             logger.info(
-                "Got generated image: original_bytes=%d upload_jpeg_bytes=%d",
+                "Image API request completed: request_id=%s attempt=%d duration=%.2fs image_bytes=%d",
+                request_id,
+                attempt + 1,
+                time.monotonic() - started_at,
                 len(image_bytes),
-                len(upload_bytes),
             )
-        except Exception as exc:
-            logger.error("Image download/parse failed: %s", exc)
-            return f"图片生成失败: 下载图片异常 {exc}"
-
-        try:
-            backup_dir = output_dir or (
-                str(state_directory() / "artifacts")
-                if state_store is not None
-                else os.path.join(settings.assets_directory, "generated_images")
+            return image_bytes
+        except _ImageAPIError as exc:
+            last_error = str(exc)
+            if exc.retryable and attempt < max_api_attempts - 1:
+                logger.warning(
+                    "Image API retryable response (attempt %d/%d): %s",
+                    attempt + 1,
+                    max_api_attempts,
+                    exc,
+                )
+                continue
+            logger.error("Image API response failed: %s", exc)
+            return _failure("api_error", f"图片生成失败: {exc}")
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "Image API transient error (attempt %d/%d): %s",
+                attempt + 1,
+                max_api_attempts,
+                last_error,
             )
-            os.makedirs(backup_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            safe_prompt = prompt[:20].replace(" ", "_").replace("/", "_")
-            backup_path = os.path.join(
-                backup_dir, f"{timestamp}_{safe_prompt}{extension}"
+            if attempt < max_api_attempts - 1:
+                continue
+            if isinstance(exc, aiohttp.ServerDisconnectedError):
+                return _failure(
+                    "connection_lost",
+                    f"图片生成失败: API 连接异常（{max_api_attempts} 次尝试均失败），"
+                    "服务端可能仍在后台完成并产生图片，但当前客户端连接已经断开，"
+                    "无法接收该次 response；未提供断线续取能力，"
+                    f"已执行的重试均为独立请求。最后错误: {last_error}",
+                )
+            return _failure(
+                "connection_error",
+                f"图片生成失败: API 连接异常（{max_api_attempts} 次尝试均失败）"
+                f"，最后错误: {last_error}",
             )
-            with open(backup_path, "wb") as file:
-                file.write(image_bytes)
-            logger.info("Saved backup to: %s", backup_path)
-        except Exception as exc:
-            logger.warning("Backup save failed (non-fatal): %s", exc)
-            if state_store is not None:
-                return f"图片生成失败: 保存本地图片异常 {exc}"
-
-        if state_store is not None:
-            artifact_id = str(uuid.uuid4())
-            try:
-                with Image.open(io.BytesIO(image_bytes)) as generated:
-                    width, height = generated.size
-                    mime_type = Image.MIME.get(generated.format or "", "image/png")
-                await state_store.register_artifact(
-                    artifact_id=artifact_id,
-                    local_path=backup_path,
-                    mime_type=mime_type,
-                    byte_count=len(image_bytes),
-                    width=width,
-                    height=height,
-                )
-                artifact = GeneratedImageArtifact(
-                    artifact_id=artifact_id,
-                    mime_type=mime_type,
-                    local_path=backup_path,
-                    byte_count=len(image_bytes),
-                    width=width,
-                    height=height,
-                )
-                return (
-                    f"图片生成成功：{artifact.uri}。请在最终回复中使用该地址展示图片。",
-                    artifact,
-                )
-            except Exception as exc:
-                logger.exception("Failed to register generated image artifact")
-                return f"图片生成失败: 保存本地 Artifact 异常 {exc}"
-
-        try:
-            response = await model.upload_image(upload_bytes)
-            logger.info("Uploaded to Shuiyuan: %s", response.short_path)
-            return response.short_path
-        except Exception as exc:
-            logger.error("Shuiyuan upload failed: %s", exc)
-            return f"图片生成失败: 上传到水源异常 {exc}"
-
-    return generate_image
+    return _failure("api_error", f"图片生成失败: API 调用异常 {last_error}")
 
 
 class ImageGenerationService:
-    """Channel-neutral image generation that produces a local Artifact."""
+    """Channel-neutral image generation that stores the result as a local Artifact.
+
+    The tool result is JSON so the model can branch on ``status`` without
+    parsing prose; the artifact is returned separately for the graph to attach
+    to the reply and, on the Responses API, to show back to the model.
+    """
 
     def __init__(self, forum_model, state_store) -> None:
         if state_store is None:
             raise ValueError("ImageGenerationService requires the local state store")
-        self._generate = create_image_generation_tool(
-            forum_model, state_store=state_store
-        )
+        self.forum_model = forum_model
+        self.state_store = state_store
 
     async def generate(
         self,
@@ -1133,19 +904,160 @@ class ImageGenerationService:
         references: list[dict[str, str]] | None = None,
         allow_partial: bool = False,
     ) -> tuple[str, GeneratedImageArtifact | None]:
-        """Generate an image from a prompt and optional labeled references.
+        """根据文字描述生成一张图片，可附带带标签的参考图。
 
-        ``references`` contains objects with stable ``key``, image ``url``, and a
-        descriptive ``label``. Reference loading, validation, deduplication, and
-        ordering happen internally. By default, any failed reference prevents
-        generation; set ``allow_partial`` only when a successful subset is valid.
+        何时用：用户要求生成、绘制、创作或修改图片时；这是唯一能产生图片的途径。
+        参数要点：prompt 用中文详细描述画面（无参考图时写清外貌、服饰、姿态、光影、
+        背景、氛围；有参考图时简述要求并说明"参照参考图"）；references 为
+        [{"key","url","label"}]，url 可以是 upload://、水源头像地址或本轮工具返回的
+        图片 URL，label 说明该图代表谁或什么；任一参考图读取失败时默认不生成，
+        只有用户接受缺项时才传 allow_partial=true。
+        返回：{"status":"ok","artifact":"artifact://…","width","height"} —— 必须用
+        ![描述](artifact://…) 嵌入最终回复；{"status":"partial","failed":[…]} 表示
+        参考图缺失、尚未生成；{"status":"error","code","message"} 表示失败原因。
         """
-        result = await self._generate(
-            prompt=prompt,
-            aspect_ratio=aspect_ratio,
-            references=references,
-            allow_partial=allow_partial,
+        prompt = str(prompt).strip()
+        if len(prompt) < 10 or prompt.isdigit() or len(set(prompt)) <= 2:
+            return (
+                _failure(
+                    "invalid_prompt",
+                    "prompt 过短或无意义，请提供至少 10 个字符的画面描述",
+                ),
+                None,
+            )
+        api_url, api_key, image_model = await resolve_image_endpoint(self.state_store)
+        if not api_key:
+            return _failure("not_configured", "IMAGE_GEN_API_KEY 未配置"), None
+        if not api_url:
+            return _failure("not_configured", "IMAGE_GEN_API_URL 未配置"), None
+        if aspect_ratio not in _SUPPORTED_ASPECT_RATIOS:
+            aspect_ratio = "1:1"
+
+        reference_data_urls: list[str] = []
+        if references:
+            from .image_references import prepare_references
+
+            prepared = await prepare_references(
+                references, model=self.forum_model, strict_remote=True
+            )
+            good = [item for item in prepared["items"] if item["status"] == "ok"]
+            missing = [item for item in prepared["items"] if item["status"] != "ok"]
+            if prepared["status"] == "error" or (missing and not allow_partial):
+                return (
+                    _result(
+                        "partial" if good else "error",
+                        code="reference_failed",
+                        message="部分参考素材读取失败，尚未生成",
+                        failed=[
+                            {
+                                "key": item["key"],
+                                "label": item["label"],
+                                "error": item.get("error", "unavailable"),
+                            }
+                            for item in missing
+                        ],
+                        loaded=[item["key"] for item in good],
+                        hint=(
+                            "更换失败素材的 url 后重试；若用户接受缺少这些对象，"
+                            "传 allow_partial=true 只用成功素材生成"
+                        ),
+                        retryable=False,
+                    ),
+                    None,
+                )
+            reference_data_urls = prepared["data_urls"]
+            mapping = "\n".join(
+                f"参考图{i + 1}：{item['label']}" for i, item in enumerate(good)
+            )
+            prompt += "\n\n【实际参考素材对应关系】\n" + mapping
+            if missing:
+                labels = "、".join(item["label"] for item in missing)
+                prompt += (
+                    f"\n仅使用上述 {len(good)} 项成功素材；未提供的素材（{labels}）"
+                    "及其对应对象不纳入生成，不猜测其形象。"
+                )
+
+        request_id = uuid.uuid4().hex[:12]
+        operation = "edits" if reference_data_urls else "generations"
+        queued_at = time.monotonic()
+        async with _generation_gate():
+            logger.info(
+                "Image generation slot acquired after %.2fs, request_id=%s",
+                time.monotonic() - queued_at,
+                request_id,
+            )
+            outcome = await _submit_image_request(
+                request_url=_image_api_endpoint(api_url, operation),
+                api_key=api_key,
+                image_model=image_model,
+                prompt=prompt,
+                size=_openai_image_size(aspect_ratio),
+                reference_data_urls=reference_data_urls,
+                request_id=request_id,
+            )
+        if isinstance(outcome, str):
+            return outcome, None
+        image_bytes = outcome
+
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as generated:
+                generated.verify()
+            with Image.open(io.BytesIO(image_bytes)) as generated:
+                width, height = generated.size
+                image_format = (generated.format or "PNG").upper()
+                mime_type = Image.MIME.get(image_format, "image/png")
+                extension = {
+                    "JPEG": ".jpg",
+                    "PNG": ".png",
+                    "WEBP": ".webp",
+                    "GIF": ".gif",
+                }.get(image_format, ".png")
+        except Exception as exc:
+            logger.error("Generated image is not decodable: %s", exc)
+            return _failure("invalid_image", f"生成结果不是有效图片: {exc}"), None
+
+        artifact_id = str(uuid.uuid4())
+        output_dir = state_directory() / "artifacts"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / f"{artifact_id}{extension}"
+        try:
+            path.write_bytes(image_bytes)
+            await self.state_store.register_artifact(
+                artifact_id=artifact_id,
+                local_path=str(path),
+                mime_type=mime_type,
+                byte_count=len(image_bytes),
+                width=width,
+                height=height,
+                filename=f"generated{extension}",
+            )
+        except Exception as exc:
+            path.unlink(missing_ok=True)
+            logger.exception("Failed to register generated image artifact")
+            return _failure("storage_error", f"保存本地 Artifact 失败: {exc}"), None
+        artifact = GeneratedImageArtifact(
+            artifact_id=artifact_id,
+            mime_type=mime_type,
+            local_path=str(path),
+            byte_count=len(image_bytes),
+            width=width,
+            height=height,
         )
-        if isinstance(result, tuple) and len(result) == 2:
-            return result
-        return str(result), None
+        logger.info(
+            "Generated image stored: request_id=%s artifact=%s bytes=%d size=%dx%d",
+            request_id,
+            artifact_id,
+            len(image_bytes),
+            width,
+            height,
+        )
+        return (
+            _result(
+                "ok",
+                artifact=artifact.uri,
+                width=width,
+                height=height,
+                note="在最终回复中用 ![描述](" + artifact.uri + ") 展示这张图",
+            ),
+            artifact,
+        )

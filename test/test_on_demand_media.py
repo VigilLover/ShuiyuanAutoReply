@@ -80,7 +80,18 @@ class OnDemandMediaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             current_turn.reset(token)
 
-    def test_secure_original_stays_in_authenticated_forum_path(self):
+    def test_secure_original_maps_to_authenticated_short_url(self):
+        # Real pair observed in production logs: the sha1-named secure upload
+        # returned 403, while the upload:// token below is what the post used.
+        sha1 = "76e3d57a59cc93a4e1a24c9054ed8dafe202a863"
+        short = "upload://gXKtlHKPj337QAWosunDgv2yP7R.jpeg"
+        for url in (
+            f"https://shuiyuan.sjtu.edu.cn/secure-uploads/original/4X/7/6/e/{sha1}.jpeg",
+            f"https://shuiyuan.sjtu.edu.cn/secure-uploads/optimized/4X/7/6/e/{sha1}_2_196x231.jpeg",
+            f"https://shuiyuan.sjtu.edu.cn/uploads/default/original/4X/7/6/e/{sha1}.JPEG",
+        ):
+            self.assertEqual(normalize_shuiyuan_image_url(url), short, url)
+        # Paths without a sha1 filename stay on the authenticated raw path.
         url = "https://shuiyuan.sjtu.edu.cn/secure-uploads/original/4X/a/photo.png"
         self.assertEqual(normalize_shuiyuan_image_url(url), url)
         self.assertIsNone(normalize_shuiyuan_image_url("https://example.org/photo.png"))

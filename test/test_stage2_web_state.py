@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import os
 import tempfile
 import unittest
@@ -184,9 +185,9 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_secret_vault_encrypts_values_and_only_exposes_metadata(self):
         vault = LocalSecretVault(self.store, Path(self.temp.name) / "master.key")
-        await vault.set("web:openrouter", "sk-example-1234")
-        self.assertEqual(await vault.get("web:openrouter"), "sk-example-1234")
-        metadata = await vault.metadata("web:openrouter")
+        await vault.set("web:deepseek", "sk-example-1234")
+        self.assertEqual(await vault.get("web:deepseek"), "sk-example-1234")
+        metadata = await vault.metadata("web:deepseek")
         self.assertEqual(metadata["last_four"], "1234")
         self.assertNotIn(b"sk-example-1234", self.path.read_bytes())
         self.assertEqual(
@@ -198,7 +199,6 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
             providers=ProviderSettings(
                 deepseek_api_key="same-key",
                 deepseek_model="deepseek-primary",
-                deepseek_fallback_model="deepseek-fallback",
                 deepseek_api_format=DeepSeekApiFormat.RESPONSES,
             )
         )
@@ -313,7 +313,10 @@ class ImageArtifactTests(unittest.IsolatedAsyncioTestCase):
 
             result = await tool.ainvoke({"prompt": "一幅足够详细的测试图片描述"})
 
-            self.assertEqual(result, "图片生成失败: IMAGE_GEN_API_KEY 未配置.")
+            payload = json.loads(result)
+            self.assertEqual(payload["status"], "error")
+            self.assertEqual(payload["code"], "not_configured")
+            self.assertIn("IMAGE_GEN_API_KEY", payload["message"])
 
     async def test_managed_generation_saves_artifact_without_forum_upload(self):
         png = base64.b64decode(
@@ -340,7 +343,7 @@ class ImageArtifactTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=png),
             ):
                 content, artifact = await service.generate("一幅足够详细的测试图片描述")
-            self.assertIn("artifact://", content)
+            self.assertEqual(json.loads(content)["artifact"], artifact.uri)
             self.assertTrue(Path(artifact.local_path).is_file())
             forum.upload_image.assert_not_awaited()
 
@@ -394,9 +397,7 @@ class McpConfigurationTests(unittest.IsolatedAsyncioTestCase):
         model._load_mcp_tools = AsyncMock(return_value=[mcp_tool])
         model._load_shuiyuan_tools = MagicMock(return_value=[builtin_tool])
         model.memory_model = SimpleNamespace(initialize=AsyncMock(), tools=[])
-        model.openai_tools = []
-        bound = SimpleNamespace(with_retry=MagicMock(return_value="bound"))
-        model.llm = SimpleNamespace(bind_tools=MagicMock(return_value=bound))
+        model.llm = SimpleNamespace(bind_tools=MagicMock(return_value="bound"))
         model._build_graph = MagicMock(return_value="graph")
 
         await model.initialize_agent()
@@ -418,9 +419,7 @@ class McpConfigurationTests(unittest.IsolatedAsyncioTestCase):
         model._load_mcp_tools = AsyncMock(return_value=[mcp_tool])
         model._load_shuiyuan_tools = MagicMock(return_value=[])
         model.memory_model = SimpleNamespace(initialize=AsyncMock(), tools=[])
-        model.openai_tools = []
-        bound = SimpleNamespace(with_retry=MagicMock(return_value="bound"))
-        model.llm = SimpleNamespace(bind_tools=MagicMock(return_value=bound))
+        model.llm = SimpleNamespace(bind_tools=MagicMock(return_value="bound"))
         model._build_graph = MagicMock(return_value="graph")
 
         await model.initialize_agent()
@@ -440,7 +439,7 @@ class PromptInspectionTests(unittest.IsolatedAsyncioTestCase):
             search=AsyncMock(side_effect=ConnectionError("neo4j unavailable"))
         )
         with patch(
-            "shuiyuan_auto_reply.features.mention.mention_chat_model.emit_event",
+            "shuiyuan_auto_reply.features.mention.context.emit_event",
             new_callable=AsyncMock,
         ) as emit:
             result = await model._retrieve_style_context(
@@ -596,7 +595,7 @@ class ManagedApiTests(unittest.TestCase):
                     ),
                 ]
                 with patch(
-                    "shuiyuan_auto_reply.interfaces.api.app.MentionChatModel._load_mcp_tools",
+                    "shuiyuan_auto_reply.interfaces.api.routes.tools.MentionChatModel._load_mcp_tools",
                     new=AsyncMock(return_value=discovered),
                 ):
                     mcp = client.get("/api/settings/mcp/web").json()

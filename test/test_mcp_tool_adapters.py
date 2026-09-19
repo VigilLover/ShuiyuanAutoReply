@@ -4,10 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from shuiyuan_auto_reply.application.tool_results import TurnResults, current_turn
-from shuiyuan_auto_reply.features.mention.mention_chat_model import (
-    MentionChatModel,
-    mcp_text_content,
-)
+from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
+from shuiyuan_auto_reply.features.mention.tools_runtime import mcp_text_content
 
 
 def _model():
@@ -343,3 +341,52 @@ def test_chuangka_menu_is_full_final_evidence():
     evidence = turn.evidence[next(iter(added))]
     assert evidence["kind"] == "full"
     assert "香草圣代" in turn.final_evidence_text(1000)
+
+
+def test_web_read_refuses_forum_urls_with_a_hint():
+    upstream = SimpleNamespace(name="fetch_webpage_content", ainvoke=AsyncMock())
+    tool = _model()._consolidate_mcp_tools([upstream])[0]
+
+    content, artifact = asyncio.run(
+        tool.coroutine(
+            url="https://shuiyuan.sjtu.edu.cn/secure-uploads/original/4X/a/b.jpeg"
+        )
+    )
+
+    payload = json.loads(content)
+    assert payload["status"] == "error"
+    assert payload["code"] == "use_forum_tools"
+    assert "forum_read" in payload["hint"]
+    assert artifact is None
+    upstream.ainvoke.assert_not_awaited()
+
+
+def test_web_read_carries_page_title_and_date():
+    envelope = {
+        "status": "ok",
+        "url": "https://example.com/post",
+        "content_type": "text/html",
+        "mode": "document",
+        "content": "# 标题\n\n正文",
+        "total_chars": 8,
+        "start_index": 0,
+        "truncated": False,
+        "next_start_index": None,
+        "title": "标题",
+        "published_at": "2026-09-01T08:00:00+08:00",
+        "warnings": [],
+    }
+    upstream = SimpleNamespace(
+        name="fetch_webpage_content",
+        ainvoke=AsyncMock(
+            return_value=[{"type": "text", "text": json.dumps(envelope)}]
+        ),
+    )
+    tool = _model()._consolidate_mcp_tools([upstream])[0]
+
+    content, _ = asyncio.run(tool.coroutine(url=envelope["url"]))
+
+    item = json.loads(content)["items"][0]
+    assert item["title"] == "标题"
+    assert item["published_at"] == "2026-09-01T08:00:00+08:00"
+    assert item["content"].startswith("# 标题")

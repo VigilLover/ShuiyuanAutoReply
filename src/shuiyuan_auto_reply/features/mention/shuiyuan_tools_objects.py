@@ -99,6 +99,9 @@ class PostShort:
         self.warnings = []
         self._data = parse_content(post.raw, post.cooked)
         self.reply_to_post_number = post.reply_to_post_number
+        reply_to_user = getattr(post, "reply_to_user", None)
+        self.reply_to_author = getattr(reply_to_user, "username", None)
+        self.reply_count = getattr(post, "reply_count", None)
         self.created_at = getattr(post, "created_at", None)
         self.title = title
 
@@ -121,6 +124,8 @@ class PostShort:
                 if self.reply_to_post_number
                 else None
             ),
+            "reply_to_author": self.reply_to_author,
+            "replies": self.reply_count or None,
             "media": [
                 {
                     "ref": f"{self.topic_id}/{self.post_number}#image-{index}",

@@ -58,14 +58,8 @@ async def _forum_provider_settings(
         ),
     )
     secret = await vault.get(f"forum:{provider}")
-    key_fields = {
-        "openrouter": "openrouter_api_key",
-        "deepseek": "deepseek_api_key",
-        "tongyi": "dashscope_api_key",
-        "mimo": "mimo_api_key",
-    }
     if secret:
-        effective = replace(effective, **{key_fields[provider]: secret})
+        effective = replace(effective, deepseek_api_key=secret)
     return await apply_profile_endpoint(
         effective, "forum", profile, store=store, vault=vault
     )

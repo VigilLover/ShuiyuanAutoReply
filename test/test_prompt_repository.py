@@ -11,13 +11,13 @@ from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 
 class PromptRepositoryTests(unittest.TestCase):
     # Hashes are deliberately frozen: changing a policy template must update them
-    # by hand so a prompt edit is never an accident. Last revised with the tool-set
-    # result-only final responses (rules version 5).
+    # by hand so a prompt edit is never an accident. Last revised with the compact
+    # v1.1.0 templates (rules version 6).
     def test_wolf_system_prompt_v2_snapshot(self):
         bundle = FilePromptRepository().load("wolf_lumine", set())
         self.assertEqual(
             sha256(bundle.system_prompt.encode()).hexdigest(),
-            "35dd1cd4a2640215121939e08266a97c083f2329be1cc45d78eb5fe8b5f8d731",
+            "e6c1427aefd8fca1680d9072a56139c0ca3d4b07f4796d5b22d376348d474f1a",
         )
 
     def test_unknown_persona_falls_back_to_wolf(self):
@@ -25,19 +25,23 @@ class PromptRepositoryTests(unittest.TestCase):
         self.assertEqual(bundle.persona_id, "wolf_lumine")
         self.assertEqual(
             sha256(bundle.system_prompt.encode()).hexdigest(),
-            "f8c879d87141f23ac786cfaacdcb09a52c80b99dfbf5ed89f50958f1428e1d8b",
+            "e870441375cec4fa2a9cc7833b179cfee6e5c411870bf7340412298245f5420d",
         )
 
-    def test_rules_v4_defaults_remain_recognized_for_managed_migration(self):
+    def test_older_rule_defaults_remain_recognized_for_managed_migration(self):
         known = json.loads(
             resources.files("shuiyuan_auto_reply.prompts")
             .joinpath("legacy_defaults.json")
             .read_text()
         )
-        self.assertEqual(
-            known["6bdac6be83795b872f8c5759ee61dd8f884ea44ba82b52a4305a510163c432d4"],
-            {"persona_id": "wolf_lumine", "scope": "forum"},
-        )
+        # rules v4 and v5 forum defaults for wolf_lumine
+        for digest in (
+            "6bdac6be83795b872f8c5759ee61dd8f884ea44ba82b52a4305a510163c432d4",
+            "35dd1cd4a2640215121939e08266a97c083f2329be1cc45d78eb5fe8b5f8d731",
+        ):
+            self.assertEqual(
+                known[digest], {"persona_id": "wolf_lumine", "scope": "forum"}
+            )
 
     def test_archive_and_multimodal_v2_snapshots(self):
         repository = FilePromptRepository()
@@ -45,11 +49,11 @@ class PromptRepositoryTests(unittest.TestCase):
         multimodal = repository.load("wolf_lumine", {"multimodal"}).system_prompt
         self.assertEqual(
             sha256(archive.encode()).hexdigest(),
-            "690b8203c3ebd94b75660dac745c526ed8dde2505b7fa0ffc93d538905c40ad1",
+            "8c3491be5d4fd684f7ea44100841b8ccbbf044adb4d641344ff4938827b3b056",
         )
         self.assertEqual(
             sha256(multimodal.encode()).hexdigest(),
-            "09885c1d9bcae4af4e4ce16d10a782f8991e69ddbf7b3404f29cb0085e3e6436",
+            "b674823b96cb287c93fee334fa4f1597259fdeb12985c5a3d799eb46eb30475c",
         )
 
     def test_web_prompt_keeps_shared_rules_without_forum_write_capabilities(self):

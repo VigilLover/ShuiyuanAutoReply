@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -10,8 +11,8 @@ from PIL import Image
 
 from shuiyuan_auto_reply.application.tool_results import TurnResults, current_turn
 from shuiyuan_auto_reply.features.mention.image_generation import (
+    ImageGenerationService,
     _encode_bytes,
-    create_image_generation_tool,
 )
 from shuiyuan_auto_reply.features.mention.image_references import prepare_references
 from shuiyuan_auto_reply.infrastructure.image_transport import (
@@ -109,9 +110,9 @@ class ReferencePreparationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(mock.await_args.args[1], "https://example.org/new")
             model.get_user_by_username.assert_awaited_once_with("alice")
 
-    async def test_all_failures_never_generate_and_legacy_partial_returns_set(self):
-        model = SimpleNamespace()
-        tool = create_image_generation_tool(model)
+    async def test_all_failures_never_generate(self):
+        store = SimpleNamespace(model_config_resolver=None)
+        service = ImageGenerationService(SimpleNamespace(), store)
         with (
             patch.dict(
                 os.environ,
@@ -122,51 +123,29 @@ class ReferencePreparationTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch(
                 "shuiyuan_auto_reply.features.mention.image_generation._download_and_encode",
-                side_effect=[None, data_image()],
+                return_value=None,
             ),
+            patch(
+                "shuiyuan_auto_reply.features.mention.image_generation._submit_image_request",
+                new_callable=AsyncMock,
+            ) as submit,
         ):
-            result = await tool(
+            content, artifact = await service.generate(
                 "A sufficiently detailed prompt",
-                reference_images=[
-                    "https://example.org/bad",
-                    "https://example.org/good",
-                ],
+                references=[{"key": "bad", "url": "https://example.org/bad"}],
+                allow_partial=True,
             )
-            self.assertIn("尚未生成", result)
-            self.assertIn("reference_set_id", result)
-        with patch(
-            "shuiyuan_auto_reply.features.mention.image_generation._download_and_encode",
-            return_value=None,
-        ):
-            result = await prepare_references(
-                [{"key": "bad", "url": "https://example.org/bad"}], model=model
-            )
-        with patch.dict(
-            os.environ,
-            {
-                "IMAGE_GEN_API_KEY": "test",
-                "IMAGE_GEN_API_URL": "https://example.org/v1",
-            },
-        ):
-            output = await tool(
-                "A sufficiently detailed prompt",
-                reference_set_id=result["reference_set_id"],
-            )
-            self.assertIn("未能读取", output)
+        payload = json.loads(content)
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["code"], "reference_failed")
+        self.assertEqual([item["key"] for item in payload["failed"]], ["bad"])
+        self.assertIsNone(artifact)
+        submit.assert_not_awaited()
 
     async def test_generation_uses_prepared_order_without_exposing_missing_subject(
         self,
     ):
         good = [data_image("red"), data_image("blue")]
-        self.turn.references["set"] = {
-            "status": "partial",
-            "data_urls": good,
-            "items": [
-                {"key": "a", "label": "Alice", "status": "ok"},
-                {"key": "b", "label": "Bob", "status": "error"},
-                {"key": "c", "label": "Carol", "status": "ok"},
-            ],
-        }
         captured = {}
 
         async def submit(url, api_key, form, **kwargs):
@@ -182,11 +161,15 @@ class ReferencePreparationTests(unittest.IsolatedAsyncioTestCase):
             ]
             return base64.b64decode(good[0].split(",", 1)[1])
 
-        model = SimpleNamespace(
-            upload_image=AsyncMock(
-                return_value=SimpleNamespace(short_path="upload://result.jpeg")
-            )
+        async def download(session, url, **kwargs):
+            if url.endswith("/b"):
+                raise ImageDownloadError(404)
+            return good[0] if url.endswith("/a") else good[1]
+
+        store = SimpleNamespace(
+            model_config_resolver=None, register_artifact=AsyncMock()
         )
+        service = ImageGenerationService(SimpleNamespace(), store)
         with (
             tempfile.TemporaryDirectory() as directory,
             patch.dict(
@@ -194,6 +177,7 @@ class ReferencePreparationTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "IMAGE_GEN_API_KEY": "test",
                     "IMAGE_GEN_API_URL": "https://example.org/v1",
+                    "SHUIYUAN_STATE_DIR": directory,
                 },
             ),
             patch(
@@ -201,19 +185,25 @@ class ReferencePreparationTests(unittest.IsolatedAsyncioTestCase):
                 side_effect=submit,
             ),
             patch(
-                "shuiyuan_auto_reply.features.mention.image_generation._download_and_encode"
-            ) as download,
+                "shuiyuan_auto_reply.features.mention.image_generation._download_and_encode",
+                side_effect=download,
+            ),
         ):
-            result = await create_image_generation_tool(model)(
+            content, artifact = await service.generate(
                 "Draw Alice and Carol using their references",
-                reference_set_id="set",
-                output_dir=directory,
+                references=[
+                    {"key": "a", "url": "https://example.org/a", "label": "Alice"},
+                    {"key": "b", "url": "https://example.org/b", "label": "Bob"},
+                    {"key": "c", "url": "https://example.org/c", "label": "Carol"},
+                ],
+                allow_partial=True,
             )
-        download.assert_not_called()
+        self.assertEqual(json.loads(content)["status"], "ok")
+        self.assertIsNotNone(artifact)
         self.assertEqual(
             captured["images"], [base64.b64decode(x.split(",", 1)[1]) for x in good]
         )
         self.assertIn("参考图1：Alice", captured["prompt"])
         self.assertIn("参考图2：Carol", captured["prompt"])
         self.assertIn("未提供的素材（Bob）", captured["prompt"])
-        self.assertEqual(result, "upload://result.jpeg")
+        self.assertNotIn("参考图3", captured["prompt"])
