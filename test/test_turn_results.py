@@ -1,6 +1,8 @@
 import asyncio
+import os
 import unittest
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage
 from langchain_core.tools import StructuredTool
@@ -46,8 +48,6 @@ class TurnResultsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(current_turn.get())
 
     async def test_mixed_valid_invalid_batch_has_one_response_per_call(self):
-        from types import SimpleNamespace
-
         async def add(value: int):
             return value + 1
 
@@ -70,6 +70,112 @@ class TurnResultsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [m.status for m in result["messages"]], ["success", "error", "error"]
         )
+
+    async def test_image_tool_batch_uses_image_timeout(self):
+        async def generate_image(prompt: str):
+            await asyncio.sleep(0.2)
+            return {"status": "ok", "prompt": prompt}
+
+        tool = StructuredTool.from_function(
+            coroutine=generate_image,
+            name="generate_image",
+            description="Generate an image",
+        )
+        owner = SimpleNamespace(tools=[tool])
+        state = {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "image",
+                            "name": "generate_image",
+                            "args": {"prompt": "draw a white wolf"},
+                        }
+                    ],
+                )
+            ]
+        }
+        turn = TurnResults()
+        turn.control.model_call_timeout = 0.1
+        token = current_turn.set(turn)
+        try:
+            with patch.dict(os.environ, {"IMAGE_GEN_TIMEOUT_SECONDS": "0.5"}):
+                result = await MentionChatModel._execute_tools(owner, state)
+        finally:
+            current_turn.reset(token)
+
+        self.assertEqual(result["messages"][0].status, "success")
+        self.assertEqual(turn.control.stop_reason, "")
+
+    async def test_non_image_tool_batch_keeps_model_timeout(self):
+        async def slow_tool(value: int):
+            await asyncio.sleep(0.2)
+            return value
+
+        tool = StructuredTool.from_function(
+            coroutine=slow_tool,
+            name="slow_tool",
+            description="Wait before returning",
+        )
+        owner = SimpleNamespace(tools=[tool])
+        state = {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"id": "slow", "name": "slow_tool", "args": {"value": 1}}
+                    ],
+                )
+            ]
+        }
+        turn = TurnResults()
+        turn.control.model_call_timeout = 0.1
+        token = current_turn.set(turn)
+        try:
+            result = await MentionChatModel._execute_tools(owner, state)
+        finally:
+            current_turn.reset(token)
+
+        self.assertEqual(result["messages"][0].status, "error")
+        self.assertEqual(turn.control.stop_reason, "tool_time_budget")
+
+    async def test_image_tool_batch_still_honors_image_timeout(self):
+        async def generate_image(prompt: str):
+            await asyncio.sleep(0.2)
+            return {"status": "ok", "prompt": prompt}
+
+        tool = StructuredTool.from_function(
+            coroutine=generate_image,
+            name="generate_image",
+            description="Generate an image",
+        )
+        owner = SimpleNamespace(tools=[tool])
+        state = {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "image",
+                            "name": "generate_image",
+                            "args": {"prompt": "draw a white wolf"},
+                        }
+                    ],
+                )
+            ]
+        }
+        turn = TurnResults()
+        turn.control.model_call_timeout = 0.5
+        token = current_turn.set(turn)
+        try:
+            with patch.dict(os.environ, {"IMAGE_GEN_TIMEOUT_SECONDS": "0.1"}):
+                result = await MentionChatModel._execute_tools(owner, state)
+        finally:
+            current_turn.reset(token)
+
+        self.assertEqual(result["messages"][0].status, "error")
+        self.assertEqual(turn.control.stop_reason, "tool_time_budget")
 
     def test_result_snapshots_are_immutable_and_deduplicated(self):
         turn = TurnResults()

@@ -24,7 +24,7 @@ from shuiyuan_auto_reply.domain import GeneratedImageArtifact
 
 from .context_budget import project_messages
 from .graph_state import MentionGraphState
-from .image_generation import ImageGenerationService
+from .image_generation import ImageGenerationService, image_timeout_seconds
 from .mention_multimodal import SHUIYUAN_HOSTS, ImageInspectResult
 from .shuiyuan_tools_wrapper import ShuiyuanToolsWrapper
 from .tool_catalog import FORUM_TOOL_NAMES
@@ -854,8 +854,17 @@ class ToolsRuntimeMixin:
             if turn:
                 import time
 
+                timeout_cap = (
+                    image_timeout_seconds()
+                    if any(call["name"] == "generate_image" for call in calls)
+                    else None
+                )
                 async with asyncio.timeout(
-                    turn.control.call_timeout(turn.deadline, final=False)
+                    turn.control.call_timeout(
+                        turn.deadline,
+                        final=False,
+                        max_seconds=timeout_cap,
+                    )
                 ):
                     responses = await asyncio.gather(*(execute(call) for call in calls))
             else:

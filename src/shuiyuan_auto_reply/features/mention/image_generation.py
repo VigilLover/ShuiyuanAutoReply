@@ -177,7 +177,8 @@ def _image_api_http_error(
     )
 
 
-def _image_timeout_seconds() -> float:
+def image_timeout_seconds() -> float:
+    """Return the configured timeout shared by image HTTP and tool execution."""
     raw_value = os.getenv("IMAGE_GEN_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS))
     try:
         timeout = float(raw_value)
@@ -778,7 +779,7 @@ async def _submit_image_request(
     request_id: str,
 ) -> bytes | str:
     """Call the Images API with retries; returns bytes or a failure JSON string."""
-    timeout_seconds = _image_timeout_seconds()
+    timeout_seconds = image_timeout_seconds()
     max_api_attempts = _image_max_api_attempts()
     retry_base_delay_seconds = _image_retry_base_delay_seconds()
     edit_images: list[tuple[bytes, str, str]] = []

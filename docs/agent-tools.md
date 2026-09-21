@@ -19,7 +19,7 @@
 
 超预算时整组丢弃最旧的工具轮（保留当前请求、目标帖与最近三组调用），被丢弃的完整结果仍可在本轮回读并进入收尾证据；保留下来的消息逐字节不变，因此每轮请求与上一轮共享前缀，DeepSeek 磁盘缓存可持续命中。每轮变化的执行控制文本追加在提示词末尾，时间只精确到小时。
 
-时间模型分三层：整轮 `timeout`（默认 900s）、单次模型请求 `model_call_timeout`（默认 180s）、收尾保留 `final_reserve_seconds`（默认 150s）。调查轮剩余时间不足收尾保留时立即转入收尾；收尾轮使用独立的 `DEEPSEEK_MENTION_FINAL_REASONING_EFFORT`。默认 `model_limit=14`、`query_limit=30`、`no_progress_batches=2`。
+时间模型分三层：整轮 `timeout`（默认 900s）、单次模型请求及普通工具批次的 `model_call_timeout`（默认 180s）、收尾保留 `final_reserve_seconds`（默认 150s）。包含 `generate_image` 的工具批次改用 `IMAGE_GEN_TIMEOUT_SECONDS`（默认 600s）作为独立上限，但仍受整轮剩余时间减去收尾保留时间的约束。调查轮剩余时间不足收尾保留时立即转入收尾；收尾轮使用独立的 `DEEPSEEK_MENTION_FINAL_REASONING_EFFORT`。默认 `model_limit=14`、`query_limit=30`、`no_progress_batches=2`。
 
 每次调用模型前都会校验调用／返回配对：同一轮内重复读取命中缓存时，回放的返回使用新的消息 ID，否则图状态按 ID 合并会顶掉较早的那条消息，使一次调用失去返回；出站前若仍存在没有返回的调用或先于调用出现的返回，会补齐或丢弃并记录 `tool.pairing_repaired`。OpenAI 兼容的 Responses 端点遇到这种输入会直接返回 400，失败的是整轮回答而不只是一次调用。
 
