@@ -30,6 +30,18 @@ def test_budget_reserves_last_model_request():
     assert c.model_rounds == 3
 
 
+def test_custom_call_timeout_cap_still_reserves_final_response(monkeypatch):
+    monkeypatch.setattr(time, "monotonic", lambda: 1000)
+    control = RetrievalControl(
+        model_call_timeout=180,
+        final_reserve_seconds=150,
+    )
+
+    assert control.call_timeout(1900, final=False) == 180
+    assert control.call_timeout(1900, final=False, max_seconds=600) == 600
+    assert control.call_timeout(1600, final=False, max_seconds=600) == 450
+
+
 def test_real_graph_stops_model_ignoring_review_and_reuses_read():
     asyncio.run(_real_graph_stops_model_ignoring_review_and_reuses_read())
 

@@ -80,12 +80,15 @@ class RetrievalControl:
             self.stop(progress, "time_budget")
         self.model_rounds += 1
 
-    def call_timeout(self, deadline: float, *, final: bool) -> float:
-        """Seconds one model request may take without starving the final answer."""
+    def call_timeout(
+        self, deadline: float, *, final: bool, max_seconds: float | None = None
+    ) -> float:
+        """Bound one model or tool call without starving the final answer."""
         remaining = deadline - time.monotonic()
         if not final:
             remaining -= self.final_reserve_seconds
-        return max(0.1, min(remaining, self.model_call_timeout))
+        timeout_cap = self.model_call_timeout if max_seconds is None else max_seconds
+        return max(0.1, min(remaining, timeout_cap))
 
     def after_batch(self, progress, *, new_evidence: int, reads: int):
         if not reads or progress.phase == "final":
