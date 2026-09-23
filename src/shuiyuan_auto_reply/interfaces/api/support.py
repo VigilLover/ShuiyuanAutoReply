@@ -63,6 +63,10 @@ def state_store(request: Request):
     return store
 
 
+def scope_switch_lock(request: Request, scope: str):
+    return request.app.state.scope_switch_locks[scope]
+
+
 def profile_defaults(scope: str) -> dict:
     from shuiyuan_auto_reply.application.ports.prompt import PromptScope
     from shuiyuan_auto_reply.bootstrap import AppSettings

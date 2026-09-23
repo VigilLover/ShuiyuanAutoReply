@@ -48,6 +48,7 @@ def _forum_profile_defaults(settings: AppSettings, persona: str) -> dict:
 async def _forum_provider_settings(
     settings: AppSettings, store, vault: LocalSecretVault, profile: dict
 ):
+    selected_config = await store.active_model_config("forum")
     provider = "deepseek"
     effective = replace(
         settings.providers,
@@ -57,11 +58,16 @@ async def _forum_provider_settings(
             profile.get("api_format", settings.providers.deepseek_api_format.value)
         ),
     )
-    secret = await vault.get(f"forum:{provider}")
+    secret = await vault.get(f"forum:{provider}") if selected_config is None else None
     if secret:
         effective = replace(effective, deepseek_api_key=secret)
     return await apply_profile_endpoint(
-        effective, "forum", profile, store=store, vault=vault
+        effective,
+        "forum",
+        profile,
+        store=store,
+        vault=vault,
+        model_config=selected_config,
     )
 
 

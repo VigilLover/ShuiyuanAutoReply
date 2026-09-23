@@ -37,7 +37,11 @@ from shuiyuan_auto_reply.infrastructure.retrieval.neo4j import (
 )
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
-from .providers import MentionProviderFactory, apply_profile_endpoint
+from .providers import (
+    USE_ACTIVE_MODEL_CONFIG,
+    MentionProviderFactory,
+    apply_profile_endpoint,
+)
 from .settings import AppSettings, DeepSeekApiFormat, ProviderSettings
 
 DEEPSEEK_VISION_MODEL = "deepseek-flash"
@@ -217,8 +221,15 @@ class ApplicationContainer:
         }
 
     async def _settings_for_profile(
-        self, scope: str, profile: dict
+        self, scope: str, profile: dict, *, model_config=USE_ACTIVE_MODEL_CONFIG
     ) -> ProviderSettings:
+        selected_config = model_config
+        if selected_config is USE_ACTIVE_MODEL_CONFIG:
+            selected_config = (
+                await self.state_store.active_model_config(scope)
+                if self.state_store is not None
+                else None
+            )
         provider = "deepseek"
         settings = replace(
             self.settings.providers,
@@ -232,13 +243,18 @@ class ApplicationContainer:
         )
         secret = (
             await self.secret_vault.get(f"{scope}:{provider}")
-            if self.secret_vault
+            if self.secret_vault and selected_config is None
             else None
         )
         if secret:
             settings = replace(settings, deepseek_api_key=secret)
         return await apply_profile_endpoint(
-            settings, scope, profile, store=self.state_store, vault=self.secret_vault
+            settings,
+            scope,
+            profile,
+            store=self.state_store,
+            vault=self.secret_vault,
+            model_config=selected_config,
         )
 
     @classmethod
@@ -306,10 +322,14 @@ class ApplicationContainer:
             await forum_model.close()
             raise
 
-    async def prepare_runtime_profile(self, scope: str, profile: dict):
+    async def prepare_runtime_profile(
+        self, scope: str, profile: dict, *, model_config=USE_ACTIVE_MODEL_CONFIG
+    ):
         if scope != "web" or self.state_store is None:
             raise ValueError("Only the web runtime can be switched in this process")
-        settings = await self._settings_for_profile(scope, profile)
+        settings = await self._settings_for_profile(
+            scope, profile, model_config=model_config
+        )
         enabled = profile.get("enabled_tools")
         candidate = MentionProviderFactory.create(
             self.forum_model,
@@ -326,10 +346,14 @@ class ApplicationContainer:
         )
         return new_handler, new_service
 
-    async def prepare_forum_runtime_profile(self, profile: dict):
+    async def prepare_forum_runtime_profile(
+        self, profile: dict, *, model_config=USE_ACTIVE_MODEL_CONFIG
+    ):
         if self.state_store is None:
             raise RuntimeError("Local state is not configured")
-        settings = await self._settings_for_profile("forum", profile)
+        settings = await self._settings_for_profile(
+            "forum", profile, model_config=model_config
+        )
         enabled = profile.get("enabled_tools")
         return MentionProviderFactory.create(
             self.forum_model,

@@ -29,6 +29,10 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+class ModelConfigInUseError(Exception):
+    """A stored model configuration is selected by at least one scope."""
+
+
 _DATA_URL_PATTERN = re.compile(r"data:[^;\s]+;base64,[A-Za-z0-9+/=]+")
 _BEARER_PATTERN = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+")
 
@@ -1295,6 +1299,7 @@ class SQLiteStateStore:
         now = utc_now()
         db = await self._connect()
         try:
+            await db.execute("BEGIN IMMEDIATE")
             if config_id is None:
                 config_id = str(uuid.uuid4())
                 await db.execute(
@@ -1313,6 +1318,8 @@ class SQLiteStateStore:
                     ),
                 )
             else:
+                if await self.model_config_scopes(config_id, db=db):
+                    raise ModelConfigInUseError(config_id)
                 cursor = await db.execute(
                     """UPDATE model_configs
                     SET name=?, base_url=?, model=?, api_format=?, updated_at=?
@@ -1330,17 +1337,42 @@ class SQLiteStateStore:
                     raise LookupError("model configuration not found")
             await db.commit()
             return config_id
+        except BaseException:
+            await db.rollback()
+            raise
         finally:
             await db.close()
+
+    async def model_config_scopes(self, config_id: str, *, db=None) -> list[str]:
+        owned = db is None
+        connection = db or await self._connect()
+        try:
+            rows = await (
+                await connection.execute(
+                    "SELECT scope FROM model_config_active WHERE config_id=?",
+                    (config_id,),
+                )
+            ).fetchall()
+            return [row["scope"] for row in rows]
+        finally:
+            if owned:
+                await connection.close()
 
     async def delete_model_config(self, config_id: str) -> None:
         db = await self._connect()
         try:
-            await db.execute(
-                "DELETE FROM model_config_active WHERE config_id=?", (config_id,)
+            await db.execute("BEGIN IMMEDIATE")
+            if await self.model_config_scopes(config_id, db=db):
+                raise ModelConfigInUseError(config_id)
+            cursor = await db.execute(
+                "DELETE FROM model_configs WHERE id=?", (config_id,)
             )
-            await db.execute("DELETE FROM model_configs WHERE id=?", (config_id,))
+            if not cursor.rowcount:
+                raise LookupError("model configuration not found")
             await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
         finally:
             await db.close()
 
@@ -1378,6 +1410,78 @@ class SQLiteStateStore:
         try:
             await db.execute("DELETE FROM model_config_active WHERE scope=?", (scope,))
             await db.commit()
+        finally:
+            await db.close()
+
+    async def activate_model_config_profile(
+        self,
+        scope: str,
+        draft: dict[str, Any],
+        config_id: str,
+        *,
+        expected_revision: int,
+        persona_id: str = "wolf_lumine",
+    ) -> int:
+        """Commit the profile and selected endpoint as one visible revision."""
+        from shuiyuan_auto_reply.infrastructure.prompts.profiles import render_profile
+
+        prompt = render_profile(draft, scope)
+        encoded = json.dumps(draft, ensure_ascii=False)
+        db = await self._connect()
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT active_revision FROM runtime_profiles WHERE scope=?",
+                    (scope,),
+                )
+            ).fetchone()
+            if row is None or row["active_revision"] != expected_revision:
+                raise ValueError("runtime profile changed during switch")
+            if config_id != "default":
+                config = await (
+                    await db.execute(
+                        "SELECT kind FROM model_configs WHERE id=?", (config_id,)
+                    )
+                ).fetchone()
+                if config is None or config["kind"] != "chat":
+                    raise LookupError("model configuration not found")
+            version_row = await (
+                await db.execute(
+                    "SELECT COALESCE(MAX(version), 0) AS version FROM prompt_versions WHERE scope=? AND persona_id=?",
+                    (scope, persona_id),
+                )
+            ).fetchone()
+            now = utc_now()
+            await db.execute(
+                "UPDATE prompt_versions SET active=0 WHERE scope=? AND persona_id=?",
+                (scope, persona_id),
+            )
+            await db.execute(
+                """INSERT INTO prompt_versions(scope, persona_id, version, content, active, created_at)
+                VALUES (?, ?, ?, ?, 1, ?)""",
+                (scope, persona_id, int(version_row["version"]) + 1, prompt, now),
+            )
+            await db.execute(
+                """UPDATE runtime_profiles SET draft_json=?, active_json=?,
+                active_revision=active_revision+1, updated_at=? WHERE scope=?""",
+                (encoded, encoded, now, scope),
+            )
+            if config_id == "default":
+                await db.execute(
+                    "DELETE FROM model_config_active WHERE scope=?", (scope,)
+                )
+            else:
+                await db.execute(
+                    """INSERT INTO model_config_active(scope, config_id) VALUES (?, ?)
+                    ON CONFLICT(scope) DO UPDATE SET config_id=excluded.config_id""",
+                    (scope, config_id),
+                )
+            await db.commit()
+            return expected_revision + 1
+        except BaseException:
+            await db.rollback()
+            raise
         finally:
             await db.close()
 

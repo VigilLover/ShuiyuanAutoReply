@@ -16,6 +16,7 @@ from ..support import (
     DEEPSEEK_VISION_MODEL,
     normalized_base_url,
     profile_defaults,
+    scope_switch_lock,
     state_store,
 )
 
@@ -109,12 +110,13 @@ async def save_profile(scope: str, payload: ProfileDraftRequest, request: Reques
     value["model"] = model
     value["base_url"] = normalized_base_url(payload.base_url)
     value["fallback_model"] = None
-    await state_store(request).get_profile(scope, profile_defaults(scope))
-    await state_store(request).save_profile_draft(scope, value)
-    if payload.api_key:
-        await request.app.state.container.secret_vault.set(
-            f"{scope}:{payload.provider}", payload.api_key
-        )
+    async with scope_switch_lock(request, scope):
+        await state_store(request).get_profile(scope, profile_defaults(scope))
+        await state_store(request).save_profile_draft(scope, value)
+        if payload.api_key:
+            await request.app.state.container.secret_vault.set(
+                f"{scope}:{payload.provider}", payload.api_key
+            )
     return {"status": "saved"}
 
 
@@ -140,37 +142,57 @@ async def apply_scope_profile(scope: str, request: Request) -> int:
         raise HTTPException(status_code=400, detail=validation["errors"])
     profile = await state_store(request).get_profile(scope, profile_defaults(scope))
     container = request.app.state.container
+    selected = await state_store(request).active_model_config(scope)
+    switch_to_default = bool(
+        selected is not None
+        and not profile["draft"].get("base_url")
+        and profile["draft"].get("model") == DEEPSEEK_VISION_MODEL
+    )
+    candidate_options = {"model_config": None} if switch_to_default else {}
     prepared = None
     forum_candidate = None
     profile["draft"]["profile_revision"] = profile["active_revision"] + 1
     prepare_runtime = getattr(container, "prepare_runtime_profile", None)
     if scope == "web" and prepare_runtime is not None:
         try:
-            prepared = await prepare_runtime(scope, profile["draft"])
+            prepared = await prepare_runtime(
+                scope, profile["draft"], **candidate_options
+            )
         except Exception as exc:
-            logger.exception("候选 Web Runtime 构建失败")
-            raise HTTPException(
-                status_code=400, detail=f"Runtime 构建失败: {exc}"
-            ) from exc
+            logger.warning("候选 Web Runtime 构建失败 (%s)", type(exc).__name__)
+            raise HTTPException(status_code=400, detail="Runtime 构建失败") from exc
     prepare_forum = getattr(container, "prepare_forum_runtime_profile", None)
     if scope == "forum" and prepare_forum is not None:
         try:
-            forum_candidate = await prepare_forum(profile["draft"])
+            forum_candidate = await prepare_forum(profile["draft"], **candidate_options)
         except Exception as exc:
-            logger.exception("候选 Forum Runtime 构建失败")
-            raise HTTPException(
-                status_code=400, detail=f"Runtime 构建失败: {exc}"
-            ) from exc
+            logger.warning("候选 Forum Runtime 构建失败 (%s)", type(exc).__name__)
+            raise HTTPException(status_code=400, detail="Runtime 构建失败") from exc
     try:
-        revision = await state_store(request).apply_profile(scope)
-    except Exception:
+        if switch_to_default:
+            revision = await state_store(request).activate_model_config_profile(
+                scope,
+                profile["draft"],
+                "default",
+                expected_revision=profile["active_revision"],
+            )
+        else:
+            revision = await state_store(request).apply_profile(scope)
+    except Exception as exc:
         if prepared is not None:
             await prepared[0].aclose()
         if forum_candidate is not None:
             await forum_candidate.aclose()
+        if isinstance(exc, ValueError):
+            raise HTTPException(
+                status_code=409, detail="配置已变化，请刷新后重试"
+            ) from exc
         raise
     if forum_candidate is not None:
-        await forum_candidate.aclose()
+        try:
+            await forum_candidate.aclose()
+        except Exception as exc:
+            logger.warning("候选 Forum Runtime 关闭失败 (%s)", type(exc).__name__)
     profile = await state_store(request).get_profile(scope, profile_defaults(scope))
     if prepared is not None:
         await container.activate_prepared_runtime(prepared)
@@ -183,9 +205,13 @@ async def apply_scope_profile(scope: str, request: Request) -> int:
 
 @router.post("/api/settings/profiles/{scope}/apply")
 async def apply_profile(scope: str, request: Request):
+    if scope not in {"web", "forum"}:
+        raise HTTPException(status_code=404, detail="未知应用")
+    async with scope_switch_lock(request, scope):
+        revision = await apply_scope_profile(scope, request)
     return {
         "status": "applied",
-        "active_revision": await apply_scope_profile(scope, request),
+        "active_revision": revision,
     }
 
 
@@ -268,8 +294,7 @@ async def restore_profile_default(scope: str, request: Request):
     if scope not in {"forum", "web"}:
         raise HTTPException(status_code=404, detail="未知应用")
     defaults = profile_defaults(scope)
-    await state_store(request).get_profile(scope, defaults)
-    await state_store(request).save_profile_draft(scope, defaults)
-    # The library entry no longer describes the draft, so stop claiming it.
-    await state_store(request).clear_active_model_config(scope)
+    async with scope_switch_lock(request, scope):
+        await state_store(request).get_profile(scope, defaults)
+        await state_store(request).save_profile_draft(scope, defaults)
     return {"status": "restored"}

@@ -13,6 +13,8 @@ from shuiyuan_auto_reply.infrastructure.persistence.model_configs import (
 
 from .settings import DeepSeekApiFormat, ProviderSettings
 
+USE_ACTIVE_MODEL_CONFIG = object()
+
 
 async def apply_profile_endpoint(
     settings: ProviderSettings,
@@ -21,6 +23,7 @@ async def apply_profile_endpoint(
     *,
     store=None,
     vault=None,
+    model_config=USE_ACTIVE_MODEL_CONFIG,
 ) -> ProviderSettings:
     """Overlay the profile's endpoint, then whatever the active config pins.
 
@@ -35,23 +38,26 @@ async def apply_profile_endpoint(
             profile.get("api_format") or settings.deepseek_api_format.value
         ),
     }
-    if store is not None and scope in {"web", "forum"}:
-        active = await store.active_model_config(scope)
-        if active is not None:
-            overrides["deepseek_model"] = active["model"] or overrides["deepseek_model"]
-            overrides["mention_base_url"] = (
-                active["base_url"] or overrides["mention_base_url"]
-            )
-            if active.get("api_format"):
-                overrides["deepseek_api_format"] = DeepSeekApiFormat(
-                    active["api_format"]
-                )
-            if vault is not None:
-                api_key = (
-                    await vault.get(model_config_secret_name(active["id"])) or ""
-                ).strip()
-                if api_key:
-                    overrides["deepseek_api_key"] = api_key
+    active = model_config
+    if active is USE_ACTIVE_MODEL_CONFIG:
+        active = (
+            await store.active_model_config(scope)
+            if store is not None and scope in {"web", "forum"}
+            else None
+        )
+    if active is not None:
+        overrides["deepseek_model"] = active["model"] or overrides["deepseek_model"]
+        overrides["mention_base_url"] = (
+            active["base_url"] or overrides["mention_base_url"]
+        )
+        if active.get("api_format"):
+            overrides["deepseek_api_format"] = DeepSeekApiFormat(active["api_format"])
+        if vault is not None:
+            api_key = (
+                await vault.get(model_config_secret_name(active["id"])) or ""
+            ).strip()
+            if api_key:
+                overrides["deepseek_api_key"] = api_key
     return replace(settings, **overrides)
 
 

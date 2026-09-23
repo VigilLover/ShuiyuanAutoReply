@@ -7,6 +7,7 @@ Shared helpers (state-store lookup, profile defaults, the session registry) are
 in :mod:`shuiyuan_auto_reply.interfaces.api.support`.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
 
@@ -43,6 +44,9 @@ def create_app(container_factory: ContainerFactory | None = None) -> FastAPI:
         container = await factory()
         current_app.state.container = container
         current_app.state.sessions = SessionRegistry()
+        current_app.state.scope_switch_locks = {
+            scope: asyncio.Lock() for scope in ("web", "forum", "image")
+        }
         try:
             yield
         finally:
