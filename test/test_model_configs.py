@@ -1,14 +1,17 @@
 """Stored chat/image model configurations: CRUD, activation and resolution."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from shuiyuan_auto_reply.application import BotService, HandlerRegistry
-from shuiyuan_auto_reply.bootstrap import AppSettings
+from shuiyuan_auto_reply.bootstrap import ApplicationContainer, AppSettings
 from shuiyuan_auto_reply.bootstrap.providers import apply_profile_endpoint
 from shuiyuan_auto_reply.features.mention.image_generation import (
     resolve_image_endpoint,
@@ -69,6 +72,30 @@ def api(tmp_path, monkeypatch):
         yield SimpleNamespace(client=client, store=store, vault=vault)
 
     store.model_config_resolver = None
+
+
+@pytest.fixture
+def runtime_api(tmp_path, monkeypatch):
+    """Use the real runtime builder without making provider or forum requests."""
+    monkeypatch.setenv("SHUIYUAN_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-default-0000")
+    monkeypatch.setenv("DEEPSEEK_MENTION_API_FORMAT", "chat_completions")
+
+    async def factory():
+        settings = replace(
+            AppSettings(),
+            providers=replace(
+                AppSettings().providers, deepseek_api_key="sk-default-0000"
+            ),
+        )
+        return await ApplicationContainer.for_api(settings)
+
+    with TestClient(create_app(factory)) as client:
+        yield client
+
+
+def runtime_model(client):
+    return client.app.state.container.chat_handler._backend.model
 
 
 def sample(kind="chat", name="聚合站", **overrides):
@@ -161,6 +188,318 @@ def test_activate_writes_the_profile_and_can_switch_back(api):
     assert (
         api.client.get("/api/settings/model-configs").json()["active"]["web"]
         == "default"
+    )
+
+
+def test_real_runtime_switches_between_custom_endpoints_and_default(runtime_api):
+    first = runtime_api.post(
+        "/api/settings/model-configs",
+        json=sample(
+            base_url="https://first.example/v1", model="model-a", api_key="sk-first"
+        ),
+    ).json()["id"]
+    second = runtime_api.post(
+        "/api/settings/model-configs",
+        json=sample(
+            base_url="https://second.example/v1",
+            model="model-b",
+            api_format="responses",
+            api_key="sk-second",
+        ),
+    ).json()["id"]
+
+    for config_id, url, name, key, api_format in (
+        (first, "https://first.example/v1", "model-a", "sk-first", "chat_completions"),
+        (second, "https://second.example/v1", "model-b", "sk-second", "responses"),
+        (
+            "default",
+            "https://api.deepseek.com",
+            "deepseek-flash",
+            "sk-default-0000",
+            "chat_completions",
+        ),
+    ):
+        response = runtime_api.post(
+            f"/api/settings/model-configs/{config_id}/activate",
+            json={"scope": "web"},
+        )
+        assert response.status_code == 200, response.text
+        model = runtime_model(runtime_api)
+        assert str(model.llm.openai_api_base).rstrip("/") == url
+        assert model.llm.model_name == name
+        assert model.llm.openai_api_key.get_secret_value() == key
+        assert model.api_format.value == api_format
+        assert (
+            runtime_api.get("/api/settings/model-configs").json()["active"]["web"]
+            == config_id
+        )
+
+
+def test_real_runtime_build_failure_keeps_previous_state(
+    runtime_api, monkeypatch, caplog
+):
+    config_id = runtime_api.post("/api/settings/model-configs", json=sample()).json()[
+        "id"
+    ]
+    container = runtime_api.app.state.container
+    before = runtime_model(runtime_api)
+
+    async def failing(*args, **kwargs):
+        raise RuntimeError("sk-private-failure")
+
+    monkeypatch.setattr(ApplicationContainer, "prepare_runtime_profile", failing)
+    response = runtime_api.post(
+        f"/api/settings/model-configs/{config_id}/activate", json={"scope": "web"}
+    )
+    assert response.status_code == 400
+    assert "sk-private-failure" not in response.text
+    assert "sk-private-failure" not in caplog.text
+    assert runtime_model(runtime_api) is before
+    assert (
+        runtime_api.get("/api/settings/model-configs").json()["active"]["web"]
+        == "default"
+    )
+    assert (
+        next(
+            item
+            for item in runtime_api.get("/api/settings/profiles").json()
+            if item["scope"] == "web"
+        )["active_revision"]
+        == 1
+    )
+
+
+def test_real_runtime_commit_failure_keeps_previous_state(runtime_api, monkeypatch):
+    config_id = runtime_api.post("/api/settings/model-configs", json=sample()).json()[
+        "id"
+    ]
+    container = runtime_api.app.state.container
+    before = runtime_model(runtime_api)
+    monkeypatch.setattr(
+        container.state_store,
+        "activate_model_config_profile",
+        AsyncMock(side_effect=RuntimeError("commit failed")),
+    )
+    with pytest.raises(RuntimeError, match="commit failed"):
+        runtime_api.post(
+            f"/api/settings/model-configs/{config_id}/activate",
+            json={"scope": "web"},
+        )
+    assert runtime_model(runtime_api) is before
+    assert (
+        runtime_api.get("/api/settings/model-configs").json()["active"]["web"]
+        == "default"
+    )
+
+
+def test_transaction_rolls_back_all_profile_changes(runtime_api):
+    config_id = runtime_api.post("/api/settings/model-configs", json=sample()).json()[
+        "id"
+    ]
+    store = runtime_api.app.state.container.state_store
+    before = next(
+        item
+        for item in runtime_api.get("/api/settings/profiles").json()
+        if item["scope"] == "web"
+    )
+
+    async def abort_active_insert():
+        db = await store._connect()
+        try:
+            await db.execute(
+                """CREATE TRIGGER reject_switch BEFORE INSERT ON model_config_active
+                BEGIN SELECT RAISE(ABORT, 'injected failure'); END"""
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+    asyncio.run(abort_active_insert())
+    previous_runtime = runtime_model(runtime_api)
+    with pytest.raises(Exception, match="injected failure"):
+        runtime_api.post(
+            f"/api/settings/model-configs/{config_id}/activate",
+            json={"scope": "web"},
+        )
+    after = next(
+        item
+        for item in runtime_api.get("/api/settings/profiles").json()
+        if item["scope"] == "web"
+    )
+    assert after["draft"] == before["draft"]
+    assert after["active"] == before["active"]
+    assert after["active_revision"] == before["active_revision"]
+    assert (
+        runtime_api.get("/api/settings/model-configs").json()["active"]["web"]
+        == "default"
+    )
+    assert runtime_model(runtime_api) is previous_runtime
+
+
+def test_concurrent_switches_keep_runtime_and_database_aligned(runtime_api):
+    config_ids = [
+        runtime_api.post(
+            "/api/settings/model-configs",
+            json=sample(base_url=f"https://{name}.example/v1", model=name),
+        ).json()["id"]
+        for name in ("alpha", "beta")
+    ]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(
+            pool.map(
+                lambda config_id: runtime_api.post(
+                    f"/api/settings/model-configs/{config_id}/activate",
+                    json={"scope": "web"},
+                ),
+                config_ids,
+            )
+        )
+    assert all(response.status_code == 200 for response in responses)
+    active = runtime_api.get("/api/settings/model-configs").json()["active"]["web"]
+    expected = "alpha" if active == config_ids[0] else "beta"
+    assert (
+        str(runtime_model(runtime_api).llm.openai_api_base).rstrip("/")
+        == f"https://{expected}.example/v1"
+    )
+
+
+def test_forum_revision_and_active_endpoint_change_together(runtime_api):
+    config_id = runtime_api.post(
+        "/api/settings/model-configs",
+        json=sample(
+            base_url="https://forum.example/v1", model="forum-model", api_key=None
+        ),
+    ).json()["id"]
+    response = runtime_api.post(
+        f"/api/settings/model-configs/{config_id}/activate",
+        json={"scope": "forum"},
+    )
+    assert response.status_code == 200, response.text
+    store = runtime_api.app.state.container.state_store
+    profile = asyncio.run(store.get_profile("forum", {}))
+    active = asyncio.run(store.active_model_config("forum"))
+    assert profile["active_revision"] == response.json()["active_revision"]
+    assert (
+        profile["active"]["base_url"]
+        == active["base_url"]
+        == "https://forum.example/v1"
+    )
+    assert profile["active"]["model"] == active["model"] == "forum-model"
+    from shuiyuan_auto_reply.interfaces.worker.main import _forum_provider_settings
+
+    container = runtime_api.app.state.container
+    asyncio.run(container.secret_vault.set("forum:deepseek", "sk-forum-ui"))
+    effective = asyncio.run(
+        _forum_provider_settings(
+            container.settings, store, container.secret_vault, profile["active"]
+        )
+    )
+    assert effective.mention_base_url == "https://forum.example/v1"
+    assert effective.deepseek_model == "forum-model"
+    assert effective.deepseek_api_key == "sk-default-0000"
+
+
+def test_web_runtime_recovers_selected_endpoint_after_restart(runtime_api):
+    config_id = runtime_api.post(
+        "/api/settings/model-configs",
+        json=sample(base_url="https://restart.example/v1", model="restart-model"),
+    ).json()["id"]
+    response = runtime_api.post(
+        f"/api/settings/model-configs/{config_id}/activate", json={"scope": "web"}
+    )
+    assert response.status_code == 200, response.text
+    with TestClient(create_app(ApplicationContainer.for_api)) as restarted:
+        model = runtime_model(restarted)
+        assert (
+            str(model.llm.openai_api_base).rstrip("/") == "https://restart.example/v1"
+        )
+        assert model.llm.model_name == "restart-model"
+        assert model.llm.openai_api_key.get_secret_value() == "sk-config-9999"
+
+
+def test_restore_default_draft_switches_only_when_applied(runtime_api):
+    config_id = runtime_api.post("/api/settings/model-configs", json=sample()).json()[
+        "id"
+    ]
+    runtime_api.post(
+        f"/api/settings/model-configs/{config_id}/activate", json={"scope": "web"}
+    )
+    old_runtime = runtime_model(runtime_api)
+    response = runtime_api.post("/api/settings/profiles/web/restore-default")
+    assert response.status_code == 200
+    assert runtime_model(runtime_api) is old_runtime
+    assert (
+        runtime_api.get("/api/settings/model-configs").json()["active"]["web"]
+        == config_id
+    )
+
+    applied = runtime_api.post("/api/settings/profiles/web/apply")
+    assert applied.status_code == 200, applied.text
+    assert (
+        runtime_api.get("/api/settings/model-configs").json()["active"]["web"]
+        == "default"
+    )
+    assert (
+        str(runtime_model(runtime_api).llm.openai_api_base).rstrip("/")
+        == "https://api.deepseek.com"
+    )
+
+
+def test_custom_without_key_uses_environment_not_default_ui_key(runtime_api):
+    container = runtime_api.app.state.container
+    asyncio.run(container.secret_vault.set("web:deepseek", "sk-web-ui"))
+    config_id = runtime_api.post(
+        "/api/settings/model-configs",
+        json=sample(api_key=None, base_url="https://no-key.example/v1"),
+    ).json()["id"]
+    custom = runtime_api.post(
+        f"/api/settings/model-configs/{config_id}/activate", json={"scope": "web"}
+    )
+    assert custom.status_code == 200, custom.text
+    assert (
+        runtime_model(runtime_api).llm.openai_api_key.get_secret_value()
+        == "sk-default-0000"
+    )
+
+    default = runtime_api.post(
+        "/api/settings/model-configs/default/activate", json={"scope": "web"}
+    )
+    assert default.status_code == 200, default.text
+    assert (
+        runtime_model(runtime_api).llm.openai_api_key.get_secret_value() == "sk-web-ui"
+    )
+
+
+def test_active_configs_cannot_be_edited_or_deleted(api):
+    config_id = create(api, sample())
+    api.client.post(
+        f"/api/settings/model-configs/{config_id}/activate", json={"scope": "forum"}
+    )
+    assert (
+        api.client.put(
+            f"/api/settings/model-configs/{config_id}", json=sample(model="changed")
+        ).status_code
+        == 409
+    )
+    assert (
+        api.client.delete(f"/api/settings/model-configs/{config_id}").status_code == 409
+    )
+    assert (
+        asyncio.run(api.store.model_config(config_id))["model"] == "deepseek-v4-vision"
+    )
+    image_id = create(api, sample("image"))
+    api.client.post(
+        f"/api/settings/model-configs/{image_id}/activate", json={"scope": "image"}
+    )
+    assert (
+        api.client.put(
+            f"/api/settings/model-configs/{image_id}",
+            json=sample("image", model="changed"),
+        ).status_code
+        == 409
+    )
+    assert (
+        api.client.delete(f"/api/settings/model-configs/{image_id}").status_code == 409
     )
 
 

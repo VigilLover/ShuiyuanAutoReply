@@ -71,6 +71,7 @@ const probeModels = computed(() =>
   sortModels(configProbe.value?.models || [], configEditor.value?.model),
 )
 const defaultKeyVisible = computed(() => modelConfigs.value.active?.[scope.value] === 'default')
+const configInUse = (entry: ModelConfigEntry) => usedBy(entry, modelConfigs.value).length > 0
 const mode = computed(() => promptModeState(current()))
 const draftDirty = computed(() => {
   const item = current()
@@ -225,7 +226,7 @@ async function probeConfig() {
 }
 
 async function deleteConfig(entry: ModelConfigEntry) {
-  if (!window.confirm(`删除配置《${entry.name}》？已启用的应用会回到默认配置。`)) return
+  if (!window.confirm(`删除配置《${entry.name}》？`)) return
   try {
     await api(`/api/settings/model-configs/${entry.id}`, { method: 'DELETE' })
     if (configEditor.value?.id === entry.id) cancelEdit()
@@ -428,8 +429,8 @@ onMounted(load)
                       :disabled="configBusy || modelConfigs.active.image === entry.id"
                       @click="activateConfig(entry, 'image')"
                     >{{ modelConfigs.active.image === entry.id ? '使用中' : '启用' }}</button>
-                    <button v-if="entry.source !== 'default'" class="text-action" :disabled="configBusy" @click="startEdit(entry)">编辑</button>
-                    <button v-if="entry.source !== 'default'" class="text-action danger" :disabled="configBusy" @click="deleteConfig(entry)">删除</button>
+                    <button v-if="entry.source !== 'default'" class="text-action" :disabled="configBusy || configInUse(entry)" :title="configInUse(entry) ? '请先切换使用该配置的应用' : ''" @click="startEdit(entry)">编辑</button>
+                    <button v-if="entry.source !== 'default'" class="text-action danger" :disabled="configBusy || configInUse(entry)" :title="configInUse(entry) ? '请先切换使用该配置的应用' : ''" @click="deleteConfig(entry)">删除</button>
                   </div>
                 </div>
               </div>

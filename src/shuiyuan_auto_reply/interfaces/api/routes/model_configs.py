@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from contextlib import AsyncExitStack
 from typing import Any, Literal
 
 import aiohttp
@@ -13,14 +14,15 @@ from shuiyuan_auto_reply.bootstrap import AppSettings
 from shuiyuan_auto_reply.infrastructure.persistence.model_configs import (
     secret_name as model_config_secret_name,
 )
+from shuiyuan_auto_reply.infrastructure.persistence.state import ModelConfigInUseError
 
 from ..support import (
     DEEPSEEK_VISION_MODEL,
     normalized_base_url,
     profile_defaults,
+    scope_switch_lock,
     state_store,
 )
-from .settings_profiles import apply_scope_profile
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -178,27 +180,42 @@ async def create_model_config(payload: ModelConfigRequest, request: Request):
 async def update_model_config(
     config_id: str, payload: ModelConfigRequest, request: Request
 ):
-    existing = await state_store(request).model_config(config_id)
-    if existing is None or existing["kind"] != payload.kind:
-        raise HTTPException(status_code=404, detail="未知的模型配置")
     value = validated_model_config(payload)
-    try:
-        await state_store(request).save_model_config(value, config_id=config_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="未知的模型配置") from exc
-    await store_model_config_secret(request, config_id, payload.api_key)
+    async with AsyncExitStack() as stack:
+        for scope in ("web", "forum", "image"):
+            await stack.enter_async_context(scope_switch_lock(request, scope))
+        existing = await state_store(request).model_config(config_id)
+        if existing is None or existing["kind"] != payload.kind:
+            raise HTTPException(status_code=404, detail="未知的模型配置")
+        try:
+            await state_store(request).save_model_config(value, config_id=config_id)
+        except ModelConfigInUseError as exc:
+            raise HTTPException(
+                status_code=409, detail="配置正在使用中，请先切换相关应用"
+            ) from exc
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="未知的模型配置") from exc
+        await store_model_config_secret(request, config_id, payload.api_key)
     return {"status": "updated", "id": config_id}
 
 
 @router.delete("/api/settings/model-configs/{config_id}")
 async def delete_model_config(config_id: str, request: Request):
-    store = state_store(request)
-    if await store.model_config(config_id) is None:
-        raise HTTPException(status_code=404, detail="未知的模型配置")
-    await store.delete_model_config(config_id)
-    vault = request.app.state.container.secret_vault
-    if vault is not None:
-        await vault.set(model_config_secret_name(config_id), "")
+    async with AsyncExitStack() as stack:
+        for scope in ("web", "forum", "image"):
+            await stack.enter_async_context(scope_switch_lock(request, scope))
+        store = state_store(request)
+        try:
+            await store.delete_model_config(config_id)
+        except ModelConfigInUseError as exc:
+            raise HTTPException(
+                status_code=409, detail="配置正在使用中，请先切换相关应用"
+            ) from exc
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="未知的模型配置") from exc
+        vault = request.app.state.container.secret_vault
+        if vault is not None:
+            await vault.set(model_config_secret_name(config_id), "")
     return {"status": "deleted"}
 
 
@@ -253,40 +270,81 @@ async def activate_model_config(
     config_id: str, payload: ModelConfigActivateRequest, request: Request
 ):
     """Switch a scope onto this configuration; chat goes through the hot swap."""
-    store = state_store(request)
     scope = payload.scope
-    if scope == "image":
+    async with scope_switch_lock(request, scope):
+        store = state_store(request)
+        if scope == "image":
+            if config_id == "default":
+                await store.clear_active_model_config("image")
+            else:
+                config = await store.model_config(config_id)
+                if config is None or config["kind"] != "image":
+                    raise HTTPException(status_code=404, detail="未知的生图配置")
+                await store.set_active_model_config("image", config_id)
+            return {"status": "active", "scope": scope, "config_id": config_id}
+
+        defaults = profile_defaults(scope)
+        profile = await store.get_profile(scope, defaults)
+        draft = dict(profile["draft"])
+        config = None
         if config_id == "default":
-            await store.clear_active_model_config("image")
-            return {"status": "active", "scope": scope, "config_id": "default"}
-        config = await store.model_config(config_id)
-        if config is None or config["kind"] != "image":
-            raise HTTPException(status_code=404, detail="未知的生图配置")
-        await store.set_active_model_config("image", config_id)
-        return {"status": "active", "scope": scope, "config_id": config_id}
-    defaults = profile_defaults(scope)
-    profile = await store.get_profile(scope, defaults)
-    draft = dict(profile["draft"])
-    if config_id == "default":
-        draft["base_url"] = ""
-        draft["model"] = defaults["model"]
-    else:
-        config = await store.model_config(config_id)
-        if config is None or config["kind"] != "chat":
-            raise HTTPException(status_code=404, detail="未知的文字模型配置")
-        draft["base_url"] = config["base_url"]
-        draft["model"] = config["model"]
-        if config.get("api_format"):
-            draft["api_format"] = config["api_format"]
-    await store.save_profile_draft(scope, draft)
-    revision = await apply_scope_profile(scope, request)
-    if config_id == "default":
-        await store.clear_active_model_config(scope)
-    else:
-        await store.set_active_model_config(scope, config_id)
-    return {
-        "status": "active",
-        "scope": scope,
-        "config_id": config_id,
-        "active_revision": revision,
-    }
+            draft["base_url"] = ""
+            draft["model"] = defaults["model"]
+            draft["api_format"] = defaults["api_format"]
+        else:
+            config = await store.model_config(config_id)
+            if config is None or config["kind"] != "chat":
+                raise HTTPException(status_code=404, detail="未知的文字模型配置")
+            draft["base_url"] = config["base_url"]
+            draft["model"] = config["model"]
+            draft["api_format"] = config.get("api_format") or defaults["api_format"]
+        draft["profile_revision"] = profile["active_revision"] + 1
+        container = request.app.state.container
+        prepared = None
+        forum_candidate = None
+        try:
+            if scope == "web" and hasattr(container, "prepare_runtime_profile"):
+                prepared = await container.prepare_runtime_profile(
+                    scope, draft, model_config=config
+                )
+            if scope == "forum" and hasattr(container, "prepare_forum_runtime_profile"):
+                forum_candidate = await container.prepare_forum_runtime_profile(
+                    draft, model_config=config
+                )
+        except Exception as exc:
+            logger.warning("候选 %s Runtime 构建失败 (%s)", scope, type(exc).__name__)
+            raise HTTPException(status_code=400, detail="Runtime 构建失败") from exc
+        try:
+            revision = await store.activate_model_config_profile(
+                scope,
+                draft,
+                config_id,
+                expected_revision=profile["active_revision"],
+            )
+        except BaseException as exc:
+            if prepared is not None:
+                await prepared[0].aclose()
+            if forum_candidate is not None:
+                await forum_candidate.aclose()
+            if isinstance(exc, ValueError):
+                raise HTTPException(
+                    status_code=409, detail="配置已变化，请刷新后重试"
+                ) from exc
+            if isinstance(exc, LookupError):
+                raise HTTPException(
+                    status_code=404, detail="未知的文字模型配置"
+                ) from exc
+            raise
+        if forum_candidate is not None:
+            try:
+                await forum_candidate.aclose()
+            except Exception as exc:
+                logger.warning("候选 Forum Runtime 关闭失败 (%s)", type(exc).__name__)
+        if prepared is not None:
+            await container.activate_prepared_runtime(prepared)
+        return {
+            "status": "active",
+            "scope": scope,
+            "config_id": config_id,
+            "active_revision": revision,
+        }
