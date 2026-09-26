@@ -89,6 +89,7 @@ class DeepSeekVisionInput:
     content_block: dict[str, Any]
     artifact: VisualMediaArtifact
     description: str = ""
+    handle: str = ""
 
 
 def sniff_image(data: bytes) -> tuple[str, int, int]:
@@ -437,7 +438,7 @@ class DeepSeekVisionMediaManager:
             source_kind="generated",
             content_block=self.inline_block(data, "image/jpeg"),
             artifact=visual,
-            description=f"本轮 generate_image 的生成结果预览（{artifact.uri}）",
+            description="本轮 generate_image 的生成结果预览",
         )
 
     async def prepare_attachment(

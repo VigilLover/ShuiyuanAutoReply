@@ -44,3 +44,56 @@ class TurnImageRegistryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReferenceHandleResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_handles_resolve_to_loadable_urls(self):
+        import base64
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import AsyncMock
+
+        from shuiyuan_auto_reply.application.tool_results import current_turn
+        from shuiyuan_auto_reply.features.mention.image_generation import (
+            ImageGenerationService,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "a.png"
+            path.write_bytes(b"png-bytes")
+            generated = SimpleNamespace(
+                artifact_id="a", local_path=str(path), mime_type="image/png"
+            )
+            store = SimpleNamespace(
+                get_artifact=AsyncMock(
+                    return_value=SimpleNamespace(
+                        local_path=str(path), mime_type="image/png"
+                    )
+                )
+            )
+            service = ImageGenerationService(object(), store)
+            turn = TurnResults()
+            turn.images.register(generated)
+            turn.images.register_history("upload://old.jpeg")
+            turn.images.register_history("artifact://web-1")
+            token = current_turn.set(turn)
+            try:
+                resolved, unknown = await service._resolve_reference_handles(
+                    [
+                        {"key": "new", "url": "[图1]"},
+                        {"key": "old", "url": "#h1"},
+                        {"key": "web", "url": "#h2"},
+                        {"key": "avatar", "url": "https://x/a.png"},
+                        {"key": "ghost", "url": "[图5]"},
+                    ]
+                )
+            finally:
+                current_turn.reset(token)
+
+        data_url = "data:image/png;base64," + base64.b64encode(b"png-bytes").decode()
+        self.assertEqual(unknown, ["[图5]"])
+        self.assertEqual(
+            [item["url"] for item in resolved],
+            [data_url, "upload://old.jpeg", data_url, "https://x/a.png"],
+        )
+        store.get_artifact.assert_awaited_once_with("web-1")

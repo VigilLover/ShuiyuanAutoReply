@@ -5,11 +5,13 @@ from typing import Any
 from langchain_core.messages import HumanMessage, ToolMessage
 
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
+from shuiyuan_auto_reply.application.tool_results import current_turn
 from shuiyuan_auto_reply.bootstrap.settings import DeepSeekApiFormat, ProviderSettings
 from shuiyuan_auto_reply.infrastructure.llm.deepseek import (
     DEEPSEEK_BASE_URL,
     DEEPSEEK_DEFAULT_MODEL,
     DeepSeekChatOpenAI,
+    _image_label,
     as_responses_image_block,
     build_chat_model,
     build_deepseek_content,
@@ -244,6 +246,12 @@ class MentionDeepSeekModel(MentionChatModel):
             )
             if not message_images:
                 continue
+            turn = current_turn.get()
+            if turn:
+                message_images = [
+                    replace(image, handle=turn.images.register(image.artifact))
+                    for image in message_images
+                ]
             new_images.extend(message_images)
             existing_urls.update(image.source_url for image in message_images)
             if self.uses_responses_api:
@@ -252,7 +260,9 @@ class MentionDeepSeekModel(MentionChatModel):
                     output.append(
                         {
                             "type": "input_text",
-                            "text": f"【工具图片 {index}：{image.description or image.source_url}】",
+                            "text": _image_label(index, image).replace(
+                                "【图片", "【工具图片", 1
+                            ),
                         }
                     )
                     output.append(as_responses_image_block(image.content_block))

@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from PIL import Image
 
 from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegistry
+from shuiyuan_auto_reply.application.tool_results import TurnResults, current_turn
 from shuiyuan_auto_reply.bootstrap.settings import (
     DeepSeekApiFormat,
     ProviderSettings,
@@ -234,7 +235,7 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(preview.source_kind, "generated")
             self.assertEqual(preview.content_block["image_url"]["detail"], "low")
-            self.assertIn("artifact://generated-1", preview.description)
+            self.assertNotIn("artifact://", preview.description)
 
             model = MentionDeepSeekModel.__new__(MentionDeepSeekModel)
             model.api_format = DeepSeekApiFormat.RESPONSES
@@ -406,11 +407,18 @@ class VisionAgentNodeTests(unittest.IsolatedAsyncioTestCase):
             "conversation_id": "conversation-1",
         }
 
-        result = await model._collect_tool_output_images(state)
+        turn = TurnResults()
+        token = current_turn.set(turn)
+        try:
+            result = await model._collect_tool_output_images(state)
+        finally:
+            current_turn.reset(token)
 
         message = result["messages"][0]
         self.assertIsInstance(message, HumanMessage)
-        self.assertIn("artifact://asset-1", message.content[0]["text"])
+        self.assertIn("[图1]", message.content[0]["text"])
+        self.assertNotIn("artifact://", message.content[0]["text"])
+        self.assertIs(turn.images.resolve_display(1).artifact, artifact)
         self.assertEqual(message.content[1]["type"], "file")
         self.assertEqual(result["response_visual_artifacts"], [artifact])
 
