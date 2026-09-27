@@ -194,3 +194,46 @@ class HistoryImageStrippingTests(unittest.TestCase):
             ContextMixin._without_image_addresses(parts, registry).content[0]["text"],
             "[历史图 #h2：a]",
         )
+
+
+class TurnLocalHandleTests(unittest.TestCase):
+    def test_stale_handles_in_history_are_neutralized(self):
+        from shuiyuan_auto_reply.application.image_handles import (
+            strip_history_images,
+        )
+
+        registry = TurnImageRegistry()
+        summary = (
+            "【历史工具调用记录】\n1. generate_image 参数: "
+            '{"references": [{"key": "base", "url": "#h2"}]} 结果 [图1]'
+        )
+        cleaned = strip_history_images(summary, registry)
+        self.assertNotRegex(cleaned, r"#h\d|\[图\d\]")
+        self.assertEqual(cleaned.count("[旧图]"), 2)
+        self.assertEqual(registry.history, [])
+
+    def test_discourse_alt_size_hints_are_dropped(self):
+        from shuiyuan_auto_reply.application.image_handles import (
+            strip_history_images,
+        )
+
+        registry = TurnImageRegistry()
+        cleaned = strip_history_images(
+            "![image|690x388](upload://a.png) ![豆豆眼|690x690](upload://b.png)",
+            registry,
+        )
+        self.assertEqual(cleaned, "[历史图 #h1] [历史图 #h2：豆豆眼]")
+
+    def test_copied_history_labels_do_not_reach_the_reply(self):
+        from shuiyuan_auto_reply.application.image_handles import (
+            render_image_placeholders,
+        )
+
+        registry = TurnImageRegistry()
+        registry.register_history("upload://old.jpeg", "石壁版")
+        result = render_image_placeholders(
+            "还是上次那张：[历史图 #h1：石壁版]，参考了 #h1 和 [旧图]。", registry
+        )
+        self.assertEqual(result.text, "还是上次那张：，参考了  和 。")
+        self.assertEqual(len(result.rejected), 3)
+        self.assertEqual(result.used, [])

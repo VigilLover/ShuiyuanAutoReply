@@ -256,7 +256,10 @@ class MentionDeepSeekModel(MentionChatModel):
             turn = current_turn.get()
             if turn:
                 message_images = [
-                    replace(image, handle=turn.images.register(image.artifact))
+                    replace(
+                        image,
+                        handle=turn.images.register(image.artifact, image.description),
+                    )
                     for image in message_images
                 ]
             new_images.extend(message_images)

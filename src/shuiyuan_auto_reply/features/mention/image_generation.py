@@ -1065,7 +1065,7 @@ class ImageGenerationService:
             height,
         )
         turn = current_turn.get()
-        token = turn.images.register(artifact, "本轮生成图") if turn else "[图1]"
+        token = turn.images.register(artifact, "生成图片") if turn else "[图1]"
         return (
             _result(
                 "ok",

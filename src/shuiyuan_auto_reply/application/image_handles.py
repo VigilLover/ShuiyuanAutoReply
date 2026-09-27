@@ -97,6 +97,9 @@ _HTML_IMAGE_RE = re.compile(r"<img\b[^>]*>", re.I)
 _RAW_IMAGE_ADDRESS_RE = re.compile(
     r"(?:upload|artifact)://[^\s)\]>\"']+|/api/artifacts/[\w-]+"
 )
+# Handles are turn-local: a copied history label or old handle must not survive.
+_HISTORY_LABEL_RE = re.compile(r"[\[【](?:历史图[^\]】\n]*|旧图)[\]】]|#h\d{1,3}\b")
+_STALE_HANDLE_RE = re.compile(r"[\[【]\s*图\s*\d{1,2}\s*[\]】]|#h\d{1,3}\b")
 _PLACEHOLDER = "\x00IMG{}\x00"
 
 
@@ -151,6 +154,7 @@ def render_image_placeholders(text: str, registry: TurnImageRegistry) -> Rendere
     text = _ANY_MARKDOWN_IMAGE_RE.sub(reject, text)
     text = _HTML_IMAGE_RE.sub(reject, text)
     text = _RAW_IMAGE_ADDRESS_RE.sub(reject, text)
+    text = _HISTORY_LABEL_RE.sub(reject, text)
     for index, markdown in enumerate(rendered):
         text = text.replace(_PLACEHOLDER.format(index), markdown)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -164,13 +168,22 @@ _HISTORY_HTML_RE = re.compile(
 
 
 def strip_history_images(text: str, registry: TurnImageRegistry) -> str:
-    """Replace image addresses in earlier messages with ``#hN`` reference handles."""
+    """Replace image addresses in earlier messages with ``#hN`` reference handles.
+
+    Handles already present in stored history (for example in a saved tool-call
+    summary) belong to an earlier turn and would point at a different image
+    now, so they are neutralized before this turn's handles are assigned.
+    """
 
     def label(url: str, alt: str) -> str:
-        alt = alt.strip()
+        # Discourse writes size hints into the alt text: ``image|690x388``.
+        alt = alt.split("|", 1)[0].strip()
+        if alt.lower() in {"image", "图片"}:
+            alt = ""
         handle = registry.register_history(url, alt)
         return f"[历史图 {handle}" + (f"：{alt}]" if alt else "]")
 
+    text = _STALE_HANDLE_RE.sub("[旧图]", text)
     text = _HISTORY_MARKDOWN_RE.sub(
         lambda m: label(m.group("url"), m.group("alt")), text
     )
