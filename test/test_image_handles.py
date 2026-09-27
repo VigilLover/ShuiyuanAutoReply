@@ -151,3 +151,46 @@ class RenderImagePlaceholderTests(unittest.TestCase):
         self.assertIn("artifact://gen-1", result.text)
         self.assertNotIn("图9", result.text)
         self.assertEqual(result.rejected, ["[图9]"])
+
+
+class HistoryImageStrippingTests(unittest.TestCase):
+    def test_history_links_become_reference_handles(self):
+        from shuiyuan_auto_reply.application.image_handles import (
+            strip_history_images,
+        )
+
+        registry = TurnImageRegistry()
+        text = (
+            "石壁版在这。\n\n![豆豆眼石雕鹰·石壁版](upload://pLt9.jpeg)\n\n"
+            '<img src="/api/artifacts/abc" alt="x"> 还有 upload://raw.png'
+        )
+        cleaned = strip_history_images(text, registry)
+        self.assertNotRegex(cleaned, r"upload://|/api/artifacts|!\[|<img")
+        self.assertIn("[历史图 #h1：豆豆眼石雕鹰·石壁版]", cleaned)
+        self.assertIn("[历史图 #h2]", cleaned)
+        self.assertIn("#h3", cleaned)
+        # a26ac482: editing the previous version still reaches the real image.
+        self.assertEqual(registry.resolve_reference("#h1"), "upload://pLt9.jpeg")
+
+    def test_history_messages_are_copied_not_mutated(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from shuiyuan_auto_reply.features.mention.context import ContextMixin
+
+        registry = TurnImageRegistry()
+        original = AIMessage(content="![旧图](upload://old.jpeg)")
+        cleaned = ContextMixin._without_image_addresses(original, registry)
+        self.assertEqual(original.content, "![旧图](upload://old.jpeg)")
+        self.assertEqual(cleaned.content, "[历史图 #h1：旧图]")
+        plain = HumanMessage(content="没有图")
+        self.assertIs(ContextMixin._without_image_addresses(plain, registry), plain)
+        parts = HumanMessage(
+            content=[
+                {"type": "text", "text": "![a](upload://p.png)"},
+                {"type": "image"},
+            ]
+        )
+        self.assertEqual(
+            ContextMixin._without_image_addresses(parts, registry).content[0]["text"],
+            "[历史图 #h2：a]",
+        )

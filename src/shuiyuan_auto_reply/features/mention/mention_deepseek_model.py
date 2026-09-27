@@ -159,9 +159,16 @@ class MentionDeepSeekModel(MentionChatModel):
                 if len(historical_images) >= MAX_IMAGES_PER_TURN:
                     break
                 try:
-                    historical_images.append(
-                        await self.vision_media.prepare_attachment(attachment)
-                    )
+                    image = await self.vision_media.prepare_attachment(attachment)
+                    turn = current_turn.get()
+                    if turn:
+                        handle = turn.images.register_history(attachment.url)
+                        image = replace(
+                            image,
+                            description=f"{image.description}；历史图片，只能作为"
+                            f"参考图 {handle} 传给 generate_image，不能在回复中展示",
+                        )
+                    historical_images.append(image)
                 except Exception as exc:
                     logging.warning("Failed to restore historical image: %s", exc)
             if len(historical_images) >= MAX_IMAGES_PER_TURN:

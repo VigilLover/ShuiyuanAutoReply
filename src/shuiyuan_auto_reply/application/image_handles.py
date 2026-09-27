@@ -155,3 +155,26 @@ def render_image_placeholders(text: str, registry: TurnImageRegistry) -> Rendere
         text = text.replace(_PLACEHOLDER.format(index), markdown)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return RenderedImages(text.strip(), used, rejected)
+
+
+_HISTORY_MARKDOWN_RE = re.compile(r"!\[(?P<alt>[^\]\n]*)\]\((?P<url>[^)\s]+)[^)\n]*\)")
+_HISTORY_HTML_RE = re.compile(
+    r"<img\b[^>]*?\bsrc=[\"'](?P<url>[^\"']+)[\"'][^>]*>", re.I
+)
+
+
+def strip_history_images(text: str, registry: TurnImageRegistry) -> str:
+    """Replace image addresses in earlier messages with ``#hN`` reference handles."""
+
+    def label(url: str, alt: str) -> str:
+        alt = alt.strip()
+        handle = registry.register_history(url, alt)
+        return f"[历史图 {handle}" + (f"：{alt}]" if alt else "]")
+
+    text = _HISTORY_MARKDOWN_RE.sub(
+        lambda m: label(m.group("url"), m.group("alt")), text
+    )
+    text = _HISTORY_HTML_RE.sub(lambda m: label(m.group("url"), ""), text)
+    return _RAW_IMAGE_ADDRESS_RE.sub(
+        lambda m: registry.register_history(m.group(0)), text
+    )

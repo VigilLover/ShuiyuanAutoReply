@@ -6,6 +6,10 @@ from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.messages import HumanMessage
 
 from shuiyuan_auto_reply.application.events import emit_event
+from shuiyuan_auto_reply.application.image_handles import (
+    TurnImageRegistry,
+    strip_history_images,
+)
 from shuiyuan_auto_reply.application.tool_results import current_turn
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
@@ -89,12 +93,45 @@ class ContextMixin:
         turn = current_turn.get()
         if turn and target_post is not None:
             turn.observe(str(target_post), tool="forum_read")
+        registry = turn.images if turn else TurnImageRegistry()
         return {
             "target_post": target_post,
-            "chat_history": history_obj.messages,
+            "chat_history": [
+                self._without_image_addresses(message, registry)
+                for message in history_obj.messages
+            ],
             "history_obj": history_obj,
-            "recent_msgs": recent_msgs,
+            "recent_msgs": (
+                strip_history_images(recent_msgs, registry)
+                if isinstance(recent_msgs, str)
+                else recent_msgs
+            ),
         }
+
+    @staticmethod
+    def _without_image_addresses(message, registry: TurnImageRegistry):
+        """Copy a history message with image addresses swapped for #hN handles.
+
+        Earlier replies hold real upload:// links; left in the prompt the model
+        copies them into new replies as if they were this turn's images.
+        """
+        content = message.content
+        if isinstance(content, str):
+            cleaned = strip_history_images(content, registry)
+        elif isinstance(content, list):
+            cleaned = [
+                (
+                    {**part, "text": strip_history_images(part["text"], registry)}
+                    if isinstance(part, dict) and isinstance(part.get("text"), str)
+                    else part
+                )
+                for part in content
+            ]
+        else:
+            return message
+        if cleaned == content:
+            return message
+        return message.model_copy(update={"content": cleaned})
 
     async def _load_long_term_memory(
         self, state: MentionGraphState
