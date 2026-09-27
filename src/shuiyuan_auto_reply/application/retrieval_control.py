@@ -67,9 +67,35 @@ class RetrievalControl:
     # Hard cap for any single model request, investigation or final.
     model_call_timeout: int = 180
 
+    # The user asked for an image and generate_image is available.
+    image_requested: bool = False
+    image_attempted: bool = False
+    # Model round in which one extra round was granted to generate the image.
+    image_nudge_round: int | None = None
+
+    @property
+    def image_nudged(self) -> bool:
+        return self.image_nudge_round is not None
+
     def stop(self, progress, reason: str):
         progress.phase = "final"
         self.stop_reason = reason
+
+    def stop_investigation(self, progress, reason: str):
+        """Stop for exhausted evidence, unless a requested image is still owed.
+
+        The final phase cannot call tools, so ending there before generate_image
+        ran leaves the model to invent an image. Grant one generation round.
+        """
+        if self.image_requested and not self.image_attempted:
+            if self.image_nudge_round is None:
+                self.image_nudge_round = self.model_rounds
+                self.no_progress = 0
+                return
+            if self.image_nudge_round == self.model_rounds:
+                # Both evidence checks can fire after the same batch.
+                return
+        self.stop(progress, reason)
 
     def before_model(self, progress, deadline: float):
         if self.model_rounds >= self.model_limit - 1:
@@ -95,7 +121,7 @@ class RetrievalControl:
             return
         self.no_progress = 0 if new_evidence else self.no_progress + 1
         if self.no_progress >= self.no_progress_batches:
-            self.stop(progress, "no_new_evidence")
+            self.stop_investigation(progress, "no_new_evidence")
 
     def metrics(self):
         return {

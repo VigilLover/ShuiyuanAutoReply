@@ -850,6 +850,8 @@ class ToolsRuntimeMixin:
                     status="error",
                 )
 
+        if turn and any(call["name"] == "generate_image" for call in calls):
+            turn.control.image_attempted = True
         try:
             if turn:
                 import time
@@ -969,7 +971,7 @@ class ToolsRuntimeMixin:
                     for c in read_calls
                 )
             ):
-                turn.control.stop(turn.progress, "source_complete")
+                turn.control.stop_investigation(turn.progress, "source_complete")
             await emit_event(
                 "retrieval.batch",
                 {"new_evidence": len(added), **turn.control.metrics()},

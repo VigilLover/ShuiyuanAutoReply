@@ -82,6 +82,20 @@ class FinalizeMixin:
             clean.append(message)
         return project_messages(clean, budget, preserve_first=False)
 
+    @staticmethod
+    def _final_image_notice(turn) -> str:
+        summary = turn.images.display_summary() if turn else ""
+        if summary:
+            return (
+                f"\n【本轮图片】可放入回复的图片只有：{summary}。"
+                "放图时原样写 [图N]，不要写任何图片链接。"
+            )
+        return (
+            "\n【本轮图片】本轮没有生成或选取任何图片：回复里不要放图，"
+            "不要声称已生成、已附图或已修改好图片；若用户要的是图，"
+            "如实说明这次没画出来，可以再试一次。"
+        )
+
     async def _build_finalizer_prompt(
         self, state: MentionGraphState, budget: int
     ) -> Any:
@@ -108,6 +122,7 @@ class FinalizeMixin:
                     "DSML、JSON、检索计划、内部推理或控制信息。"
                     "不要描述查询、调用、失败、重试或核实过程；非关键资料缺失时直接忽略。"
                     "除非用户明确要求，不要添加引用、注释或可靠性声明。"
+                    + self._final_image_notice(turn)
                 ),
                 name="answer_context",
             )
