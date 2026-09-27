@@ -97,3 +97,57 @@ class ReferenceHandleResolutionTests(unittest.IsolatedAsyncioTestCase):
             [data_url, "upload://old.jpeg", data_url, "https://x/a.png"],
         )
         store.get_artifact.assert_awaited_once_with("web-1")
+
+
+class RenderImagePlaceholderTests(unittest.TestCase):
+    def setUp(self):
+        from shuiyuan_auto_reply.application.image_handles import (
+            render_image_placeholders,
+        )
+
+        self.render = render_image_placeholders
+        self.registry = TurnImageRegistry()
+        self.generated = artifact("gen-1")
+        self.registry.register(self.generated, "本轮生成图")
+
+    def test_markdown_and_bare_tokens_render_to_turn_artifacts(self):
+        for text in (
+            "![豆豆眼头像]([图1])",
+            "![豆豆眼头像](图1)",
+            "看这张：[图1]",
+            "【图1】",
+        ):
+            result = self.render(text, self.registry)
+            self.assertIn("(artifact://gen-1)", result.text, text)
+            self.assertEqual(result.used, [self.generated])
+            self.assertEqual(result.rejected, [])
+
+    def test_history_upload_link_is_dropped_but_turn_image_kept(self):
+        # 814376ed: stale upload:// copied from history next to the real image.
+        text = "帽子留住了。\n\n![豆豆眼浅金发帽子头像](upload://9nS5o.jpeg)\n\n[图1]"
+        result = self.render(text, self.registry)
+        self.assertNotIn("upload://", result.text)
+        self.assertEqual(result.text.count("artifact://gen-1"), 1)
+        self.assertEqual(len(result.rejected), 1)
+
+    def test_fabricated_image_without_generation_is_removed(self):
+        # e316ee20 / d2287bfc: no generate_image call, image link invented.
+        empty = TurnImageRegistry()
+        for text in (
+            "背景加好了。\n\n![豆豆眼·背景版](artifact://made-up)\n\n想调再说。",
+            "背景加好了。\n\n![豆豆眼·背景版](/api/artifacts/made-up)",
+            '背景加好了。<img src="https://x/y.png" alt="a">',
+            "背景加好了。\n\n![豆豆眼·背景版]([图1])",
+            "背景加好了 upload://abc.jpeg",
+        ):
+            result = self.render(text, empty)
+            self.assertNotRegex(result.text, r"!\[|<img|://|/api/artifacts|图1")
+            self.assertTrue(result.text.startswith("背景加好了"))
+            self.assertEqual(result.used, [])
+            self.assertTrue(result.rejected)
+
+    def test_unknown_token_is_dropped(self):
+        result = self.render("[图1] 和 [图9]", self.registry)
+        self.assertIn("artifact://gen-1", result.text)
+        self.assertNotIn("图9", result.text)
+        self.assertEqual(result.rejected, ["[图9]"])

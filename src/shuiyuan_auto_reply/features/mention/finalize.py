@@ -7,6 +7,10 @@ from typing import Any, List, Optional
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
 from shuiyuan_auto_reply.application.events import emit_event
+from shuiyuan_auto_reply.application.image_handles import (
+    TurnImageRegistry,
+    render_image_placeholders,
+)
 from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.application.tool_results import current_turn
 from shuiyuan_auto_reply.shuiyuan.objects import User
@@ -155,12 +159,29 @@ class FinalizeMixin:
         if self._contains_tool_markup(final_clean_text):
             logging.warning("Rejected model-visible tool markup in final output")
             final_clean_text = ""
+        turn = current_turn.get()
+        registry = turn.images if turn else TurnImageRegistry()
+        generated = list(state.get("generated_artifacts", []) or [])
+        if not turn:
+            for artifact in generated:
+                registry.register(artifact)
+        rendered = render_image_placeholders(final_clean_text, registry)
+        final_clean_text = rendered.text
+        if rendered.rejected:
+            logging.warning(
+                "Dropped %d image reference(s) not produced in this turn: %s",
+                len(rendered.rejected),
+                rendered.rejected[:5],
+            )
+            await emit_event(
+                "image.placeholder_rejected",
+                {"count": len(rendered.rejected), "values": rendered.rejected[:5]},
+            )
         # A successful generated artifact remains deliverable even if the model omits it.
-        for artifact in state.get("generated_artifacts", []) or []:
+        for artifact in generated:
             if artifact.uri not in final_clean_text:
                 final_clean_text += f"\n\n![生成图片]({artifact.uri})"
         final_clean_text = final_clean_text.strip()
-        turn = current_turn.get()
         if turn:
             import time
 

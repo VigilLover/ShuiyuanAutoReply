@@ -231,6 +231,35 @@ class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
         finally:
             current_turn.reset(token)
 
+    async def test_final_text_only_shows_images_from_this_turn(self):
+        from shuiyuan_auto_reply.application.tool_results import TurnResults
+        from shuiyuan_auto_reply.domain import GeneratedImageArtifact
+
+        runtime = OfflineChat(SimpleNamespace())
+        turn = TurnResults()
+        artifact = GeneratedImageArtifact(
+            "generated-id", "image/png", "/tmp/fake.png", 1
+        )
+        turn.images.register(artifact, "本轮生成图")
+        token = current_turn.set(turn)
+        try:
+            result = await runtime._finalize_response(
+                {
+                    "messages": [
+                        AIMessage(
+                            content="换好了。\n\n![旧图](upload://stale.jpeg)\n\n"
+                            "![蓝天版]([图1])"
+                        )
+                    ],
+                    "generated_artifacts": [artifact],
+                }
+            )
+        finally:
+            current_turn.reset(token)
+        self.assertNotIn("upload://stale.jpeg", result["final_text"])
+        self.assertEqual(result["final_text"].count("artifact://generated-id"), 1)
+        self.assertIn("![蓝天版](artifact://generated-id)", result["final_text"])
+
     async def test_tool_markup_is_not_accepted_as_final_text(self):
         runtime = OfflineChat(SimpleNamespace())
         result = await runtime._finalize_response(

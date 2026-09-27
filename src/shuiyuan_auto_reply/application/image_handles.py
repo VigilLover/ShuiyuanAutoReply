@@ -87,3 +87,71 @@ class TurnImageRegistry:
             + (f"（{item.description}）" if item.description else "")
             for index, item in enumerate(self.display, 1)
         )
+
+
+_TOKEN = r"[\[【]?\s*图\s*(?P<n>\d{1,2})\s*[\]】]?"
+_MARKDOWN_TOKEN_RE = re.compile(r"!\[(?P<alt>[^\]\n]*)\]\(\s*" + _TOKEN + r"\s*\)")
+_BARE_TOKEN_RE = re.compile(r"[\[【]\s*图\s*(?P<n>\d{1,2})\s*[\]】](?!\()")
+_ANY_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]\n]*\]\([^)\n]*\)")
+_HTML_IMAGE_RE = re.compile(r"<img\b[^>]*>", re.I)
+_RAW_IMAGE_ADDRESS_RE = re.compile(
+    r"(?:upload|artifact)://[^\s)\]>\"']+|/api/artifacts/[\w-]+"
+)
+_PLACEHOLDER = "\x00IMG{}\x00"
+
+
+@dataclass
+class RenderedImages:
+    text: str
+    used: list[Any]
+    rejected: list[str]
+
+
+def render_image_placeholders(text: str, registry: TurnImageRegistry) -> RenderedImages:
+    """Turn ``[图N]`` into ``![alt](artifact://…)`` and drop every other image.
+
+    Only images registered in this turn can be shown.  Image Markdown, HTML
+    images, and raw upload/artifact addresses written by the model are removed,
+    so a hallucinated or history-copied link can never reach the forum.
+    """
+    used: list[Any] = []
+    rejected: list[str] = []
+    rendered: list[str] = []
+
+    def keep(index: int, alt: str) -> str | None:
+        item = registry.resolve_display(index)
+        if item is None:
+            return None
+        if item.artifact not in used:
+            used.append(item.artifact)
+        alt = alt.strip() or item.description or "图片"
+        rendered.append(f"![{alt}]({item.artifact.uri})")
+        return _PLACEHOLDER.format(len(rendered) - 1)
+
+    def markdown_token(match: re.Match[str]) -> str:
+        result = keep(int(match.group("n")), match.group("alt"))
+        if result is None:
+            rejected.append(match.group(0))
+            return ""
+        return result
+
+    def bare_token(match: re.Match[str]) -> str:
+        result = keep(int(match.group("n")), "")
+        if result is None:
+            rejected.append(match.group(0))
+            return ""
+        return result
+
+    def reject(match: re.Match[str]) -> str:
+        rejected.append(match.group(0))
+        return ""
+
+    text = _MARKDOWN_TOKEN_RE.sub(markdown_token, text)
+    text = _BARE_TOKEN_RE.sub(bare_token, text)
+    text = _ANY_MARKDOWN_IMAGE_RE.sub(reject, text)
+    text = _HTML_IMAGE_RE.sub(reject, text)
+    text = _RAW_IMAGE_ADDRESS_RE.sub(reject, text)
+    for index, markdown in enumerate(rendered):
+        text = text.replace(_PLACEHOLDER.format(index), markdown)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return RenderedImages(text.strip(), used, rejected)
