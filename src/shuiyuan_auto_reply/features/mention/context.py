@@ -8,6 +8,7 @@ from langchain_core.messages import HumanMessage
 from shuiyuan_auto_reply.application.events import emit_event
 from shuiyuan_auto_reply.application.image_handles import (
     TurnImageRegistry,
+    remove_images,
     strip_history_images,
 )
 from shuiyuan_auto_reply.application.tool_results import current_turn
@@ -42,7 +43,8 @@ class ContextMixin:
             )
             return {"context": ""}
 
-        context_text = "\n".join(item.text for item in style_items)
+        # Style examples only teach tone; their images would be copied as links.
+        context_text = remove_images("\n".join(item.text for item in style_items))
         await emit_event(
             "context.style_loaded",
             {"count": len(style_items), "persona": persona, "limit": 8},
@@ -151,6 +153,13 @@ class ContextMixin:
             memory_context[:256],
         )
         await emit_event("memory.loaded", {"chars": len(memory_context)})
+        # Memories can hold reference images (a persona sheet); keep them usable
+        # as #hN handles without exposing a link the model could copy.
+        if isinstance(memory_context, str):
+            turn = current_turn.get()
+            memory_context = strip_history_images(
+                memory_context, turn.images if turn else TurnImageRegistry()
+            )
         return {"long_term_memory": memory_context}
 
     async def _load_current_images(self, state: MentionGraphState) -> MentionGraphState:

@@ -10,6 +10,7 @@ from langgraph.store.base import BaseStore, SearchItem
 from pydantic import BaseModel, Field
 
 from shuiyuan_auto_reply.application.events import current_memory_scope
+from shuiyuan_auto_reply.application.tool_results import current_turn
 from shuiyuan_auto_reply.bootstrap.settings import MemorySettings
 from shuiyuan_auto_reply.constants import settings
 from shuiyuan_auto_reply.database.postgres_memory_mgr import (
@@ -311,6 +312,10 @@ class MentionMemoryModel:
 
         normalized_id = memory_id.strip() if memory_id else None
         normalized_content = content.strip() if content else None
+        turn = current_turn.get()
+        if normalized_content and turn:
+            # Image handles are renumbered every turn; persist the real address.
+            normalized_content = turn.images.expand_handles(normalized_content)
         namespace = self.namespace_for_user(memory_key)
 
         try:

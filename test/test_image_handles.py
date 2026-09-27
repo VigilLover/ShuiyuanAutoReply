@@ -237,3 +237,69 @@ class TurnLocalHandleTests(unittest.TestCase):
         self.assertEqual(result.text, "还是上次那张：，参考了  和 。")
         self.assertEqual(len(result.rejected), 3)
         self.assertEqual(result.used, [])
+
+
+class PromptContextImageTests(unittest.IsolatedAsyncioTestCase):
+    def test_style_examples_lose_their_images(self):
+        from shuiyuan_auto_reply.application.image_handles import remove_images
+
+        text = (
+            "晚安 ![IMG_8590|690x690, 50%](upload://3B1x.jpeg)\n"
+            '<img src="https://x/y.png"> 看 upload://raw.png'
+        )
+        self.assertEqual(remove_images(text), "晚安 \n 看 ")
+
+    def test_json_context_stays_valid_after_stripping(self):
+        import json
+
+        from shuiyuan_auto_reply.application.image_handles import (
+            strip_history_images,
+        )
+
+        registry = TurnImageRegistry()
+        line = json.dumps(
+            {
+                "text": "[grid]\n![图片|690x690](upload://psh.jpeg)\n[/grid]",
+                "note": 'raw upload://tail.jpeg"引号"',
+                "media": [{"ref": "520009/117#image-1", "url": "upload://psh.jpeg"}],
+            },
+            ensure_ascii=False,
+        )
+        cleaned = json.loads(strip_history_images(line, registry))
+        self.assertEqual(cleaned["text"], "[grid]\n[历史图 #h1]\n[/grid]")
+        self.assertEqual(cleaned["media"][0]["url"], "#h1")
+        self.assertEqual(cleaned["note"], 'raw #h2"引号"')
+        self.assertEqual(registry.resolve_reference("#h2"), "upload://tail.jpeg")
+
+    def test_expand_handles_restores_real_addresses(self):
+        registry = TurnImageRegistry()
+        registry.register_history("upload://3B1x.jpeg")
+        registry.register(artifact("gen-1"))
+        self.assertEqual(
+            registry.expand_handles("参考图 #h1，新图【图1】，未知 #h9 [图5]"),
+            "参考图 upload://3B1x.jpeg，新图artifact://gen-1，未知 #h9 [图5]",
+        )
+
+    async def test_memory_writes_store_real_addresses_not_handles(self):
+        from unittest.mock import AsyncMock
+
+        from shuiyuan_auto_reply.application.tool_results import current_turn
+        from shuiyuan_auto_reply.features.mention.mention_memory_model import (
+            MentionMemoryModel,
+        )
+
+        model = MentionMemoryModel.__new__(MentionMemoryModel)
+        model.store = AsyncMock()
+        model.memory_namespace = "mention_memories"
+        model._touch_memory_key = AsyncMock()
+        turn = TurnResults()
+        turn.images.register_history("upload://3B1x.jpeg")
+        token = current_turn.set(turn)
+        try:
+            await model.manage_mention_memory(
+                target_user_id=1, action="create", content="人物形象参考图：#h1"
+            )
+        finally:
+            current_turn.reset(token)
+        stored = model.store.aput.await_args.kwargs["value"]["content"]
+        self.assertEqual(stored, "人物形象参考图：upload://3B1x.jpeg")

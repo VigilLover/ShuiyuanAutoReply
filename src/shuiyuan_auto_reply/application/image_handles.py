@@ -12,6 +12,7 @@ from typing import Any
 
 DISPLAY_TOKEN_RE = re.compile(r"图\s*(\d{1,2})")
 HISTORY_TOKEN_RE = re.compile(r"#h(\d{1,3})\b")
+_BRACKETED_DISPLAY_RE = re.compile(r"[\[【]\s*图\s*(\d{1,2})\s*[\]】]")
 
 
 def display_token(index: int) -> str:
@@ -81,6 +82,21 @@ class TurnImageRegistry:
             return item.artifact
         return None
 
+    def expand_handles(self, text: str) -> str:
+        """Swap handles back to real addresses in text that outlives the turn."""
+
+        def history(match: re.Match[str]) -> str:
+            index = int(match.group(1))
+            if 1 <= index <= len(self.history):
+                return self.history[index - 1].url
+            return match.group(0)
+
+        def display(match: re.Match[str]) -> str:
+            item = self.resolve_display(int(match.group(1)))
+            return item.artifact.uri if item else match.group(0)
+
+        return _BRACKETED_DISPLAY_RE.sub(display, HISTORY_TOKEN_RE.sub(history, text))
+
     def display_summary(self) -> str:
         return "、".join(
             display_token(index)
@@ -95,7 +111,7 @@ _BARE_TOKEN_RE = re.compile(r"[\[【]\s*图\s*(?P<n>\d{1,2})\s*[\]】](?!\()")
 _ANY_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]\n]*\]\([^)\n]*\)")
 _HTML_IMAGE_RE = re.compile(r"<img\b[^>]*>", re.I)
 _RAW_IMAGE_ADDRESS_RE = re.compile(
-    r"(?:upload|artifact)://[^\s)\]>\"']+|/api/artifacts/[\w-]+"
+    r"(?:upload|artifact)://[^\s)\]>\"'\\]+|/api/artifacts/[\w-]+"
 )
 # Handles are turn-local: a copied history label or old handle must not survive.
 _HISTORY_LABEL_RE = re.compile(r"[\[【](?:历史图[^\]】\n]*|旧图)[\]】]|#h\d{1,3}\b")
@@ -191,3 +207,10 @@ def strip_history_images(text: str, registry: TurnImageRegistry) -> str:
     return _RAW_IMAGE_ADDRESS_RE.sub(
         lambda m: registry.register_history(m.group(0)), text
     )
+
+
+def remove_images(text: str) -> str:
+    """Drop images from text that only serves as a tone reference."""
+    text = _HISTORY_MARKDOWN_RE.sub("", text)
+    text = _HISTORY_HTML_RE.sub("", text)
+    return _RAW_IMAGE_ADDRESS_RE.sub("", text)
