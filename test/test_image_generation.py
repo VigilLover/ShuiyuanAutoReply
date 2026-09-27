@@ -176,7 +176,8 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
     def assertGenerated(self, result: str) -> dict:
         payload = json.loads(result)
         self.assertEqual(payload["status"], "ok", payload)
-        self.assertTrue(payload["artifact"].startswith("artifact://"))
+        self.assertRegex(payload["image"], r"^\[图\d+\]$")
+        self.assertNotIn("artifact://", result)
         self.assertIsNotNone(self.last_artifact)
         self.assertTrue(Path(self.last_artifact.local_path).is_file())
         return payload
@@ -351,10 +352,12 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         await self._start_images_server(handler)
         prompt = "重复有效提示词也必须真实请求服务器"
 
-        first = self.assertGenerated(await self.generate(prompt))
-        second = self.assertGenerated(await self.generate(prompt))
+        self.assertGenerated(await self.generate(prompt))
+        first = self.last_artifact
+        self.assertGenerated(await self.generate(prompt))
+        second = self.last_artifact
 
-        self.assertNotEqual(first["artifact"], second["artifact"])
+        self.assertNotEqual(first.artifact_id, second.artifact_id)
         self.assertEqual(len(self.requests), 2)
         self.assertEqual(
             [request["prompt"] for request in self.requests], [prompt, prompt]

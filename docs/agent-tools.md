@@ -49,7 +49,16 @@
 
 `generate_image(prompt, aspect_ratio="1:1", references=None, allow_partial=False)` 是唯一生图入口。`references` 为 `[{"key","url","label"}]`，程序内部完成下载、校验、去重与编号：成功下载会复用；超时、连接失败、429、5xx 最多尝试 3 次，遵循 Retry-After 和本轮剩余时间；已确认用户的头像 404 时刷新一次资料。任一素材失败时默认不生成并返回 `{"status":"partial","failed":[…],"loaded":[…],"hint":…}`；只有 `allow_partial=true` 才用成功子集生成。
 
-工具返回结构化 JSON：成功为 `{"status":"ok","artifact":"artifact://…","width","height"}`，模型必须用 `![描述](artifact://…)` 嵌入最终回复；失败为 `{"status":"error","code","message"}`。Responses API 路径下生成结果会以 512px 低精度预览附回 `function_call_output`，模型能看到自己生成的图再决定是否重画。生成并发由 `common.runtime.image_concurrency`（默认 2）控制。图像生成成功不表示内容已通过身份、人数或细节核验。
+工具返回结构化 JSON：成功为 `{"status":"ok","image":"[图N]","width","height"}`；失败为 `{"status":"error","code","message"}`。Responses API 路径下生成结果会以 512px 低精度预览附回 `function_call_output`，模型能看到自己生成的图再决定是否重画。生成并发由 `common.runtime.image_concurrency`（默认 2）控制。图像生成成功不表示内容已通过身份、人数或细节核验。
+
+### 图片句柄
+
+模型看不到任何真实图片地址，只接触两种本轮有效的短句柄，由 `application/image_handles.py` 的 `TurnImageRegistry`（挂在 `TurnResults.images`）登记和解析：
+
+- `[图N]`：本轮 `generate_image` 的结果，以及 `forum_read`、`users`、`web_read` 载入的图片。最终回复只能用它放图；`finalize` 用 `render_image_placeholders` 把它换成 `artifact://…`，再由论坛发布器上传为 `upload://` 或由网页端换成 `/api/artifacts/…`。模型写出的其他图片（`upload://`、`artifact://`、`/api/artifacts/…`、外链、HTML `<img>`、未登记的 `[图N]`）一律删除并记录 `image.placeholder_rejected` 事件。本轮生成但正文漏写的图片仍追加在文末。
+- `#hN`：历史对话、近期回帖、历史附件和长期记忆里的图片。加载上下文时这些图片被替换成 `[历史图 #hN：描述]` 或 `#hN`，只能作为 `generate_image` 的参考图，不能在回复中展示。`manage_mention_memory` 写入前会把句柄还原成真实地址，避免把只在本轮有效的句柄存进记忆。人设历史发言片段只用于学语气，其中的图片在加载时直接删除。
+
+`references[].url` 可以填 `[图N]`、`#hN` 或普通图片地址；未知句柄返回 `unknown_image_handle`。句柄每轮重新编号，历史里残留的旧句柄在加载时会被中和。用户要图而检索提前收敛（`no_new_evidence`／`source_complete`）且本轮还没调用过 `generate_image` 时，控制器会多给一轮并提示直接生图；收尾提示会写明本轮可用的 `[图N]`，没有时明确告知本轮无图、不得声称已附图。
 
 ## 验证与观察
 

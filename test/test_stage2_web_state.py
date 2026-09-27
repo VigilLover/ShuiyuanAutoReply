@@ -343,7 +343,8 @@ class ImageArtifactTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=png),
             ):
                 content, artifact = await service.generate("一幅足够详细的测试图片描述")
-            self.assertEqual(json.loads(content)["artifact"], artifact.uri)
+            self.assertEqual(json.loads(content)["image"], "[图1]")
+            self.assertNotIn(artifact.uri, content)
             self.assertTrue(Path(artifact.local_path).is_file())
             forum.upload_image.assert_not_awaited()
 

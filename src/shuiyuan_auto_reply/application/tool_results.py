@@ -10,6 +10,7 @@ from hashlib import sha256
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
+from .image_handles import TurnImageRegistry
 from .retrieval_control import RetrievalControl
 from .task_progress import TaskProgress, content_digest, source_records
 
@@ -35,6 +36,7 @@ class TurnResults:
     cache: dict[str, Any] = field(default_factory=dict)
     pending: dict[str, asyncio.Task] = field(default_factory=dict)
     references: dict[str, Any] = field(default_factory=dict)
+    images: TurnImageRegistry = field(default_factory=TurnImageRegistry)
     cursors: dict[str, Any] = field(default_factory=dict)
     topic_coverage: dict[int, set[int]] = field(default_factory=dict)
     completed_topics: set[int] = field(default_factory=set)

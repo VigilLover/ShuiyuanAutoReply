@@ -11,6 +11,7 @@ import socket as _socket
 import time
 import uuid
 import weakref
+from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
@@ -910,11 +911,11 @@ class ImageGenerationService:
         何时用：用户要求生成、绘制、创作或修改图片时；这是唯一能产生图片的途径。
         参数要点：prompt 用中文详细描述画面（无参考图时写清外貌、服饰、姿态、光影、
         背景、氛围；有参考图时简述要求并说明"参照参考图"）；references 为
-        [{"key","url","label"}]，url 可以是 upload://、水源头像地址或本轮工具返回的
-        图片 URL，label 说明该图代表谁或什么；任一参考图读取失败时默认不生成，
-        只有用户接受缺项时才传 allow_partial=true。
-        返回：{"status":"ok","artifact":"artifact://…","width","height"} —— 必须用
-        ![描述](artifact://…) 嵌入最终回复；{"status":"partial","failed":[…]} 表示
+        [{"key","url","label"}]，url 可以是本轮图片句柄 [图N]、历史图片句柄 #hN、
+        水源头像地址或本轮工具返回的图片 URL，label 说明该图代表谁或什么；
+        任一参考图读取失败时默认不生成，只有用户接受缺项时才传 allow_partial=true。
+        返回：{"status":"ok","image":"[图N]","width","height"} —— 在最终回复中原样
+        写 [图N] 放这张图，不要写任何图片链接；{"status":"partial","failed":[…]} 表示
         参考图缺失、尚未生成；{"status":"error","code","message"} 表示失败原因。
         """
         prompt = str(prompt).strip()
@@ -937,6 +938,17 @@ class ImageGenerationService:
         reference_data_urls: list[str] = []
         if references:
             from .image_references import prepare_references
+
+            references, unknown = await self._resolve_reference_handles(references)
+            if unknown:
+                return (
+                    _failure(
+                        "unknown_image_handle",
+                        "图片句柄不存在：" + "、".join(unknown),
+                        hint="只能使用本轮工具返回的 [图N] 或历史里出现过的 #hN",
+                    ),
+                    None,
+                )
 
             prepared = await prepare_references(
                 references, model=self.forum_model, strict_remote=True
@@ -1052,13 +1064,60 @@ class ImageGenerationService:
             width,
             height,
         )
+        turn = current_turn.get()
+        token = turn.images.register(artifact, "生成图片") if turn else "[图1]"
         return (
             _result(
                 "ok",
-                artifact=artifact.uri,
+                image=token,
                 width=width,
                 height=height,
-                note="在最终回复中用 ![描述](" + artifact.uri + ") 展示这张图",
+                note=f"在最终回复中原样写 {token} 放这张图，不要写图片链接",
             ),
             artifact,
         )
+
+    async def _resolve_reference_handles(
+        self, references: list
+    ) -> tuple[list, list[str]]:
+        """Swap [图N]/#hN handles for loadable URLs; report unknown handles."""
+        turn = current_turn.get()
+        resolved, unknown = [], []
+        for item in references:
+            if not isinstance(item, dict) or not item.get("url"):
+                resolved.append(item)
+                continue
+            try:
+                target = turn.images.resolve_reference(item["url"]) if turn else None
+            except KeyError:
+                unknown.append(str(item["url"]))
+                continue
+            if target is None:
+                target = item["url"]
+            url = await self._artifact_data_url(target)
+            resolved.append({**item, "url": url})
+        return resolved, unknown
+
+    async def _artifact_data_url(self, target) -> str:
+        """Local artifacts (objects or artifact:// URIs) become data URLs."""
+        local_path = getattr(target, "local_path", None)
+        mime_type = getattr(target, "mime_type", None)
+        if local_path is None and isinstance(target, str):
+            artifact_id = None
+            if target.startswith("artifact://"):
+                artifact_id = target.removeprefix("artifact://")
+            elif target.startswith("/api/artifacts/"):
+                artifact_id = target.removeprefix("/api/artifacts/")
+            if artifact_id is None:
+                return target
+            record = await self.state_store.get_artifact(artifact_id)
+            if record is None:
+                return target
+            local_path, mime_type = record.local_path, record.mime_type
+        if local_path is None:
+            return str(target)
+        try:
+            data = base64.b64encode(Path(local_path).read_bytes()).decode()
+        except OSError:
+            return getattr(target, "uri", str(target))
+        return f"data:{mime_type or 'image/png'};base64,{data}"

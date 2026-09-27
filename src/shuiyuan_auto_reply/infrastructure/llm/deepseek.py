@@ -42,11 +42,9 @@ def as_responses_image_block(block: dict[str, Any]) -> dict[str, Any]:
 
 def _image_label(index: int, image: Any) -> str:
     label = image.description or image.source_url
-    if image.source_kind in {"web_search", "forum_search"}:
-        label = (
-            f"{label}；展示标识 {image.artifact.uri}。"
-            "最终回复需要展示此图时，只能把该展示标识作为图片地址"
-        )
+    handle = getattr(image, "handle", "")
+    if handle:
+        label = f"{label}；回复中展示此图时原样写 {handle}，不要写图片链接"
     return f"【图片 {index}：{label}】"
 
 
