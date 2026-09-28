@@ -1,6 +1,6 @@
 import asyncio
 import json
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock
 
 from shuiyuan_auto_reply.application.tool_results import TurnResults, current_turn
@@ -8,6 +8,7 @@ from shuiyuan_auto_reply.features.mention.shuiyuan_tools_wrapper import (
     ShuiyuanToolsWrapper,
 )
 from shuiyuan_auto_reply.features.mention.tool_catalog import migrate_tool_names
+from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 
 def _post(*, post_id=10, number=3, raw="正文", image=""):
@@ -181,6 +182,59 @@ async def _forum_read_attaches_images_only_for_exact_reads():
     assert artifacts == []
 
 
+async def _filtered_topic_read_scans_three_batches_per_cursor():
+    topic = SimpleNamespace(
+        title="长话题", post_stream=SimpleNamespace(stream=list(range(1, 121)))
+    )
+
+    async def fetch(_topic_id, post_ids):
+        posts = []
+        for post_id in post_ids:
+            post = _post(post_id=post_id, number=post_id)
+            post.username = "target" if post_id == 75 else "other"
+            posts.append(post)
+        return posts
+
+    model = SimpleNamespace(
+        get_topic_details=AsyncMock(return_value=topic),
+        get_post_details_batch_by_topic_id=AsyncMock(side_effect=fetch),
+    )
+    model.read_topic_post_page = MethodType(ShuiyuanModel.read_topic_post_page, model)
+    turn = TurnResults()
+    token = current_turn.set(turn)
+    try:
+        tools = ShuiyuanToolsWrapper(model)
+        first, _ = await tools.forum_read(
+            topic_id=42, username="target", order="oldest", limit=20
+        )
+        first = json.loads(first)
+        assert first["items"] == []
+        assert "complete" not in first
+        assert first["next_cursor"]
+        assert model.get_post_details_batch_by_topic_id.await_count == 3
+
+        second, _ = await tools.forum_read(cursor=first["next_cursor"])
+        second = json.loads(second)
+        assert [item["ref"] for item in second["items"]] == ["forum:42/75"]
+        assert second["complete"] is True
+        assert 42 not in turn.completed_topics
+        assert model.get_post_details_batch_by_topic_id.await_count == 6
+        assert (
+            model.get_post_details_batch_by_topic_id.await_args_list[3].args[1][0] == 61
+        )
+
+        model.get_post_details_batch_by_topic_id.reset_mock()
+        _, posts, position, has_more = await model.read_topic_post_page(
+            42, offset=0, limit=20, ascending=True
+        )
+        assert len(posts) == 20
+        assert position == 20
+        assert has_more is True
+        model.get_post_details_batch_by_topic_id.assert_awaited_once()
+    finally:
+        current_turn.reset(token)
+
+
 async def _users_preserves_batch_order_and_item_status():
     async def get_user(name):
         if name.casefold() == "missing":
@@ -234,6 +288,10 @@ def test_dates_report_the_supported_format_and_topic_read_path():
 
 def test_forum_read_attaches_images_only_for_exact_reads():
     asyncio.run(_forum_read_attaches_images_only_for_exact_reads())
+
+
+def test_filtered_topic_read_scans_three_batches_per_cursor():
+    asyncio.run(_filtered_topic_read_scans_three_batches_per_cursor())
 
 
 def test_users_preserves_batch_order_and_item_status():

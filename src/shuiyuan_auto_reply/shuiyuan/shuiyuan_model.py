@@ -970,7 +970,11 @@ class ShuiyuanModel:
         username: str | None = None,
         ascending: bool = False,
     ) -> tuple[str, list[PostDetails], int, bool]:
-        """Read a stable page from a topic's post-ID stream, tolerating gaps."""
+        """Read a stable page from a topic's post-ID stream, tolerating gaps.
+
+        An author may have no posts near the current offset in a large topic.
+        Bound filtered scans so one tool call cannot walk the entire stream.
+        """
         topic = await self.get_topic_details(topic_id)
         post_ids = list(topic.post_stream.stream)
         if not ascending:
@@ -979,9 +983,15 @@ class ShuiyuanModel:
         matched: list[PostDetails] = []
         position = offset
         batch_size = max(limit, 20)
-        while position < len(post_ids) and len(matched) < limit:
+        batches = 0
+        while (
+            position < len(post_ids)
+            and len(matched) < limit
+            and (not username or batches < 3)
+        ):
             selected = post_ids[position : position + batch_size]
             position += len(selected)
+            batches += 1
             rows = await self.get_post_details_batch_by_topic_id(topic_id, selected)
             by_id = {post.id: post for post in rows}
             ordered = [by_id[post_id] for post_id in selected if post_id in by_id]

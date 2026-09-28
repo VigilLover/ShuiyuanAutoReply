@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -139,6 +140,136 @@ class TurnResultsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["messages"][0].status, "error")
         self.assertEqual(turn.control.stop_reason, "tool_time_budget")
+
+    async def test_read_timeout_keeps_one_generation_only_round(self):
+        async def slow_search(query: str):
+            await asyncio.sleep(0.2)
+            return {"status": "ok", "query": query}
+
+        async def generate_image(prompt: str):
+            return {"status": "ok", "image": "[图1]", "prompt": prompt}
+
+        search = StructuredTool.from_function(
+            coroutine=slow_search, name="forum_search", description="Search"
+        )
+        generate = StructuredTool.from_function(
+            coroutine=generate_image, name="generate_image", description="Draw"
+        )
+        owner = SimpleNamespace(tools=[search, generate])
+        turn = TurnResults()
+        turn.control.image_requested = True
+        turn.control.model_call_timeout = 0.05
+        turn.control.before_model(turn.progress, turn.deadline)
+        token = current_turn.set(turn)
+        try:
+            timed_out = await MentionChatModel._execute_tools(
+                owner,
+                {
+                    "messages": [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "id": "slow",
+                                    "name": "forum_search",
+                                    "args": {"query": "people"},
+                                }
+                            ],
+                        )
+                    ]
+                },
+            )
+            self.assertEqual(timed_out["messages"][0].status, "error")
+            self.assertEqual(turn.progress.phase, "investigate")
+            self.assertTrue(turn.control.image_nudged)
+            self.assertEqual(turn.control.image_nudge_reason, "tool_time_budget")
+
+            turn.control.before_model(turn.progress, turn.deadline)
+            result = await MentionChatModel._execute_tools(
+                owner,
+                {
+                    "messages": [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "id": "read-again",
+                                    "name": "forum_search",
+                                    "args": {"query": "more people"},
+                                },
+                                {
+                                    "id": "draw",
+                                    "name": "generate_image",
+                                    "args": {"prompt": "draw the known people"},
+                                },
+                            ],
+                        )
+                    ]
+                },
+            )
+        finally:
+            current_turn.reset(token)
+
+        self.assertEqual([m.status for m in result["messages"]], ["error", "success"])
+        self.assertEqual(turn.control.queries, 1)
+        self.assertEqual(turn.progress.phase, "final")
+        self.assertEqual(turn.control.stop_reason, "tool_time_budget")
+
+    async def test_query_limit_rejects_reads_but_allows_requested_image(self):
+        async def search(query: str):
+            return {"status": "ok", "query": query}
+
+        async def generate_image(prompt: str):
+            return {"status": "ok", "image": "[图1]", "prompt": prompt}
+
+        owner = SimpleNamespace(
+            tools=[
+                StructuredTool.from_function(
+                    coroutine=search, name="forum_search", description="Search"
+                ),
+                StructuredTool.from_function(
+                    coroutine=generate_image, name="generate_image", description="Draw"
+                ),
+            ]
+        )
+        turn = TurnResults()
+        turn.control.image_requested = True
+        turn.control.query_limit = 1
+        turn.control.queries = 1
+        turn.control.before_model(turn.progress, time.monotonic() + 900)
+        self.assertTrue(turn.control.image_nudged)
+        self.assertEqual(turn.control.image_nudge_reason, "query_budget")
+        token = current_turn.set(turn)
+        try:
+            result = await MentionChatModel._execute_tools(
+                owner,
+                {
+                    "messages": [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "id": "read",
+                                    "name": "forum_search",
+                                    "args": {"query": "more"},
+                                },
+                                {
+                                    "id": "draw",
+                                    "name": "generate_image",
+                                    "args": {"prompt": "draw the known people"},
+                                },
+                            ],
+                        )
+                    ]
+                },
+            )
+        finally:
+            current_turn.reset(token)
+
+        self.assertEqual([m.status for m in result["messages"]], ["error", "success"])
+        self.assertEqual(turn.control.queries, 1)
+        self.assertEqual(turn.progress.phase, "final")
+        self.assertEqual(turn.control.stop_reason, "query_budget")
 
     async def test_image_tool_batch_still_honors_image_timeout(self):
         async def generate_image(prompt: str):
