@@ -558,8 +558,9 @@ class MentionChatModel(ContextMixin, ToolsRuntimeMixin, FinalizeMixin):
                 )
                 if turn.control.image_nudged and not turn.control.image_attempted:
                     control += (
-                        "资料已经足够，不要再检索。用户要的是图片时，这一轮直接调用 "
-                        "generate_image；不需要图片就直接作答，不要声称已附图。"
+                        "检索阶段已经结束，这一轮只允许调用 generate_image。"
+                        "依据已经取得的人物资料直接生图；缺少的性格细节不要编造，"
+                        "没有取得的头像不要作为参考图或声称已使用。不要再检索。"
                     )
             prompt_value.messages.append(
                 SystemMessage(content=f"{control} 当前时间={now}。")

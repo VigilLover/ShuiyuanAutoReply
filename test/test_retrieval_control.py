@@ -130,9 +130,34 @@ def test_budget_stops_ignore_image_nudge():
     c = RetrievalControl(model_limit=2, image_requested=True)
     p = TaskProgress()
     c.before_model(p, time.monotonic() + 900)
+    assert p.phase == "investigate"
+    assert c.image_nudged
     c.before_model(p, time.monotonic() + 900)
     assert p.phase == "final"
     assert c.stop_reason == "model_budget"
+
+
+def test_last_investigation_round_is_reserved_for_requested_image():
+    c = RetrievalControl(model_limit=4, image_requested=True, model_rounds=2)
+    p = TaskProgress()
+    c.before_model(p, time.monotonic() + 900)
+    assert p.phase == "investigate"
+    assert c.image_nudged
+    assert c.image_nudge_reason == "model_budget"
+    assert c.model_rounds == 3
+    c.image_attempted = True
+    c.before_model(p, time.monotonic() + 900)
+    assert p.phase == "final"
+    assert c.model_rounds == 4
+
+
+def test_hard_time_boundary_does_not_grant_image_round():
+    c = RetrievalControl(image_requested=True)
+    p = TaskProgress()
+    c.before_model(p, time.monotonic() + c.final_reserve_seconds - 1)
+    assert p.phase == "final"
+    assert c.stop_reason == "time_budget"
+    assert not c.image_nudged
 
 
 @pytest.mark.parametrize(

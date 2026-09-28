@@ -7,6 +7,7 @@
 - `forum_read(post_id=None, topic_id=None, post_number=None, ..., images="none")` 读取单帖或话题窗口：用话题内楼层号（`topic_id` + `post_number`）或全站帖子 ID（`post_id`）定位。图片默认不下载，只有显式传入 `images="auto"` 或 `images="selected"` 时才加载。
 - 精准读取优先获取 `raw`，缺失时补取详情，再回退为清理后的 HTML 文本。结果包含 `content_source`、回复关系、正文／引用提及、图片、来源和警告。
 - 精准正文每页 8000 字符，话题窗口每帖 1400 字符，`next_cursor` 明确指示后续内容；继续读取时使用同一工具的 `cursor`。每帖附 `reply_to`、`reply_to_author` 与 `replies`。
+- 在大话题中按 `username` 筛选楼层时，每次 `forum_read` 最多扫描 3 批帖子；结果可能少于 `limit`，也可能暂时为空。只要返回 `next_cursor` 就还能续读，只有扫描到话题末尾才返回 `complete=true`。
 - 搜索摘要最多 400 字符，并说明返回结果不保证穷尽。标题可为空；不为标题增加整话题请求。
 - 工具描述统一为中文三段式（何时用／参数要点／返回结构）；错误信封统一为 `status/code/message/retryable`，常见错误附 `hint` 指示模型下一步该换什么调用。
 - 同一批调用里的多个 `users(username=…)` 会自动合并成一次 `usernames` 查询，再按 call_id 拆回；`image_refs` 的 `forum:` 前缀与顺序差异不再造成重复读取。
@@ -58,7 +59,7 @@
 - `[图N]`：本轮 `generate_image` 的结果，以及 `forum_read`、`users`、`web_read` 载入的图片。最终回复只能用它放图；`finalize` 用 `render_image_placeholders` 把它换成 `artifact://…`，再由论坛发布器上传为 `upload://` 或由网页端换成 `/api/artifacts/…`。模型写出的其他图片（`upload://`、`artifact://`、`/api/artifacts/…`、外链、HTML `<img>`、未登记的 `[图N]`）一律删除并记录 `image.placeholder_rejected` 事件。本轮生成但正文漏写的图片仍追加在文末。
 - `#hN`：历史对话、近期回帖、历史附件和长期记忆里的图片。加载上下文时这些图片被替换成 `[历史图 #hN：描述]` 或 `#hN`，只能作为 `generate_image` 的参考图，不能在回复中展示。`manage_mention_memory` 写入前会把句柄还原成真实地址，避免把只在本轮有效的句柄存进记忆。人设历史发言片段只用于学语气，其中的图片在加载时直接删除。
 
-`references[].url` 可以填 `[图N]`、`#hN` 或普通图片地址；未知句柄返回 `unknown_image_handle`。句柄每轮重新编号，历史里残留的旧句柄在加载时会被中和。用户要图而检索提前收敛（`no_new_evidence`／`source_complete`）且本轮还没调用过 `generate_image` 时，控制器会多给一轮并提示直接生图；收尾提示会写明本轮可用的 `[图N]`，没有时明确告知本轮无图、不得声称已附图。
+`references[].url` 可以填 `[图N]`、`#hN` 或普通图片地址；未知句柄返回 `unknown_image_handle`。句柄每轮重新编号，历史里残留的旧句柄在加载时会被中和。用户要图而检索提前收敛、用尽查询／模型调查轮次，或单个工具批次超时，且本轮还没调用过 `generate_image` 时，控制器会保留一轮只允许生图的调用；总时限只剩收尾保留时间时仍直接收尾。收尾提示会写明本轮可用的 `[图N]`，没有时明确告知本轮无图、不得声称已附图。
 
 ## 验证与观察
 
@@ -98,7 +99,7 @@
 | `final_reserve_seconds` | 150 |
 | `model_call_timeout` | 180 |
 
-`query_limit` 计数外部只读工具调度，批量查询算一次调度；底层请求和缓存命中另行观测，不能将工具次数当成 HTTP 次数。素材准备与图片生成不消耗论坛检索配额，但仍受模型轮次、总时限和媒体预算约束。同一工具的游标续读仍参与无进展检测。
+`query_limit` 计数外部只读工具调用，同批的多个调用分别计数；底层请求和缓存命中另行观测，不能将工具次数当成 HTTP 次数。素材准备与图片生成不消耗论坛检索配额，但仍受模型轮次、总时限和媒体预算约束。同一工具的游标续读仍参与无进展检测。
 
 连续无进展、明确完成或到达预算边界时进入不绑定工具的最终调用。调查阶段模型调用失败时允许一次纯文本恢复调用；最终调用仍失败，或纯文本修复后正文仍为空／仍含工具标记，才认定整轮完全失败。此时论坛发布 `抱歉，发生了未知错误` 并将任务标记为 `failed`，网页 API 返回同文案的 HTTP 500；失败回复不写入对话历史，也不产生 `model.completed`。
 

@@ -749,6 +749,12 @@ class ToolsRuntimeMixin:
         calls += [c for c in original_calls if c["id"] in errors]
         by_name = {tool.name: tool for tool in self.tools}
         turn = current_turn.get()
+        generation_only = bool(
+            turn
+            and turn.control.image_nudged
+            and not turn.control.image_attempted
+            and turn.progress.phase == "investigate"
+        )
         prior_pages = len(turn.read_pages) if turn else 0
         pending_signatures = set()
         prepared = {}
@@ -760,6 +766,15 @@ class ToolsRuntimeMixin:
                 control, progress = turn.control, turn.progress
                 sig = signature(name, args)
                 if (
+                    control.image_nudged
+                    and not control.image_attempted
+                    and name != "generate_image"
+                ):
+                    error = (
+                        "Investigation finished; call generate_image using only "
+                        "the evidence already available"
+                    )
+                elif (
                     name in READ_TOOLS
                     and sig in control.seen
                     and not args.get("refresh")
@@ -773,9 +788,12 @@ class ToolsRuntimeMixin:
                     error = "Read budget finished; answer from the available results"
                 elif name in READ_TOOLS:
                     if control.queries >= control.query_limit:
-                        control.stop(progress, "query_budget")
+                        control.stop_investigation(progress, "query_budget")
                         error = (
-                            "Read query budget reached; answer from existing evidence"
+                            "Read query budget reached; call generate_image using "
+                            "existing evidence if an image was requested"
+                            if control.image_nudged and progress.phase != "final"
+                            else "Read query budget reached; answer from existing evidence"
                         )
                     elif not error:
                         control.queries += 1
@@ -872,10 +890,20 @@ class ToolsRuntimeMixin:
             else:
                 responses = await asyncio.gather(*(execute(call) for call in calls))
         except TimeoutError:
-            turn.control.stop(turn.progress, "tool_time_budget")
+            import time
+
+            if time.monotonic() < turn.deadline - turn.control.final_reserve_seconds:
+                turn.control.stop_investigation(turn.progress, "tool_time_budget")
+            else:
+                turn.control.stop(turn.progress, "tool_time_budget")
             responses = [
                 ToolMessage(
-                    content="Tool batch exceeded investigation deadline; stop and answer",
+                    content=(
+                        "Tool batch timed out; call generate_image from existing "
+                        "evidence without further investigation"
+                        if turn.progress.phase != "final"
+                        else "Tool batch exceeded investigation deadline; stop and answer"
+                    ),
                     tool_call_id=c["id"],
                     name=c["name"],
                     status="error",
@@ -955,6 +983,11 @@ class ToolsRuntimeMixin:
                         "status": message.status,
                         "output": message.content,
                     }
+                )
+            if generation_only and turn.progress.phase != "final":
+                turn.control.stop(
+                    turn.progress,
+                    turn.control.image_nudge_reason or "image_generation_round",
                 )
             turn.control.after_batch(
                 turn.progress,

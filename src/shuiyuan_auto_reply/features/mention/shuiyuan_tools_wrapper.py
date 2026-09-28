@@ -336,12 +336,13 @@ class ShuiyuanToolsWrapper:
         何时用：已经知道要看哪一楼（forum_search 返回的 ref、用户给的链接楼层、
         reply_to），或需要顺着话题从头/从尾读一段时。
         参数要点：精读用 post_id 或 topic_id+post_number；顺序读用 topic_id 加
-        order/limit，可用 username 只看某人的楼层；同一帖只需读一次，重复读取会直接
-        复用结果。图片默认不加载，只有需要看图时才传 images="auto"（该帖全部图）或
+        order/limit，可用 username 筛选当前窗口；大话题找某人的历史帖子优先用
+        forum_search(username=...)。同一帖只需读一次，重复读取会直接复用结果。
+        图片默认不加载，只有需要看图时才传 images="auto"（该帖全部图）或
         images="selected" 并给出 image_refs。
         返回：items 为帖子（ref、post_id、author、text、created_at、reply_to、media
-        引用）；正文过长时给出 next_cursor，只传 cursor 继续读下一页；complete=true
-        表示话题已读完。
+        引用）；正文过长或筛选窗口尚未扫完时给出 next_cursor，只传 cursor 续读；
+        筛选结果可暂时为空，complete=true 表示话题已读完。
         """
         try:
             if limit < 1:
@@ -484,7 +485,7 @@ class ShuiyuanToolsWrapper:
                     turn.note_topic_page(
                         topic_id,
                         items,
-                        complete=not has_more,
+                        complete=not has_more and not username,
                         title=title,
                     )
                 if not has_more:

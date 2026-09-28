@@ -72,6 +72,7 @@ class RetrievalControl:
     image_attempted: bool = False
     # Model round in which one extra round was granted to generate the image.
     image_nudge_round: int | None = None
+    image_nudge_reason: str = ""
 
     @property
     def image_nudged(self) -> bool:
@@ -82,7 +83,7 @@ class RetrievalControl:
         self.stop_reason = reason
 
     def stop_investigation(self, progress, reason: str):
-        """Stop for exhausted evidence, unless a requested image is still owed.
+        """Stop investigation, unless a requested image is still owed.
 
         The final phase cannot call tools, so ending there before generate_image
         ran leaves the model to invent an image. Grant one generation round.
@@ -90,6 +91,7 @@ class RetrievalControl:
         if self.image_requested and not self.image_attempted:
             if self.image_nudge_round is None:
                 self.image_nudge_round = self.model_rounds
+                self.image_nudge_reason = reason
                 self.no_progress = 0
                 return
             if self.image_nudge_round == self.model_rounds:
@@ -98,12 +100,27 @@ class RetrievalControl:
         self.stop(progress, reason)
 
     def before_model(self, progress, deadline: float):
-        if self.model_rounds >= self.model_limit - 1:
-            self.stop(progress, "model_budget")
-        if self.queries >= self.query_limit:
-            self.stop(progress, "query_budget")
-        if time.monotonic() >= deadline - self.final_reserve_seconds:
-            self.stop(progress, "time_budget")
+        if progress.phase != "final":
+            if time.monotonic() >= deadline - self.final_reserve_seconds:
+                self.stop(progress, "time_budget")
+            elif self.model_rounds >= self.model_limit - 1:
+                self.stop(progress, "model_budget")
+            elif (
+                self.image_requested
+                and not self.image_attempted
+                and (
+                    self.model_rounds >= self.model_limit - 2
+                    or self.queries >= self.query_limit
+                )
+            ):
+                reason = (
+                    "model_budget"
+                    if self.model_rounds >= self.model_limit - 2
+                    else "query_budget"
+                )
+                self.stop_investigation(progress, reason)
+            elif self.queries >= self.query_limit:
+                self.stop(progress, "query_budget")
         self.model_rounds += 1
 
     def call_timeout(
