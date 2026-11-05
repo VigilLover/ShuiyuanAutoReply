@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import aiohttp
 from aiohttp import web
+from langchain_core.tools import StructuredTool
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -214,7 +215,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             return web.json_response(self._images_response_b64())
 
         await self._start_images_server(handler)
-        result = await self.generate("测试原生图片生成接口调用", aspect_ratio="3:4")
+        result = await self.generate(
+            "测试原生图片生成接口调用", aspect_ratio="3:4", frame_duration_ms=500
+        )
 
         payload = self.assertGenerated(result)
         self.assertEqual((payload["width"], payload["height"]), (4, 4))
@@ -337,7 +340,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.last_artifact.mime_type, "image/gif")
         self.assertEqual(self.requests[0]["size"], "1024x1024")
 
-    async def test_gif_generation_preserves_animation_and_uses_provider_defaults(self):
+    async def test_gif_generation_preserves_animation_and_defaults_to_120_ms(self):
         raw = _gif_bytes()
 
         async def handler(request):
@@ -355,11 +358,14 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         payload = self.assertGenerated(result)
         self.assertIn("首帧", payload["note"])
+        self.assertEqual(payload["frame_durations_ms"], [80, 120, 160])
         self.assertEqual(
-            set(self.requests[0]), {"model", "prompt", "size", "output_format", "n"}
+            set(self.requests[0]),
+            {"model", "prompt", "size", "output_format", "frame_duration_ms", "n"},
         )
         self.assertEqual(self.requests[0]["size"], "1536x1024")
         self.assertEqual(self.requests[0]["output_format"], "gif")
+        self.assertEqual(self.requests[0]["frame_duration_ms"], 120)
         self.assertEqual(self.requests[0]["n"], 1)
         artifact = self.last_artifact
         self.assertEqual(Path(artifact.local_path).read_bytes(), raw)
@@ -397,19 +403,81 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             aspect_ratio="2:3",
             references=[{"key": "cat", "url": _png_data_url(), "label": "猫咪"}],
             output_format="gif",
+            frame_duration_ms=300,
         )
 
         self.assertGenerated(result)
         fields = self.requests[0]
         self.assertEqual(
-            set(fields), {"model", "prompt", "size", "output_format", "n", "image[]"}
+            set(fields),
+            {
+                "model",
+                "prompt",
+                "size",
+                "output_format",
+                "frame_duration_ms",
+                "n",
+                "image[]",
+            },
         )
         self.assertEqual(fields["size"], "1024x1536")
         self.assertEqual(fields["output_format"], "gif")
+        self.assertEqual(fields["frame_duration_ms"], "300")
         self.assertEqual(fields["n"], "1")
         self.assertEqual(
             fields["image[]"], base64.b64decode(_png_data_url().split(",", 1)[1])
         )
+
+    def test_gif_frame_duration_schema_exposes_presets_and_120_ms_default(self):
+        tool = StructuredTool.from_function(
+            coroutine=self.service.generate,
+            name="generate_image",
+            response_format="content_and_artifact",
+        )
+        schema = tool.args_schema.model_json_schema()["properties"]["frame_duration_ms"]
+        self.assertEqual(schema["type"], "integer")
+        self.assertEqual(schema["default"], 120)
+        self.assertEqual(schema["enum"], [80, 120, 200, 300, 500])
+        with self.assertRaises(ValueError):
+            tool.args_schema.model_validate(
+                {"prompt": "生成一只猫咪眨眼的循环动图", "frame_duration_ms": 100}
+            )
+
+    async def test_gif_frame_duration_presets_include_both_bounds(self):
+        raw = _gif_bytes()
+
+        async def handler(request):
+            self.requests.append(await request.json())
+            return web.json_response(
+                {"data": [{"b64_json": base64.b64encode(raw).decode()}]}
+            )
+
+        await self._start_images_server(handler)
+        for duration in (80, 200, 500):
+            with self.subTest(frame_duration_ms=duration):
+                result = await self.generate(
+                    "生成一只眨眼后恢复表情的猫咪动图",
+                    output_format="gif",
+                    frame_duration_ms=duration,
+                )
+                self.assertGenerated(result)
+                self.assertEqual(self.requests[-1]["frame_duration_ms"], duration)
+
+    async def test_gif_frame_duration_rejects_non_presets_before_submission(self):
+        with patch(
+            "shuiyuan_auto_reply.features.mention.image_generation._submit_image_request",
+            new_callable=AsyncMock,
+        ) as submit:
+            for duration in (79, 100, 501, "120"):
+                with self.subTest(frame_duration_ms=duration):
+                    result = await self.generate(
+                        "生成一只眨眼后恢复表情的猫咪动图",
+                        output_format="gif",
+                        frame_duration_ms=duration,
+                    )
+                    payload = self.assertFailed(result, "frame_duration_ms")
+                    self.assertEqual(payload["code"], "invalid_frame_duration")
+            submit.assert_not_awaited()
 
     async def test_gif_request_rejects_static_or_damaged_output_without_regenerating(
         self,

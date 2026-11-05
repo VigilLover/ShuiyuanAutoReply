@@ -778,6 +778,7 @@ async def _submit_image_request(
     prompt: str,
     size: str,
     output_format: Literal["png", "gif"],
+    frame_duration_ms: int,
     reference_data_urls: list[str],
     request_id: str,
 ) -> bytes | str:
@@ -797,7 +798,9 @@ async def _submit_image_request(
         "size": size,
     }
     if output_format == "gif":
-        request_fields.update(output_format="gif", n=1)
+        request_fields.update(
+            output_format="gif", frame_duration_ms=frame_duration_ms, n=1
+        )
     request_body = json.dumps(
         request_fields,
         ensure_ascii=False,
@@ -914,6 +917,7 @@ class ImageGenerationService:
         references: list[dict[str, str]] | None = None,
         allow_partial: bool = False,
         output_format: Literal["png", "gif"] = "png",
+        frame_duration_ms: Literal[80, 120, 200, 300, 500] = 120,
     ) -> tuple[str, GeneratedImageArtifact | None]:
         """根据文字描述生成一张静态图片或 GIF 动图，可附带带标签的参考图。
 
@@ -926,7 +930,12 @@ class ImageGenerationService:
         output_format 默认 png；用户要求动图时传 gif，并在 prompt 中描述动作与循环要求。
         aspect_ratio 默认 1:1，支持 2:3、3:2、3:4、4:3、4:5、5:4、9:16、16:9、21:9、
         1:4、4:1、1:8、8:1；静态图和 GIF 均以短边 1024px 计算尺寸，宽高对齐到 16px，
-        超过 3:1 的长宽比按 3:1 限制处理；不指定帧数或帧时长。
+        超过 3:1 的长宽比按 3:1 限制处理；不指定帧数。
+        frame_duration_ms 仅用于 GIF，表示每帧毫秒数，可按动作节奏主动选择：
+        80（快速）、120（默认／轻快）、200（舒缓）、300（缓慢）、500（明显停顿）；
+        只能使用这些预设，没有明确节奏要求时使用 120。PNG 不发送此参数。
+        帧时长只调整播放速度，不增加帧数；返回的 frame_durations_ms 是各帧实际时长，
+        供应商未遵循请求值时保留原文件，不自动重生成或本地修改。
         GIF 回看仅为首帧预览，不能据此声称已核验整段动作。
         返回：{"status":"ok","image":"[图N]","width","height"} —— 在最终回复中原样
         写 [图N] 放这张图，不要写任何图片链接；{"status":"partial","failed":[…]} 表示
@@ -948,6 +957,17 @@ class ImageGenerationService:
             return _failure("not_configured", "IMAGE_GEN_API_URL 未配置"), None
         if output_format not in {"png", "gif"}:
             return _failure("invalid_format", "output_format 只支持 png 或 gif"), None
+        if output_format == "gif" and (
+            type(frame_duration_ms) is not int
+            or frame_duration_ms not in (80, 120, 200, 300, 500)
+        ):
+            return (
+                _failure(
+                    "invalid_frame_duration",
+                    "frame_duration_ms 只支持 80、120、200、300、500 毫秒，默认 120",
+                ),
+                None,
+            )
         if aspect_ratio not in _SUPPORTED_ASPECT_RATIOS:
             aspect_ratio = "1:1"
         if output_format == "gif":
@@ -1027,6 +1047,7 @@ class ImageGenerationService:
                 prompt=prompt,
                 size=_openai_image_size(aspect_ratio),
                 output_format=output_format,
+                frame_duration_ms=frame_duration_ms,
                 reference_data_urls=reference_data_urls,
                 request_id=request_id,
             )
@@ -1034,6 +1055,7 @@ class ImageGenerationService:
             return outcome, None
         image_bytes = outcome
 
+        frame_durations_ms: list[int | None] = []
         try:
             with Image.open(io.BytesIO(image_bytes)) as generated:
                 generated.verify()
@@ -1053,6 +1075,7 @@ class ImageGenerationService:
                     for frame in range(generated.n_frames):
                         generated.seek(frame)
                         generated.load()
+                        frame_durations_ms.append(generated.info.get("duration"))
         except Exception as exc:
             logger.error("Generated image is not decodable: %s", exc)
             return _failure("invalid_image", f"生成结果不是有效图片: {exc}"), None
@@ -1100,6 +1123,7 @@ class ImageGenerationService:
                 image=token,
                 width=width,
                 height=height,
+                frame_durations_ms=frame_durations_ms,
                 note=(
                     f"在最终回复中原样写 {token} 放这张图，不要写图片链接"
                     + (
