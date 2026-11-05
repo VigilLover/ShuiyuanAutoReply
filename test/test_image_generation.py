@@ -146,6 +146,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             os.environ,
             {
                 "IMAGE_GEN_API_KEY": "test-key",
+                "IMAGE_GEN_API_URL": "https://image-api.invalid/v1",
                 "IMAGE_GEN_MODEL": "test-image-model",
                 "IMAGE_GEN_TIMEOUT_SECONDS": "5",
                 "IMAGE_GEN_MAX_ATTEMPTS": "1",
