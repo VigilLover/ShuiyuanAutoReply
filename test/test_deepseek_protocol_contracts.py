@@ -138,6 +138,7 @@ class DeepSeekRequestContractTests(unittest.TestCase):
 
         self.assertIsInstance(model, DeepSeekChatOpenAI)
         self.assertEqual(payload["model"], DEEPSEEK_DEFAULT_MODEL)
+        self.assertEqual(payload["messages"][0]["role"], "user")
         self.assertEqual(payload["messages"][0]["content"], content)
         self.assertEqual(
             payload["messages"][1]["reasoning_content"], "provider reasoning"

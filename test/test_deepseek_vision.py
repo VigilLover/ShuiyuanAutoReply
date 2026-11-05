@@ -16,7 +16,6 @@ from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegis
 from shuiyuan_auto_reply.application.tool_results import TurnResults, current_turn
 from shuiyuan_auto_reply.bootstrap.settings import (
     DeepSeekApiFormat,
-    ProviderSettings,
 )
 from shuiyuan_auto_reply.domain import (
     Channel,
@@ -33,9 +32,7 @@ from shuiyuan_auto_reply.features.mention.deepseek_vision import (
 )
 from shuiyuan_auto_reply.features.mention.mention_chat_model import MentionChatModel
 from shuiyuan_auto_reply.features.mention.mention_deepseek_model import (
-    DEEPSEEK_DEFAULT_MODEL,
     MentionDeepSeekModel,
-    _mk_deepseek_llm,
 )
 from shuiyuan_auto_reply.infrastructure.llm.legacy_chat import (
     canonicalize_web_artifact_images,
@@ -72,24 +69,6 @@ class VisionContractTests(unittest.TestCase):
 
         self.assertIn("![搜索结果](artifact://asset-1)", canonical)
         self.assertIn("[原始页面](https://cdn.example/asset-1.png)", canonical)
-
-    def test_deepseek_payload_preserves_file_and_image_url_blocks(self):
-        model = _mk_deepseek_llm(
-            "test-key",
-            DEEPSEEK_DEFAULT_MODEL,
-            ProviderSettings(deepseek_api_format=DeepSeekApiFormat.CHAT_COMPLETIONS),
-        )
-        content = [
-            {"type": "text", "text": "看图"},
-            {"type": "file", "file_id": "file_123"},
-            {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
-        ]
-
-        payload = model._get_request_payload([HumanMessage(content=content)])
-
-        self.assertEqual(payload["model"], "deepseek-flash")
-        self.assertEqual(payload["messages"][0]["role"], "user")
-        self.assertEqual(payload["messages"][0]["content"], content)
 
     def test_image_extractor_only_returns_explicit_supported_urls(self):
         value = [
