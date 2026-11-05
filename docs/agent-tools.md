@@ -48,7 +48,7 @@
 
 ## 参考图片与生成结果
 
-`generate_image(prompt, references=None, allow_partial=False, output_format="png")` 是唯一生图入口，`output_format` 支持静态图 `png` 和动图 `gif`。静态图、GIF 及参考图请求统一使用 `size="auto"`，不再传入 `aspect_ratio`；画幅偏好写进提示词，实际尺寸以返回文件为准。GIF 的动作和循环要求写进提示词，不传帧数、帧时长，使用提供商默认值。默认部署样例为 Reverix（`https://reverix.ai/v1`、`gpt-image-2.6`），已有显式配置仍优先。
+`generate_image(prompt, aspect_ratio="1:1", references=None, allow_partial=False, output_format="png")` 是唯一生图入口，`output_format` 支持静态图 `png` 和动图 `gif`。静态图、GIF 及参考图请求均按 `aspect_ratio` 计算明确的像素尺寸，不使用 `size="auto"`。默认比例为 `1:1`，比例集为 `1:1`、`2:3`、`3:2`、`3:4`、`4:3`、`4:5`、`5:4`、`9:16`、`16:9`、`21:9`、`1:4`、`4:1`、`1:8`、`8:1`；无效值回退到 `1:1`。请求尺寸的短边为 1024px，宽高对齐到 16px，超过 3:1 的长宽比沿用原有钳制规则。例如 `1:1` 请求 `1024x1024`，`3:2` 请求 `1536x1024`；实际尺寸仍以返回文件为准。GIF 的动作和循环要求写进提示词，不传帧数、帧时长，使用提供商默认值。默认部署样例为 Reverix（`https://reverix.ai/v1`、`gpt-image-2.6`），已有显式配置仍优先。
 
 `references` 为 `[{"key","url","label"}]`，程序内部完成下载、校验、去重与编号：成功下载会复用；超时、连接失败、429、5xx 最多尝试 3 次，遵循 Retry-After 和本轮剩余时间；已确认用户的头像 404 时刷新一次资料。任一素材失败时默认不生成并返回 `{"status":"partial","failed":[…],"loaded":[…],"hint":…}`；只有 `allow_partial=true` 才用成功子集生成。有参考图时沿用 `/images/edits`；提供商拒绝参考图 GIF 时按工具错误返回，不切换 Chat 或其他生成路线。
 

@@ -28,11 +28,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from shuiyuan_auto_reply.features.mention.image_generation import (
+    _SUPPORTED_ASPECT_RATIOS,
     ImageGenerationService,
     _download_and_encode,
     _encode_bytes,
     _image_api_endpoint,
     _image_request_timeout,
+    _openai_image_size,
 )
 from shuiyuan_auto_reply.infrastructure.persistence import SQLiteStateStore
 
@@ -212,7 +214,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             return web.json_response(self._images_response_b64())
 
         await self._start_images_server(handler)
-        result = await self.generate("测试原生图片生成接口调用")
+        result = await self.generate("测试原生图片生成接口调用", aspect_ratio="3:4")
 
         payload = self.assertGenerated(result)
         self.assertEqual((payload["width"], payload["height"]), (4, 4))
@@ -221,7 +223,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
             {
                 "model": "test-image-model",
                 "prompt": "测试原生图片生成接口调用",
-                "size": "auto",
+                "size": "1024x1360",
             },
         )
         self.assertNotIn("messages", self.requests[0])
@@ -262,6 +264,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         await self._start_images_server(generations_handler, edits_handler)
         result = await self.generate(
             "参考图编辑测试生图功能验证",
+            aspect_ratio="3:4",
             references=[{"key": "ref", "url": reference, "label": "原参考图1"}],
         )
 
@@ -275,7 +278,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
                     "参考图编辑测试生图功能验证\n\n"
                     "【实际参考素材对应关系】\n参考图1：原参考图1"
                 ),
-                "size": "auto",
+                "size": "1024x1360",
                 "image_count": 1,
                 "image_content_types": ["image/png"],
                 "image_bytes": [len(base64.b64decode(reference.split(",", 1)[1]))],
@@ -332,6 +335,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         self.assertGenerated(result)
         self.assertEqual(Path(self.last_artifact.local_path).read_bytes(), raw)
         self.assertEqual(self.last_artifact.mime_type, "image/gif")
+        self.assertEqual(self.requests[0]["size"], "1024x1024")
 
     async def test_gif_generation_preserves_animation_and_uses_provider_defaults(self):
         raw = _gif_bytes()
@@ -344,7 +348,9 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
 
         await self._start_images_server(handler)
         result = await self.generate(
-            "生成一只眨眼后恢复表情的猫咪动图", output_format="gif"
+            "生成一只眨眼后恢复表情的猫咪动图",
+            aspect_ratio="3:2",
+            output_format="gif",
         )
 
         payload = self.assertGenerated(result)
@@ -352,7 +358,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             set(self.requests[0]), {"model", "prompt", "size", "output_format", "n"}
         )
-        self.assertEqual(self.requests[0]["size"], "auto")
+        self.assertEqual(self.requests[0]["size"], "1536x1024")
         self.assertEqual(self.requests[0]["output_format"], "gif")
         self.assertEqual(self.requests[0]["n"], 1)
         artifact = self.last_artifact
@@ -388,6 +394,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         await self._start_images_server(handler, handler)
         result = await self.generate(
             "参考图中的猫咪眨眼后回到起始表情",
+            aspect_ratio="2:3",
             references=[{"key": "cat", "url": _png_data_url(), "label": "猫咪"}],
             output_format="gif",
         )
@@ -397,7 +404,7 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             set(fields), {"model", "prompt", "size", "output_format", "n", "image[]"}
         )
-        self.assertEqual(fields["size"], "auto")
+        self.assertEqual(fields["size"], "1024x1536")
         self.assertEqual(fields["output_format"], "gif")
         self.assertEqual(fields["n"], "1")
         self.assertEqual(
@@ -754,6 +761,22 @@ class TestImageAPIEndpoint(unittest.TestCase):
             _image_api_endpoint("https://4router.net/v1/", "edits"),
             "https://4router.net/v1/images/edits",
         )
+
+
+class TestOpenAIImageSize(unittest.TestCase):
+    def test_edges_are_aligned_for_custom_portrait_ratio(self):
+        self.assertEqual(_openai_image_size("3:4"), "1024x1360")
+
+    def test_supported_ratios_keep_short_edge_at_1024(self):
+        for aspect_ratio in sorted(_SUPPORTED_ASPECT_RATIOS):
+            with self.subTest(aspect_ratio=aspect_ratio):
+                width, height = map(int, _openai_image_size(aspect_ratio).split("x"))
+                self.assertEqual(min(width, height), 1024)
+                self.assertEqual(width % 16, 0)
+                self.assertEqual(height % 16, 0)
+                self.assertLessEqual(max(width, height), 3840)
+                self.assertLessEqual(width * height, 8_294_400)
+                self.assertLessEqual(max(width, height) / min(width, height), 3)
 
 
 if __name__ == "__main__":

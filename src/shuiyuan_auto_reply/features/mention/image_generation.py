@@ -4,6 +4,7 @@ import io
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import socket as _socket
@@ -45,6 +46,11 @@ _RETRYABLE_HTTP_STATUSES = {408, 429}
 _TCP_KEEPALIVE_IDLE_SECONDS = 30  # macOS: TCP_KEEPALIVE; Linux: TCP_KEEPIDLE
 _TCP_KEEPALIVE_INTERVAL_SECONDS = 15
 _TCP_KEEPALIVE_COUNT = 3
+_NATIVE_SIZE_ALIGNMENT = 16
+_NATIVE_MIN_PIXELS = 655_360
+_NATIVE_MAX_PIXELS = 8_294_400
+_NATIVE_MAX_EDGE = 3840
+_NATIVE_MAX_ASPECT_RATIO = 3.0
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +140,22 @@ async def close_shared_session() -> None:
     _shared_session_loop = None
 
 
+_SUPPORTED_ASPECT_RATIOS = {
+    "1:1",
+    "2:3",
+    "3:2",
+    "3:4",
+    "4:3",
+    "4:5",
+    "5:4",
+    "9:16",
+    "16:9",
+    "21:9",
+    "1:4",
+    "4:1",
+    "1:8",
+    "8:1",
+}
 _DATA_URL_RE = re.compile(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", re.DOTALL)
 
 
@@ -222,6 +244,61 @@ def _image_api_endpoint(base_url: str, image_operation: str) -> str:
     if image_operation not in {"generations", "edits"}:
         raise ValueError(f"Unsupported image operation: {image_operation}")
     return f"{base_url.strip().rstrip('/')}/images/{image_operation}"
+
+
+def _aligned_native_edge(value: float, *, direction: str = "nearest") -> int:
+    units = value / _NATIVE_SIZE_ALIGNMENT
+    if direction == "up":
+        units = math.ceil(units)
+    elif direction == "down":
+        units = math.floor(units)
+    else:
+        units = round(units)
+    return max(_NATIVE_SIZE_ALIGNMENT, int(units) * _NATIVE_SIZE_ALIGNMENT)
+
+
+def _openai_image_size(aspect_ratio: str) -> str:
+    short_edge = 1024
+    width_ratio, height_ratio = (int(value) for value in aspect_ratio.split(":", 1))
+    requested_ratio = width_ratio / height_ratio
+    output_ratio = min(
+        max(requested_ratio, 1 / _NATIVE_MAX_ASPECT_RATIO),
+        _NATIVE_MAX_ASPECT_RATIO,
+    )
+    if requested_ratio != output_ratio:
+        logger.warning(
+            "OpenAI Images endpoint does not support aspect ratio %s; clamping to %.0f:1 limit",
+            aspect_ratio,
+            _NATIVE_MAX_ASPECT_RATIO,
+        )
+
+    if output_ratio >= 1:
+        width = _aligned_native_edge(short_edge * output_ratio)
+        height = _aligned_native_edge(short_edge)
+    else:
+        width = _aligned_native_edge(short_edge)
+        height = _aligned_native_edge(short_edge / output_ratio)
+
+    pixel_count = width * height
+    if pixel_count < _NATIVE_MIN_PIXELS:
+        scale = math.sqrt(_NATIVE_MIN_PIXELS / pixel_count)
+        width = _aligned_native_edge(width * scale, direction="up")
+        height = _aligned_native_edge(height * scale, direction="up")
+
+    pixel_count = width * height
+    if max(width, height) > _NATIVE_MAX_EDGE or pixel_count > _NATIVE_MAX_PIXELS:
+        scale = min(
+            _NATIVE_MAX_EDGE / max(width, height),
+            math.sqrt(_NATIVE_MAX_PIXELS / pixel_count),
+        )
+        width = _aligned_native_edge(width * scale, direction="down")
+        height = _aligned_native_edge(height * scale, direction="down")
+
+    if width > height * _NATIVE_MAX_ASPECT_RATIO:
+        width = int(height * _NATIVE_MAX_ASPECT_RATIO)
+    elif height > width * _NATIVE_MAX_ASPECT_RATIO:
+        height = int(width * _NATIVE_MAX_ASPECT_RATIO)
+    return f"{width}x{height}"
 
 
 async def _read_images_response(response: aiohttp.ClientResponse) -> bytes:
@@ -699,6 +776,7 @@ async def _submit_image_request(
     api_key: str,
     image_model: str,
     prompt: str,
+    size: str,
     output_format: Literal["png", "gif"],
     reference_data_urls: list[str],
     request_id: str,
@@ -716,7 +794,7 @@ async def _submit_image_request(
     request_fields: dict[str, str | int] = {
         "model": image_model,
         "prompt": prompt,
-        "size": "auto",
+        "size": size,
     }
     if output_format == "gif":
         request_fields.update(output_format="gif", n=1)
@@ -832,6 +910,7 @@ class ImageGenerationService:
     async def generate(
         self,
         prompt: str,
+        aspect_ratio: str = "1:1",
         references: list[dict[str, str]] | None = None,
         allow_partial: bool = False,
         output_format: Literal["png", "gif"] = "png",
@@ -845,7 +924,9 @@ class ImageGenerationService:
         水源头像地址或本轮工具返回的图片 URL，label 说明该图代表谁或什么；
         任一参考图读取失败时默认不生成，只有用户接受缺项时才传 allow_partial=true。
         output_format 默认 png；用户要求动图时传 gif，并在 prompt 中描述动作与循环要求。
-        大小和比例由模型自动选择，画幅偏好写进 prompt；不指定帧数或帧时长。
+        aspect_ratio 默认 1:1，支持 2:3、3:2、3:4、4:3、4:5、5:4、9:16、16:9、21:9、
+        1:4、4:1、1:8、8:1；静态图和 GIF 均以短边 1024px 计算尺寸，宽高对齐到 16px，
+        超过 3:1 的长宽比按 3:1 限制处理；不指定帧数或帧时长。
         GIF 回看仅为首帧预览，不能据此声称已核验整段动作。
         返回：{"status":"ok","image":"[图N]","width","height"} —— 在最终回复中原样
         写 [图N] 放这张图，不要写任何图片链接；{"status":"partial","failed":[…]} 表示
@@ -867,6 +948,8 @@ class ImageGenerationService:
             return _failure("not_configured", "IMAGE_GEN_API_URL 未配置"), None
         if output_format not in {"png", "gif"}:
             return _failure("invalid_format", "output_format 只支持 png 或 gif"), None
+        if aspect_ratio not in _SUPPORTED_ASPECT_RATIOS:
+            aspect_ratio = "1:1"
         if output_format == "gif":
             prompt += (
                 "\n\n【输出要求】输出真正的 animated GIF 动图文件，"
@@ -942,6 +1025,7 @@ class ImageGenerationService:
                 api_key=api_key,
                 image_model=image_model,
                 prompt=prompt,
+                size=_openai_image_size(aspect_ratio),
                 output_format=output_format,
                 reference_data_urls=reference_data_urls,
                 request_id=request_id,
