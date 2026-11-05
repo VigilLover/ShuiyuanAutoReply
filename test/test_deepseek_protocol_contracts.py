@@ -1,8 +1,9 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from openai.types.responses import Response
 
 from shuiyuan_auto_reply.bootstrap.settings import (
     DeepSeekApiFormat,
@@ -279,6 +280,132 @@ class DeepSeekRequestContractTests(unittest.TestCase):
         ]
 
         self.assertEqual(model.parse_model_output(raw), "公开回答。")
+
+
+class DeepSeekResponsesOutputContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reasoning_survives_client_conversion_and_replay(self):
+        thought = "完整思考\n" * 1000
+        parser = MentionDeepSeekModel.__new__(MentionDeepSeekModel)
+        for field, part_type in (
+            ("content", "reasoning_text"),
+            ("summary", "summary_text"),
+        ):
+            with self.subTest(field=field):
+                model = _mk_deepseek_llm(
+                    "test-key",
+                    DEEPSEEK_DEFAULT_MODEL,
+                    _settings(DeepSeekApiFormat.RESPONSES),
+                )
+                reasoning = {
+                    "type": "reasoning",
+                    "id": "rs_fixture",
+                    "summary": [],
+                    field: [{"type": part_type, "text": thought}],
+                }
+                function_call = {
+                    "type": "function_call",
+                    "id": "fc_fixture",
+                    "call_id": "call_fixture",
+                    "name": "lookup",
+                    "arguments": '{"q":"fixture"}',
+                    "status": "completed",
+                }
+                response = Response.model_validate(
+                    {
+                        "id": "resp_fixture",
+                        "object": "response",
+                        "created_at": 0,
+                        "error": None,
+                        "incomplete_details": None,
+                        "instructions": None,
+                        "metadata": {},
+                        "model": DEEPSEEK_DEFAULT_MODEL,
+                        "output": [
+                            reasoning,
+                            function_call,
+                            {
+                                "type": "message",
+                                "id": "msg_fixture",
+                                "role": "assistant",
+                                "status": "completed",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": "公开回答",
+                                        "annotations": [],
+                                    }
+                                ],
+                            },
+                        ],
+                        "parallel_tool_calls": True,
+                        "temperature": 1,
+                        "tool_choice": "auto",
+                        "tools": [],
+                        "top_p": 1,
+                        "status": "completed",
+                    }
+                )
+                raw = SimpleNamespace(parse=lambda: response)
+                with patch.object(
+                    model.root_async_client.responses.with_raw_response,
+                    "create",
+                    new=AsyncMock(return_value=raw),
+                ):
+                    message = await model.ainvoke([HumanMessage(content="问题")])
+
+                before = message.model_dump()
+                self.assertEqual(extract_reasoning_text(message), thought)
+                self.assertEqual(message.model_dump(), before)
+                self.assertEqual(
+                    parser.parse_model_output(message.content),
+                    "公开回答",
+                )
+                self.assertEqual(
+                    message.tool_calls,
+                    [
+                        {
+                            "type": "tool_call",
+                            "id": "call_fixture",
+                            "name": "lookup",
+                            "args": {"q": "fixture"},
+                        }
+                    ],
+                )
+                payload = model._get_request_payload(
+                    [
+                        HumanMessage(content="问题"),
+                        message,
+                        ToolMessage(
+                            content="查询结果",
+                            tool_call_id="call_fixture",
+                            name="lookup",
+                        ),
+                        HumanMessage(content="继续"),
+                    ]
+                )
+                self.assertIn(reasoning, payload["input"])
+                self.assertEqual(
+                    [
+                        item
+                        for item in payload["input"]
+                        if item["type"] == "function_call"
+                    ],
+                    [function_call],
+                )
+                self.assertEqual(
+                    [
+                        item
+                        for item in payload["input"]
+                        if item["type"] == "function_call_output"
+                    ],
+                    [
+                        {
+                            "type": "function_call_output",
+                            "call_id": "call_fixture",
+                            "output": "查询结果",
+                        }
+                    ],
+                )
 
 
 class DeepSeekToolImageContractTests(unittest.IsolatedAsyncioTestCase):
