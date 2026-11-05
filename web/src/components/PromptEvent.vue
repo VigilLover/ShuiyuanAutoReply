@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { PhCaretRight } from '@phosphor-icons/vue'
+import EventDisclosure from './EventDisclosure.vue'
 
 type PromptMessage = {
   role?: string
@@ -31,12 +31,12 @@ function contentText(value: unknown) {
 </script>
 
 <template>
-  <details class="prompt-event" :open="open">
-    <summary>
-      <PhCaretRight class="prompt-event-caret" :size="13" />
-      <span>已发送给模型的提示词</span>
-      <small>{{ payload.message_count || messages.length }} 条消息 · {{ payload.scope || 'unknown' }}</small>
-    </summary>
+  <EventDisclosure
+    class="prompt-event"
+    title="已发送给模型的提示词"
+    :metadata="`${payload.message_count || messages.length} 条消息 · ${payload.scope || 'unknown'}`"
+    :open="open"
+  >
     <div v-if="messages.length" class="prompt-message-list">
       <section v-for="(message, index) in messages" :key="index" class="prompt-message">
         <div class="prompt-message-role">
@@ -48,5 +48,5 @@ function contentText(value: unknown) {
       </section>
     </div>
     <pre v-else class="prompt-fallback">{{ contentText(payload.summary || payload) }}</pre>
-  </details>
+  </EventDisclosure>
 </template>
