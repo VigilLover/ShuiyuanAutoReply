@@ -4,7 +4,6 @@ import io
 import ipaddress
 import json
 import logging
-import math
 import os
 import re
 import socket as _socket
@@ -12,6 +11,7 @@ import time
 import uuid
 import weakref
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
@@ -36,7 +36,7 @@ _MAX_TOTAL_REFERENCE_BYTES = 20 * 1024 * 1024
 # Reduces server-side processing time to stay under the ~60s Cloudflare/Caddy proxy timeout.
 _MAX_REFERENCE_LONG_EDGE = 1024
 _REFERENCE_JPEG_QUALITY = 80
-_DEFAULT_IMAGE_MODEL = "gpt-image-2"
+_DEFAULT_IMAGE_MODEL = "gpt-image-2.6"
 _DEFAULT_TIMEOUT_SECONDS = 600.0
 _DEFAULT_MAX_API_ATTEMPTS = 3
 _MAX_CONFIGURED_API_ATTEMPTS = 10
@@ -45,11 +45,6 @@ _RETRYABLE_HTTP_STATUSES = {408, 429}
 _TCP_KEEPALIVE_IDLE_SECONDS = 30  # macOS: TCP_KEEPALIVE; Linux: TCP_KEEPIDLE
 _TCP_KEEPALIVE_INTERVAL_SECONDS = 15
 _TCP_KEEPALIVE_COUNT = 3
-_NATIVE_SIZE_ALIGNMENT = 16
-_NATIVE_MIN_PIXELS = 655_360
-_NATIVE_MAX_PIXELS = 8_294_400
-_NATIVE_MAX_EDGE = 3840
-_NATIVE_MAX_ASPECT_RATIO = 3.0
 
 logger = logging.getLogger(__name__)
 
@@ -139,22 +134,6 @@ async def close_shared_session() -> None:
     _shared_session_loop = None
 
 
-_SUPPORTED_ASPECT_RATIOS = {
-    "1:1",
-    "2:3",
-    "3:2",
-    "3:4",
-    "4:3",
-    "4:5",
-    "5:4",
-    "9:16",
-    "16:9",
-    "21:9",
-    "1:4",
-    "4:1",
-    "1:8",
-    "8:1",
-}
 _DATA_URL_RE = re.compile(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", re.DOTALL)
 
 
@@ -243,61 +222,6 @@ def _image_api_endpoint(base_url: str, image_operation: str) -> str:
     if image_operation not in {"generations", "edits"}:
         raise ValueError(f"Unsupported image operation: {image_operation}")
     return f"{base_url.strip().rstrip('/')}/images/{image_operation}"
-
-
-def _aligned_native_edge(value: float, *, direction: str = "nearest") -> int:
-    units = value / _NATIVE_SIZE_ALIGNMENT
-    if direction == "up":
-        units = math.ceil(units)
-    elif direction == "down":
-        units = math.floor(units)
-    else:
-        units = round(units)
-    return max(_NATIVE_SIZE_ALIGNMENT, int(units) * _NATIVE_SIZE_ALIGNMENT)
-
-
-def _openai_image_size(aspect_ratio: str) -> str:
-    short_edge = 1024
-    width_ratio, height_ratio = (int(value) for value in aspect_ratio.split(":", 1))
-    requested_ratio = width_ratio / height_ratio
-    output_ratio = min(
-        max(requested_ratio, 1 / _NATIVE_MAX_ASPECT_RATIO),
-        _NATIVE_MAX_ASPECT_RATIO,
-    )
-    if requested_ratio != output_ratio:
-        logger.warning(
-            "OpenAI Images endpoint does not support aspect ratio %s; clamping to %.0f:1 limit",
-            aspect_ratio,
-            _NATIVE_MAX_ASPECT_RATIO,
-        )
-
-    if output_ratio >= 1:
-        width = _aligned_native_edge(short_edge * output_ratio)
-        height = _aligned_native_edge(short_edge)
-    else:
-        width = _aligned_native_edge(short_edge)
-        height = _aligned_native_edge(short_edge / output_ratio)
-
-    pixel_count = width * height
-    if pixel_count < _NATIVE_MIN_PIXELS:
-        scale = math.sqrt(_NATIVE_MIN_PIXELS / pixel_count)
-        width = _aligned_native_edge(width * scale, direction="up")
-        height = _aligned_native_edge(height * scale, direction="up")
-
-    pixel_count = width * height
-    if max(width, height) > _NATIVE_MAX_EDGE or pixel_count > _NATIVE_MAX_PIXELS:
-        scale = min(
-            _NATIVE_MAX_EDGE / max(width, height),
-            math.sqrt(_NATIVE_MAX_PIXELS / pixel_count),
-        )
-        width = _aligned_native_edge(width * scale, direction="down")
-        height = _aligned_native_edge(height * scale, direction="down")
-
-    if width > height * _NATIVE_MAX_ASPECT_RATIO:
-        width = int(height * _NATIVE_MAX_ASPECT_RATIO)
-    elif height > width * _NATIVE_MAX_ASPECT_RATIO:
-        height = int(width * _NATIVE_MAX_ASPECT_RATIO)
-    return f"{width}x{height}"
 
 
 async def _read_images_response(response: aiohttp.ClientResponse) -> bytes:
@@ -775,7 +699,7 @@ async def _submit_image_request(
     api_key: str,
     image_model: str,
     prompt: str,
-    size: str,
+    output_format: Literal["png", "gif"],
     reference_data_urls: list[str],
     request_id: str,
 ) -> bytes | str:
@@ -789,8 +713,15 @@ async def _submit_image_request(
         edit_images.append(
             (reference_bytes, mime_type, f"reference_{index}{extension}")
         )
+    request_fields: dict[str, str | int] = {
+        "model": image_model,
+        "prompt": prompt,
+        "size": "auto",
+    }
+    if output_format == "gif":
+        request_fields.update(output_format="gif", n=1)
     request_body = json.dumps(
-        {"model": image_model, "prompt": prompt, "size": size},
+        request_fields,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
@@ -822,9 +753,8 @@ async def _submit_image_request(
         try:
             if edit_images:
                 form = aiohttp.FormData()
-                form.add_field("model", image_model)
-                form.add_field("prompt", prompt)
-                form.add_field("size", size)
+                for name, value in request_fields.items():
+                    form.add_field(name, str(value))
                 for reference_bytes, mime_type, filename in edit_images:
                     form.add_field(
                         "image[]",
@@ -902,18 +832,21 @@ class ImageGenerationService:
     async def generate(
         self,
         prompt: str,
-        aspect_ratio: str = "1:1",
         references: list[dict[str, str]] | None = None,
         allow_partial: bool = False,
+        output_format: Literal["png", "gif"] = "png",
     ) -> tuple[str, GeneratedImageArtifact | None]:
-        """根据文字描述生成一张图片，可附带带标签的参考图。
+        """根据文字描述生成一张静态图片或 GIF 动图，可附带带标签的参考图。
 
-        何时用：用户要求生成、绘制、创作或修改图片时；这是唯一能产生图片的途径。
+        何时用：用户要求生成、绘制、创作或修改图片、GIF 动图时；这是唯一能产生图片的途径。
         参数要点：prompt 用中文详细描述画面（无参考图时写清外貌、服饰、姿态、光影、
         背景、氛围；有参考图时简述要求并说明"参照参考图"）；references 为
         [{"key","url","label"}]，url 可以是本轮图片句柄 [图N]、历史图片句柄 #hN、
         水源头像地址或本轮工具返回的图片 URL，label 说明该图代表谁或什么；
         任一参考图读取失败时默认不生成，只有用户接受缺项时才传 allow_partial=true。
+        output_format 默认 png；用户要求动图时传 gif，并在 prompt 中描述动作与循环要求。
+        大小和比例由模型自动选择，画幅偏好写进 prompt；不指定帧数或帧时长。
+        GIF 回看仅为首帧预览，不能据此声称已核验整段动作。
         返回：{"status":"ok","image":"[图N]","width","height"} —— 在最终回复中原样
         写 [图N] 放这张图，不要写任何图片链接；{"status":"partial","failed":[…]} 表示
         参考图缺失、尚未生成；{"status":"error","code","message"} 表示失败原因。
@@ -932,8 +865,13 @@ class ImageGenerationService:
             return _failure("not_configured", "IMAGE_GEN_API_KEY 未配置"), None
         if not api_url:
             return _failure("not_configured", "IMAGE_GEN_API_URL 未配置"), None
-        if aspect_ratio not in _SUPPORTED_ASPECT_RATIOS:
-            aspect_ratio = "1:1"
+        if output_format not in {"png", "gif"}:
+            return _failure("invalid_format", "output_format 只支持 png 或 gif"), None
+        if output_format == "gif":
+            prompt += (
+                "\n\n【输出要求】输出真正的 animated GIF 动图文件，"
+                "按上述动作和循环要求呈现，不要输出静态图片或拼图。"
+            )
 
         reference_data_urls: list[str] = []
         if references:
@@ -1004,7 +942,7 @@ class ImageGenerationService:
                 api_key=api_key,
                 image_model=image_model,
                 prompt=prompt,
-                size=_openai_image_size(aspect_ratio),
+                output_format=output_format,
                 reference_data_urls=reference_data_urls,
                 request_id=request_id,
             )
@@ -1025,6 +963,12 @@ class ImageGenerationService:
                     "WEBP": ".webp",
                     "GIF": ".gif",
                 }.get(image_format, ".png")
+                if output_format == "gif":
+                    if image_format != "GIF" or not generated.is_animated:
+                        raise ValueError("请求 GIF 动图，但返回的不是多帧 GIF")
+                    for frame in range(generated.n_frames):
+                        generated.seek(frame)
+                        generated.load()
         except Exception as exc:
             logger.error("Generated image is not decodable: %s", exc)
             return _failure("invalid_image", f"生成结果不是有效图片: {exc}"), None
@@ -1072,7 +1016,14 @@ class ImageGenerationService:
                 image=token,
                 width=width,
                 height=height,
-                note=f"在最终回复中原样写 {token} 放这张图，不要写图片链接",
+                note=(
+                    f"在最终回复中原样写 {token} 放这张图，不要写图片链接"
+                    + (
+                        "；GIF 回看仅为首帧预览，不能据此核验整段动作"
+                        if output_format == "gif"
+                        else ""
+                    )
+                ),
             ),
             artifact,
         )
