@@ -335,7 +335,6 @@ async def stream_message(conversation_id: str, request: Request):
                         },
                     )
                 await asyncio.sleep(0.1)
-            result = await reply_task
             run_events = await state_store(request).list_events_for_request(request_id)
             for event in run_events:
                 if event.id <= last_event_id:
@@ -350,6 +349,9 @@ async def stream_message(conversation_id: str, request: Request):
                         **event.payload,
                     },
                 )
+            # A failed task has also committed its final events. Deliver those
+            # before awaiting it so stream.error cannot hide the last model round.
+            result = await reply_task
             yield encode(
                 "message.completed",
                 {

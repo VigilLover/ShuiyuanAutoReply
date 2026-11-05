@@ -1,5 +1,6 @@
 """Offline graph regression: generic forum lookup and user resolution, no image scenario branching."""
 
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -13,6 +14,9 @@ from shuiyuan_auto_reply.features.mention.chat_pipeline import ChatOrchestrator
 from shuiyuan_auto_reply.features.mention.mention_chat_model import (
     MentionChatModel,
     describe_model_failure,
+)
+from shuiyuan_auto_reply.features.mention.mention_deepseek_model import (
+    MentionDeepSeekModel,
 )
 from shuiyuan_auto_reply.shuiyuan.objects import User
 
@@ -79,10 +83,193 @@ class OfflineChat(MentionChatModel):
         return AIMessage(content="已读取指定帖子并确认用户资料。")
 
     def parse_model_output(self, raw_output):
-        return str(raw_output or "")
+        return MentionDeepSeekModel.parse_model_output(self, raw_output)
 
 
 class ForumAgentFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def generate(self, runtime):
+        return await runtime.get_pumpkin_response(
+            None,
+            None,
+            "请总结",
+            User(id=1, username="requester", name=None),
+            session_id="web-session",
+            load_forum_context=False,
+        )
+
+    async def test_reasoning_is_never_used_as_final_text_in_either_scope(self):
+        for scope in (PromptScope.FORUM, PromptScope.WEB):
+            with self.subTest(scope=scope):
+                runtime = OfflineChat(SimpleNamespace())
+                runtime.prompt_scope = scope
+                for message in (
+                    AIMessage(
+                        content="",
+                        additional_kwargs={"reasoning_content": "private reasoning"},
+                    ),
+                    AIMessage(
+                        content=[
+                            {
+                                "type": "reasoning",
+                                "content": [
+                                    {
+                                        "type": "reasoning_text",
+                                        "text": "private reasoning",
+                                    }
+                                ],
+                            }
+                        ]
+                    ),
+                ):
+                    result = await runtime._finalize_response({"messages": [message]})
+                    self.assertEqual(result["final_text"], "")
+
+    async def test_empty_response_gets_one_final_only_retry_and_saves_only_answer(self):
+        model = SimpleNamespace(
+            get_user_by_username=AsyncMock(
+                return_value=SimpleNamespace(
+                    id=9, username="Alice", name=None, avatar_template="/a/{size}.png"
+                )
+            )
+        )
+        runtime = OfflineChat(model)
+        runtime.llm_with_tools = SimpleNamespace(
+            ainvoke=AsyncMock(
+                side_effect=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "users",
+                                "id": "lookup",
+                                "args": {"username": "Alice"},
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        additional_kwargs={"reasoning_content": "private first"},
+                    ),
+                ]
+            )
+        )
+        runtime.llm_final = SimpleNamespace(
+            ainvoke=AsyncMock(
+                return_value=AIMessage(
+                    content="公开正文",
+                    additional_kwargs={"reasoning_content": "private retry"},
+                )
+            )
+        )
+        events = AsyncMock()
+        with patch(
+            "shuiyuan_auto_reply.features.mention.mention_chat_model.emit_event", events
+        ):
+            result = await self.generate(runtime)
+        self.assertEqual(result, "公开正文")
+        self.assertEqual(runtime.llm_with_tools.ainvoke.await_count, 2)
+        runtime.llm_final.ainvoke.assert_awaited_once()
+        model.get_user_by_username.assert_awaited_once_with("Alice")
+        prompt = runtime.llm_final.ainvoke.await_args.args[0].to_messages()
+        self.assertFalse(
+            any(
+                getattr(message, "tool_calls", None) or isinstance(message, ToolMessage)
+                for message in prompt
+            )
+        )
+        self.assertIn(
+            "【可用上下文】", "\n".join(str(message.content) for message in prompt)
+        )
+        thoughts = [
+            call.args[1]["text"]
+            for call in events.await_args_list
+            if call.args[0] == "model.reasoning"
+        ]
+        self.assertEqual(thoughts, ["private first", "private retry"])
+        history = next(iter(runtime._histories.values())).messages
+        self.assertEqual(history[-1].content, "公开正文")
+        self.assertFalse(any("private" in str(message.content) for message in history))
+
+    async def test_invalid_final_response_fails_after_exactly_one_retry(self):
+        for content in (
+            "",
+            " \n ",
+            [
+                {
+                    "type": "reasoning",
+                    "content": [{"type": "reasoning_text", "text": "private"}],
+                }
+            ],
+            '<tool_call>{"name":"users"}</tool_call>',
+            "![旧图](upload://stale.jpeg)",
+        ):
+            for scope in (PromptScope.FORUM, PromptScope.WEB):
+                with self.subTest(content=content, scope=scope):
+                    runtime = OfflineChat(SimpleNamespace())
+                    runtime.prompt_scope = scope
+                    message = AIMessage(
+                        content=content,
+                        additional_kwargs={"reasoning_content": "private"},
+                        usage_metadata={
+                            "input_tokens": 4,
+                            "output_tokens": 2,
+                            "total_tokens": 6,
+                        },
+                    )
+                    runtime.llm_with_tools = SimpleNamespace(
+                        ainvoke=AsyncMock(return_value=message)
+                    )
+                    runtime.llm_final = SimpleNamespace(
+                        ainvoke=AsyncMock(return_value=message)
+                    )
+                    with self.assertRaisesRegex(RuntimeError, "重试后仍失败"):
+                        await self.generate(runtime)
+                    runtime.llm_with_tools.ainvoke.assert_awaited_once()
+                    runtime.llm_final.ainvoke.assert_awaited_once()
+                    self.assertFalse(
+                        any(history.messages for history in runtime._histories.values())
+                    )
+
+    async def test_final_retry_does_not_execute_returned_tool_calls(self):
+        model = SimpleNamespace(get_user_by_username=AsyncMock())
+        runtime = OfflineChat(model)
+        runtime.llm_with_tools = SimpleNamespace(
+            ainvoke=AsyncMock(return_value=AIMessage(content=""))
+        )
+        runtime.llm_final = SimpleNamespace(
+            ainvoke=AsyncMock(
+                return_value=AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "users",
+                            "id": "unexpected",
+                            "args": {"username": "Alice"},
+                        }
+                    ],
+                )
+            )
+        )
+        with self.assertRaisesRegex(RuntimeError, "重试后仍失败"):
+            await self.generate(runtime)
+        runtime.llm_final.ainvoke.assert_awaited_once()
+        model.get_user_by_username.assert_not_awaited()
+
+    async def test_expired_deadline_prevents_retry_request(self):
+        runtime = OfflineChat(SimpleNamespace())
+
+        async def empty(_prompt):
+            current_turn.get().deadline = time.monotonic() - 1
+            return AIMessage(content="")
+
+        runtime.llm_with_tools = SimpleNamespace(ainvoke=AsyncMock(side_effect=empty))
+        runtime.llm_final = SimpleNamespace(
+            ainvoke=AsyncMock(return_value=AIMessage(content="too late"))
+        )
+        with self.assertRaisesRegex(TimeoutError, "时间预算已耗尽"):
+            await self.generate(runtime)
+        runtime.llm_final.ainvoke.assert_not_awaited()
+
     @staticmethod
     def finalizer_state():
         return {

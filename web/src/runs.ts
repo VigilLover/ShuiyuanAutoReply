@@ -24,6 +24,7 @@ export interface Round {
   phase?: string
   failed?: string
   prompt?: RunEvent
+  reasoning?: string
   tools: ToolStep[]
 }
 
@@ -48,6 +49,7 @@ export const STOP_REASON_LABELS: Record<string, string> = {
   time_budget: '时间预算用尽',
   tool_time_budget: '工具批次超时',
   model_or_time_failure: '模型调用失败后收尾',
+  empty_response: '空正文重试',
   source_complete: '来源已读完',
 }
 
@@ -125,20 +127,21 @@ export function groupRounds(events: RunEvent[]): Round[] {
         round.startedAt = event.created_at
         break
       }
-      case 'model.completed': {
+      case 'model.reasoning': {
+        if (typeof payload.text === 'string' && payload.text.trim()) ensureRound().reasoning = payload.text
+        break
+      }
+      case 'model.completed':
+      case 'model.failed': {
         const round = ensureRound()
         const usage = usageOf(payload)
-        round.elapsed = num(payload.elapsed_seconds)
+        if (payload.elapsed_seconds !== undefined) round.elapsed = num(payload.elapsed_seconds)
         round.inputTokens += usage.input
         round.outputTokens += usage.output
         round.reasoningTokens += usage.reasoning
         round.cacheReadTokens += usage.cacheRead
-        break
-      }
-      case 'model.failed': {
-        const round = ensureRound()
-        round.failed = String(payload.error || '模型调用失败')
         round.phase = String(payload.phase || round.phase || '')
+        if (event.type === 'model.failed') round.failed = String(payload.error || '模型调用失败')
         break
       }
       case 'retrieval.progress': {

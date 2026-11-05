@@ -30,6 +30,7 @@ from shuiyuan_auto_reply.domain import (
     ConversationRef,
 )
 from shuiyuan_auto_reply.embeddings import get_global_text_embeddings
+from shuiyuan_auto_reply.infrastructure.llm.deepseek import extract_reasoning_text
 from shuiyuan_auto_reply.infrastructure.prompts import FilePromptRepository
 from shuiyuan_auto_reply.shuiyuan.objects import User
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
@@ -42,7 +43,6 @@ from .context_budget import (
     compact_content,
     project_messages,
     repair_tool_pairing,
-    text_value,
 )
 from .finalize import FinalizeMixin
 from .graph_state import MentionGraphState
@@ -592,6 +592,7 @@ class MentionChatModel(ContextMixin, ToolsRuntimeMixin, FinalizeMixin):
 
         model_started_at = time.monotonic()
         await emit_event("model.started", {})
+        phase = "final" if final_phase else "investigate"
         try:
             model = (
                 (getattr(self, "llm_final", None) or self.llm)
@@ -599,6 +600,8 @@ class MentionChatModel(ContextMixin, ToolsRuntimeMixin, FinalizeMixin):
                 else self.llm_with_tools
             )
             if turn:
+                if time.monotonic() >= turn.deadline:
+                    raise TimeoutError("本轮时间预算已耗尽，无法生成最终正文。")
                 async with asyncio.timeout(
                     turn.control.call_timeout(turn.deadline, final=final_phase)
                 ):
@@ -613,29 +616,37 @@ class MentionChatModel(ContextMixin, ToolsRuntimeMixin, FinalizeMixin):
                 final_phase,
                 failure,
             )
-            if turn:
-                await emit_event(
-                    "model.failed",
-                    {"phase": turn.progress.phase, "error": failure},
-                )
+            await emit_event(
+                "model.failed",
+                {
+                    "phase": phase,
+                    "error": failure,
+                    "elapsed_seconds": round(time.monotonic() - model_started_at, 3),
+                },
+            )
             if not turn:
                 raise
             if not final_phase:
                 turn.control.stop(turn.progress, "model_or_time_failure")
                 return await self._call_model(state)
             raise
-        invalid_final_response = bool(
-            final_phase
-            and (
-                getattr(response, "tool_calls", None)
-                or not getattr(response, "content", None)
-                or self._contains_tool_markup(
-                    text_value(getattr(response, "content", ""))
+        reasoning = extract_reasoning_text(response)
+        if reasoning:
+            await emit_event("model.reasoning", {"text": reasoning})
+        public_text = self.parse_model_output(response.content)
+        tool_calls = getattr(response, "tool_calls", None)
+        invalid_response = bool(
+            (final_phase and tool_calls)
+            or (
+                not tool_calls
+                and (
+                    (not public_text.strip() and not state.get("generated_artifacts"))
+                    or self._contains_tool_markup(public_text)
                 )
             )
         )
         usage = getattr(response, "usage_metadata", None) or {}
-        if invalid_final_response:
+        if invalid_response:
             response = AIMessage(content="")
         if (
             turn
@@ -656,21 +667,23 @@ class MentionChatModel(ContextMixin, ToolsRuntimeMixin, FinalizeMixin):
                     "cache_hits": turn.cache_hits,
                 },
             )
-        if invalid_final_response:
+        result_payload = {
+            "phase": phase,
+            "usage": usage,
+            "elapsed_seconds": round(time.monotonic() - model_started_at, 3),
+        }
+        if invalid_response:
             await emit_event(
                 "model.failed",
                 {
-                    "phase": turn.progress.phase if turn else "final",
+                    **result_payload,
                     "error": "invalid final response",
                 },
             )
         else:
             await emit_event(
                 "model.completed",
-                {
-                    "usage": usage,
-                    "elapsed_seconds": round(time.monotonic() - model_started_at, 3),
-                },
+                result_payload,
             )
         if usage:
             await emit_event("usage.recorded", usage)
@@ -682,7 +695,7 @@ class MentionChatModel(ContextMixin, ToolsRuntimeMixin, FinalizeMixin):
                 "message_keys=%s",
                 [k for k in response.__dict__ if not k.startswith("_")],
             )
-        return {"messages": [response]}
+        return {"messages": [response], "model_response_invalid": invalid_response}
 
     @abstractmethod
     def parse_model_output(self, raw_output) -> str:
@@ -814,19 +827,23 @@ class MentionChatModel(ContextMixin, ToolsRuntimeMixin, FinalizeMixin):
                 "Empty final_text, retrying once. raw_output=%s",
                 self._preview_text(response.get("raw_output"), 200),
             )
+            if turn:
+                turn.control.stop(
+                    turn.progress, turn.control.stop_reason or "empty_response"
+                )
             retry_update = await self._call_model(response)
-            response["messages"] = list(response["messages"]) + retry_update["messages"]
-            retry_message = response["messages"][-1]
-            if getattr(retry_message, "tool_calls", None):
-                final_text = None
-            else:
+            messages = list(response["messages"]) + retry_update["messages"]
+            response.update(retry_update)
+            response["messages"] = messages
+            response["final_text"] = ""
+            if not response.get("model_response_invalid"):
                 response.update(await self._finalize_response(response))
                 await self._save_history(response)
             final_text = response.get("final_text")
 
         # A second invalid result must fail the run so callers do not publish it.
         if not final_text or not final_text.strip():
-            raise RuntimeError("已完成资料查询，但模型未生成有效正文，请重试。")
+            raise RuntimeError("模型未生成有效正文，重试后仍失败，请稍后重试。")
 
         logging.info(
             "Finished mention response generation: "

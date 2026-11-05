@@ -14,6 +14,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 
 from shuiyuan_auto_reply.application import BotContext, BotService, HandlerRegistry
+from shuiyuan_auto_reply.application.events import emit_event
 from shuiyuan_auto_reply.bootstrap.container import (
     ApplicationContainer,
     _SwappableBotService,
@@ -182,6 +183,27 @@ class SQLiteStageTwoTests(unittest.IsolatedAsyncioTestCase):
         event = (await self.store.list_events_for_request(request.request_id))[0]
         self.assertEqual(event.payload["messages"][0]["content"], long_prompt)
         self.assertEqual(event.payload["messages"][1]["content"], "[DATA_URL_REDACTED]")
+
+    async def test_reasoning_event_keeps_full_text_and_redacts_secrets(self):
+        request = web_request("reasoning-inspection")
+        conversation = await self.store.ensure_conversation(request.conversation)
+        run_id = await self.store.create_run(request.request_id, conversation.id)
+        text = "思考正文\n" * 60000
+        await self.store.append_event(
+            run_id,
+            "model.reasoning",
+            {
+                "text": text + "Bearer private-token\ndata:image/png;base64,QUJDRA==",
+                "api_key": "private-key",
+            },
+        )
+        reopened = SQLiteStateStore(self.path)
+        events = await reopened.list_events_for_conversation(conversation.id)
+        self.assertEqual(
+            events[0].payload["text"], text + "Bearer [REDACTED]\n[DATA_URL_REDACTED]"
+        )
+        self.assertEqual(events[0].payload["api_key"], "[REDACTED]")
+        self.assertNotIn("truncated", events[0].payload)
 
     async def test_secret_vault_encrypts_values_and_only_exposes_metadata(self):
         vault = LocalSecretVault(self.store, Path(self.temp.name) / "master.key")
@@ -461,6 +483,7 @@ class PromptInspectionTests(unittest.IsolatedAsyncioTestCase):
 
         model = MentionChatModel.__new__(MentionChatModel)
         model.llm_with_tools = FakeLLM()
+        model.parse_model_output = lambda value: value
         model.prompt_scope = SimpleNamespace(value="web")
         model.prompt = ChatPromptTemplate.from_messages(
             [
@@ -497,6 +520,104 @@ class PromptInspectionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ManagedApiTests(unittest.TestCase):
+    def test_failed_stream_drains_tail_events_and_history_keeps_reasoning(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = SQLiteStateStore(Path(temp) / "state.sqlite3")
+            asyncio.run(store.initialize())
+            text = "完整思考\n" * 20000
+
+            class FailingChat(HistoryChat):
+                async def handle(self, context):
+                    await emit_event("model.prompt_prepared", {})
+                    await emit_event("model.started", {})
+                    await emit_event("model.reasoning", {"text": text})
+                    await emit_event("model.failed", {"error": "empty final response"})
+                    raise RuntimeError("模型未生成有效正文，重试后仍失败")
+
+            service = BotService(
+                SQLiteSessionRepository(store),
+                HandlerRegistry([FailingChat()]),
+                observer_factory=lambda: SQLiteExecutionObserver(store),
+            )
+            finished = asyncio.Event()
+
+            async def reply(request):
+                try:
+                    return await service.reply(request)
+                finally:
+                    finished.set()
+
+            container = SimpleNamespace(
+                state_store=store,
+                bot_service=SimpleNamespace(reply=reply),
+                aclose=AsyncMock(),
+            )
+
+            async def factory():
+                return container
+
+            original_list = store.list_events_for_request
+            polls = 0
+
+            async def poll(request_id):
+                nonlocal polls
+                polls += 1
+                if polls == 1:
+                    await finished.wait()
+                    return []
+                return await original_list(request_id)
+
+            with (
+                TestClient(create_app(factory)) as client,
+                patch.object(store, "list_events_for_request", side_effect=poll),
+            ):
+                conversation_id = client.post("/api/conversations", json={}).json()[
+                    "id"
+                ]
+                response = client.post(
+                    f"/api/conversations/{conversation_id}/messages/stream",
+                    json={"message": "hello"},
+                )
+                events = []
+                for block in response.text.strip().split("\n\n"):
+                    kind, data = block.split("\n", 1)
+                    events.append(
+                        (
+                            kind.removeprefix("event: "),
+                            json.loads(data.removeprefix("data: ")),
+                        )
+                    )
+                kinds = [kind for kind, _ in events]
+                self.assertEqual(kinds[-1], "stream.error")
+                self.assertLess(
+                    kinds.index("model.reasoning"), kinds.index("run.failed")
+                )
+                self.assertNotIn("message.completed", kinds)
+                self.assertEqual(
+                    next(
+                        data["text"]
+                        for kind, data in events
+                        if kind == "model.reasoning"
+                    ),
+                    text,
+                )
+                detail = client.get(f"/api/conversations/{conversation_id}").json()
+                self.assertEqual(detail["messages"][-1]["status"], "failed")
+                self.assertEqual(detail["messages"][-1]["role"], "system")
+                self.assertFalse(
+                    any(
+                        message["role"] == "assistant" for message in detail["messages"]
+                    )
+                )
+                self.assertEqual(
+                    next(
+                        event["payload"]["text"]
+                        for event in detail["events"]
+                        if event["type"] == "model.reasoning"
+                    ),
+                    text,
+                )
+
     def test_open_web_chat_clear_and_forum_read_only(self):
         with (
             tempfile.TemporaryDirectory() as temp,

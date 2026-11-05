@@ -22,6 +22,29 @@ DEEPSEEK_DEFAULT_MODEL = "deepseek-flash"
 DEEPSEEK_DEFAULT_MAX_RETRIES = 1
 
 
+def extract_reasoning_text(message: AIMessage) -> str:
+    """Read provider reasoning without changing the message used for replay."""
+    reasoning = message.additional_kwargs.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return reasoning
+    if not isinstance(message.content, list):
+        return ""
+    parts: list[str] = []
+    for block in message.content:
+        if not isinstance(block, dict) or block.get("type") != "reasoning":
+            continue
+        for key in ("content", "summary"):
+            texts = [
+                part["text"]
+                for part in block.get(key, []) or []
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            ]
+            if any(text.strip() for text in texts):
+                parts.extend(texts)
+                break
+    return "\n\n".join(parts)
+
+
 def as_responses_image_block(block: dict[str, Any]) -> dict[str, Any]:
     """Convert a stored Chat/Vision image block to Responses ``input_image``."""
     block_type = block.get("type")

@@ -11,7 +11,6 @@ from shuiyuan_auto_reply.application.image_handles import (
     TurnImageRegistry,
     render_image_placeholders,
 )
-from shuiyuan_auto_reply.application.ports.prompt import PromptScope
 from shuiyuan_auto_reply.application.tool_results import current_turn
 from shuiyuan_auto_reply.shuiyuan.objects import User
 from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
@@ -149,20 +148,10 @@ class FinalizeMixin:
     async def _finalize_response(self, state: MentionGraphState) -> MentionGraphState:
         last_message = state["messages"][-1]
         raw_output = getattr(last_message, "content", last_message)
-        # reasoning_content 兜底：thinking 模式下输出可能只在 reasoning 字段。
-        if not raw_output and self.prompt_scope is PromptScope.FORUM:
-            reasoning = getattr(last_message, "reasoning_content", None) or getattr(
-                last_message, "additional_kwargs", {}
-            ).get("reasoning_content")
-            if reasoning:
-                logging.info(
-                    "Using reasoning_content as fallback (%d chars)", len(reasoning)
-                )
-                raw_output = reasoning
         if not raw_output:
             additional = getattr(last_message, "additional_kwargs", {})
             logging.warning(
-                "Final message has empty content and no reasoning. "
+                "Final message has empty public content. "
                 "message_type=%s tool_calls=%s additional_keys=%s",
                 type(last_message).__name__,
                 getattr(last_message, "tool_calls", None),
@@ -197,6 +186,10 @@ class FinalizeMixin:
             if artifact.uri not in final_clean_text:
                 final_clean_text += f"\n\n![生成图片]({artifact.uri})"
         final_clean_text = final_clean_text.strip()
+        if not final_clean_text and not state.get("model_response_invalid"):
+            await emit_event(
+                "model.failed", {"phase": "final", "error": "模型未生成有效正文"}
+            )
         if turn:
             import time
 
