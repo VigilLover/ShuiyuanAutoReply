@@ -123,8 +123,8 @@ const stopLabel = computed(() => summary.value.stopReason ? (STOP_REASON_LABELS[
               ↓{{ formatTokens(round.inputTokens) }} ↑{{ formatTokens(round.outputTokens) }}
               <em v-if="round.cacheReadTokens">· 缓存 {{ formatTokens(round.cacheReadTokens) }}</em>
             </span>
-            <PromptEvent v-if="round.prompt" :payload="round.prompt.payload" class="run-round-prompt" />
           </header>
+          <PromptEvent v-if="round.prompt" :payload="round.prompt.payload" class="run-round-prompt" />
           <ReasoningEvent v-if="round.reasoning" :text="round.reasoning" class="run-round-reasoning" />
           <p v-if="round.failed" class="run-round-error">{{ round.failed }}</p>
           <ul v-if="round.tools.length" class="run-tool-list">

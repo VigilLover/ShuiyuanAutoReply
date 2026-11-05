@@ -166,28 +166,21 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
 .system-divider.failed { color: var(--red); }
 .system-message { min-width: 0; }
 .system-message > .run-progress { margin: -16px 0 24px; }
-.reasoning-event { min-width: 0; width: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--code); color: var(--text-soft); }
-.reasoning-event > summary { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; list-style: none; font-size: var(--text-xs); }
-.reasoning-event > summary::-webkit-details-marker { display: none; }
-.reasoning-event > summary span { margin-right: auto; }
-.reasoning-event > summary small { color: var(--faint); }
-.reasoning-event-caret { color: var(--blue); transition: transform .15s ease; }
-.reasoning-event[open] > summary .reasoning-event-caret { transform: rotate(90deg); }
-.reasoning-event > pre { max-height: min(52vh, 520px); overflow: auto; margin: 0; padding: 12px; border-top: 1px solid var(--line); font: var(--text-xs)/1.7 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-width: thin; }
-.run-round-reasoning { margin-top: 6px; }
-.prompt-event { width: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--code); color: var(--text-soft); }
-.prompt-event > summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; cursor: pointer; list-style: none; color: var(--text-soft); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
-.prompt-event > summary::-webkit-details-marker { display: none; }
-.prompt-event-caret { color: var(--blue); transition: transform .15s ease; }
-.prompt-event[open] > summary .prompt-event-caret { transform: rotate(90deg); }
-.prompt-event > summary span { margin-right: auto; }
-.prompt-event > summary small { color: var(--faint); font-size: 9px; }
-.prompt-message-list { max-height: min(52vh, 520px); overflow: auto; border-top: 1px solid var(--line); scrollbar-width: thin; }
+.event-disclosure { min-width: 0; width: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--code); color: var(--text-soft); }
+.event-disclosure > summary { display: grid; grid-template-columns: 13px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; list-style: none; color: var(--text-soft); font: var(--text-sm)/1.5 var(--font-mono); }
+.event-disclosure > summary::-webkit-details-marker { display: none; }
+.event-disclosure-title { min-width: 0; overflow-wrap: anywhere; }
+.event-disclosure-metadata { color: var(--faint); font-size: 9px; text-align: right; }
+.event-disclosure-caret { color: var(--blue); transition: transform .15s ease; }
+.event-disclosure[open] > summary .event-disclosure-caret { transform: rotate(90deg); }
+.event-disclosure-content { max-height: min(52vh, 520px); overflow: auto; border-top: 1px solid var(--line); font: var(--text-xs)/1.7 var(--font-mono); scrollbar-width: thin; }
+.event-disclosure-content pre { margin: 0; color: var(--text-soft); font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reasoning-event pre, .prompt-fallback { padding: 12px; }
+.run-round-prompt, .run-round-reasoning { margin-top: 6px; }
 .prompt-message { padding: 12px; border-bottom: 1px solid var(--line); }
 .prompt-message:last-child { border-bottom: 0; }
 .prompt-message-role { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; color: var(--purple); font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; }
 .prompt-message-role small { color: var(--faint); letter-spacing: 0; }
-.prompt-message pre, .prompt-fallback { overflow: auto; margin: 0; color: var(--text-soft); font: 10px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .prompt-message .prompt-tool-calls { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); color: var(--muted); }
 .run-progress { margin-top: 18px; overflow: hidden; border-top: 1px solid var(--line); color: var(--muted); }
 .run-progress.running { margin: 8px 0 26px; padding: 13px 15px 11px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-soft); box-shadow: 0 8px 24px #0000000d; }
@@ -213,7 +206,6 @@ button { color: inherit; cursor: pointer; @apply focus-visible:outline-2 focus-v
 .run-round-head strong { color: var(--text-soft); font-size: var(--text-sm); font-weight: 600; }
 .run-round-stat { display: inline-flex; align-items: center; gap: 4px; color: var(--faint); font: var(--text-xs) var(--font-mono); }
 .run-round-stat em { font-style: normal; }
-.run-round-prompt { width: auto; flex: 1 1 100%; margin-top: 4px; }
 .run-round-error { margin: 4px 0 0; color: var(--red); font-size: var(--text-sm); }
 .run-tool-list { margin: 6px 0 0; padding: 0; list-style: none; }
 .run-tool { margin: 0 0 4px; }
