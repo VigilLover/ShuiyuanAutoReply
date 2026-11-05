@@ -109,7 +109,7 @@ def default_model_config(kind: str) -> dict:
             "kind": "image",
             "name": "默认（部署配置）",
             "base_url": os.getenv("IMAGE_GEN_API_URL", "").strip(),
-            "model": os.getenv("IMAGE_GEN_MODEL", "").strip() or "gpt-image-2",
+            "model": os.getenv("IMAGE_GEN_MODEL", "").strip() or "gpt-image-2.6",
             "api_format": None,
             "source": "default",
         }

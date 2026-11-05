@@ -18,7 +18,17 @@ from shuiyuan_auto_reply.shuiyuan.shuiyuan_model import ShuiyuanModel
 
 def image_bytes(image_format: str = "PNG") -> bytes:
     output = io.BytesIO()
-    Image.new("RGBA", (4, 3), (92, 134, 232, 160)).save(output, format=image_format)
+    if image_format == "GIF":
+        Image.new("RGB", (4, 3), "red").save(
+            output,
+            format="GIF",
+            save_all=True,
+            append_images=[Image.new("RGB", (4, 3), "blue")],
+            duration=120,
+            loop=0,
+        )
+    else:
+        Image.new("RGBA", (4, 3), (92, 134, 232, 160)).save(output, format=image_format)
     return output.getvalue()
 
 
@@ -49,22 +59,28 @@ class ShuiyuanImageUploadTests(unittest.IsolatedAsyncioTestCase):
 
 class ForumMediaUploaderTests(unittest.IsolatedAsyncioTestCase):
     async def test_original_format_is_uploaded_first(self):
+        for image_format in ("PNG", "GIF"):
+            with self.subTest(image_format=image_format):
+                await self._check_original_upload(image_format)
+
+    async def _check_original_upload(self, image_format):
         with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "asset.png"
-            data = image_bytes()
+            extension = image_format.lower()
+            path = Path(temp) / f"asset.{extension}"
+            data = image_bytes(image_format)
             path.write_bytes(data)
             artifact = VisualMediaArtifact(
                 "asset-1",
-                "image/png",
+                f"image/{extension}",
                 str(path),
                 len(data),
                 "web_search",
-                filename="result.png",
+                filename=f"result.{extension}",
             )
             forum = SimpleNamespace(
                 upload_image=AsyncMock(
                     return_value=SimpleNamespace(
-                        short_path="/uploads/short-url/uB9mAVdAgjShS5HHmLgflguOW9F.jpeg"
+                        short_path=f"/uploads/short-url/uB9mAVdAgjShS5HHmLgflguOW9F.{extension}"
                     )
                 )
             )
@@ -73,11 +89,36 @@ class ForumMediaUploaderTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(
                 result.short_path,
-                "upload://uB9mAVdAgjShS5HHmLgflguOW9F.jpeg",
+                f"upload://uB9mAVdAgjShS5HHmLgflguOW9F.{extension}",
             )
             forum.upload_image.assert_awaited_once_with(
-                data, mime_type="image/png", filename="result.png"
+                data, mime_type=f"image/{extension}", filename=f"result.{extension}"
             )
+
+    async def test_gif_failure_never_falls_back_to_jpeg_or_caches_static_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "asset.gif"
+            data = image_bytes("GIF")
+            path.write_bytes(data)
+            artifact = GeneratedImageArtifact("gif", "image/gif", str(path), len(data))
+            for response in (
+                RuntimeError("format rejected"),
+                SimpleNamespace(short_path="upload://flattened.jpg"),
+            ):
+                with self.subTest(response=type(response).__name__):
+                    forum = SimpleNamespace(
+                        upload_image=AsyncMock(side_effect=[response])
+                    )
+                    store = SimpleNamespace(
+                        get_artifact=AsyncMock(return_value=None),
+                        set_forum_short_path=AsyncMock(),
+                    )
+                    with self.assertRaisesRegex(RuntimeError, "GIF 原格式上传失败"):
+                        await ForumMediaUploader(forum, store).upload(artifact)
+                    forum.upload_image.assert_awaited_once_with(
+                        data, mime_type="image/gif", filename="gif.gif"
+                    )
+                    store.set_forum_short_path.assert_not_awaited()
 
     async def test_failed_original_format_retries_once_as_jpeg(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -124,32 +165,48 @@ class ForumMediaUploaderTests(unittest.IsolatedAsyncioTestCase):
         forum.upload_image.assert_not_awaited()
 
     async def test_invalid_cached_path_is_ignored_and_reuploaded(self):
+        for image_format, cached_path in (
+            ("PNG", "https://cdn.example/not-local.png"),
+            ("GIF", "upload://previously-flattened.jpg"),
+        ):
+            with self.subTest(image_format=image_format):
+                await self._check_invalid_cached_upload(image_format, cached_path)
+
+    async def _check_invalid_cached_upload(self, image_format, cached_path):
         with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "asset.png"
-            data = image_bytes()
+            extension = image_format.lower()
+            path = Path(temp) / f"asset.{extension}"
+            data = image_bytes(image_format)
             path.write_bytes(data)
             artifact = VisualMediaArtifact(
-                "asset-invalid-cache", "image/png", str(path), len(data), "web_search"
+                "asset-invalid-cache",
+                f"image/{extension}",
+                str(path),
+                len(data),
+                "web_search",
             )
             store = SimpleNamespace(
                 get_artifact=AsyncMock(
-                    return_value=SimpleNamespace(
-                        forum_short_path="https://cdn.example/not-local.png"
-                    )
+                    return_value=SimpleNamespace(forum_short_path=cached_path)
                 ),
                 set_forum_short_path=AsyncMock(),
             )
             forum = SimpleNamespace(
                 upload_image=AsyncMock(
-                    return_value=SimpleNamespace(short_path="upload://local.png")
+                    return_value=SimpleNamespace(
+                        short_path=f"upload://local.{extension}"
+                    )
                 )
             )
 
             result = await ForumMediaUploader(forum, store).upload(artifact)
 
-            self.assertEqual(result.short_path, "upload://local.png")
+            self.assertEqual(result.short_path, f"upload://local.{extension}")
             self.assertFalse(result.reused)
             forum.upload_image.assert_awaited_once()
+            store.set_forum_short_path.assert_awaited_once_with(
+                artifact.artifact_id, f"upload://local.{extension}"
+            )
 
 
 class ForumReplyMediaPublisherTests(unittest.IsolatedAsyncioTestCase):

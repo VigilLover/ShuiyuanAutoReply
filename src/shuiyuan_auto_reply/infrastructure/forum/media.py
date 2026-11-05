@@ -97,7 +97,10 @@ class ForumMediaUploader:
                     cached_path = str(record.forum_short_path).strip()
                     try:
                         return ForumMediaUpload(
-                            self._require_upload_uri(cached_path), reused=True
+                            self._require_upload_uri(
+                                cached_path, mime_type=artifact.mime_type
+                            ),
+                            reused=True,
                         )
                     except ValueError:
                         logging.warning(
@@ -126,8 +129,14 @@ class ForumMediaUploader:
                 mime_type=mime_type,
                 filename=filename,
             )
-            short_path = self._require_upload_uri(response.short_path)
+            short_path = self._require_upload_uri(
+                response.short_path, mime_type=mime_type
+            )
         except Exception as original_error:
+            if mime_type == "image/gif":
+                raise RuntimeError(
+                    f"GIF 原格式上传失败: {original_error}"
+                ) from original_error
             logging.warning(
                 "Original forum image upload failed for %s (%s); retrying as JPEG: %s",
                 artifact.artifact_id,
@@ -160,12 +169,14 @@ class ForumMediaUploader:
         return ForumMediaUpload(short_path)
 
     @staticmethod
-    def _require_upload_uri(value: object) -> str:
+    def _require_upload_uri(value: object, *, mime_type: str | None = None) -> str:
         short_path = normalize_upload_short_path(unescape(str(value).strip()))
         if not _UPLOAD_URI_RE.fullmatch(short_path):
             raise ValueError(
                 "水源上传接口没有返回有效的 upload:// 短地址: " f"{short_path!r}"
             )
+        if mime_type == "image/gif" and not short_path.lower().endswith(".gif"):
+            raise ValueError("GIF 上传没有返回 .gif 短地址，不能替换为静态图片")
         return short_path
 
     @staticmethod

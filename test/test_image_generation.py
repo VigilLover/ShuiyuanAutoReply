@@ -28,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from shuiyuan_auto_reply.features.mention.image_generation import (
+    _SUPPORTED_ASPECT_RATIOS,
     ImageGenerationService,
     _download_and_encode,
     _encode_bytes,
@@ -57,6 +58,23 @@ def _png_data_url(color=(30, 100, 220, 128)) -> str:
     Image.new("RGBA", (4, 4), color).save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
+
+
+def _gif_bytes(frame_count=3) -> bytes:
+    frames = [
+        Image.new("RGB", (4, 3), color)
+        for color in ("red", "green", "blue")[:frame_count]
+    ]
+    buffer = io.BytesIO()
+    frames[0].save(
+        buffer,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=[80, 120, 160][:frame_count],
+        loop=0,
+    )
+    return buffer.getvalue()
 
 
 def _load_env():
@@ -296,14 +314,129 @@ class TestImageGenerationTransport(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(submissions, 1)
 
     async def test_url_response_is_downloaded_and_stored(self):
+        raw = _gif_bytes()
+
         async def handler(request):
             self.requests.append(await request.json())
-            return web.json_response(self._images_response_url())
+            return web.json_response(
+                {
+                    "data": [
+                        {
+                            "url": "data:image/gif;base64,"
+                            + base64.b64encode(raw).decode()
+                        }
+                    ]
+                }
+            )
 
         await self._start_images_server(handler)
-        result = await self.generate("测试URL响应图片的下载和保存")
+        result = await self.generate("测试URL响应动图的下载和保存", output_format="gif")
 
         self.assertGenerated(result)
+        self.assertEqual(Path(self.last_artifact.local_path).read_bytes(), raw)
+        self.assertEqual(self.last_artifact.mime_type, "image/gif")
+        self.assertEqual(self.requests[0]["size"], "1024x1024")
+
+    async def test_gif_generation_preserves_animation_and_uses_provider_defaults(self):
+        raw = _gif_bytes()
+
+        async def handler(request):
+            self.requests.append(await request.json())
+            return web.json_response(
+                {"data": [{"b64_json": base64.b64encode(raw).decode()}]}
+            )
+
+        await self._start_images_server(handler)
+        result = await self.generate(
+            "生成一只眨眼后恢复表情的猫咪动图",
+            aspect_ratio="3:2",
+            output_format="gif",
+        )
+
+        payload = self.assertGenerated(result)
+        self.assertIn("首帧", payload["note"])
+        self.assertEqual(
+            set(self.requests[0]), {"model", "prompt", "size", "output_format", "n"}
+        )
+        self.assertEqual(self.requests[0]["size"], "1536x1024")
+        self.assertEqual(self.requests[0]["output_format"], "gif")
+        self.assertEqual(self.requests[0]["n"], 1)
+        artifact = self.last_artifact
+        self.assertEqual(Path(artifact.local_path).read_bytes(), raw)
+        record = await self.store.get_artifact(artifact.artifact_id)
+        self.assertEqual(record.mime_type, "image/gif")
+        self.assertEqual(record.filename, "generated.gif")
+        with Image.open(artifact.local_path) as image:
+            self.assertEqual(image.n_frames, 3)
+            self.assertEqual(image.info["loop"], 0)
+            durations = []
+            for index in range(image.n_frames):
+                image.seek(index)
+                durations.append(image.info["duration"])
+            self.assertEqual(durations, [80, 120, 160])
+
+    async def test_reference_gif_uses_existing_edit_endpoint(self):
+        raw = _gif_bytes()
+
+        async def handler(request):
+            self.assertEqual(request.path, "/v1/images/edits")
+            reader = await request.multipart()
+            fields = {}
+            async for part in reader:
+                fields[part.name] = (
+                    await part.read() if part.name == "image[]" else await part.text()
+                )
+            self.requests.append(fields)
+            return web.json_response(
+                {"data": [{"b64_json": base64.b64encode(raw).decode()}]}
+            )
+
+        await self._start_images_server(handler, handler)
+        result = await self.generate(
+            "参考图中的猫咪眨眼后回到起始表情",
+            aspect_ratio="2:3",
+            references=[{"key": "cat", "url": _png_data_url(), "label": "猫咪"}],
+            output_format="gif",
+        )
+
+        self.assertGenerated(result)
+        fields = self.requests[0]
+        self.assertEqual(
+            set(fields), {"model", "prompt", "size", "output_format", "n", "image[]"}
+        )
+        self.assertEqual(fields["size"], "1024x1536")
+        self.assertEqual(fields["output_format"], "gif")
+        self.assertEqual(fields["n"], "1")
+        self.assertEqual(
+            fields["image[]"], base64.b64decode(_png_data_url().split(",", 1)[1])
+        )
+
+    async def test_gif_request_rejects_static_or_damaged_output_without_regenerating(
+        self,
+    ):
+        raw = _gif_bytes()
+        outputs = [
+            base64.b64decode(_png_data_url().split(",", 1)[1]),
+            _gif_bytes(frame_count=1),
+            raw[: len(raw) // 2],
+        ]
+
+        async def handler(request):
+            self.requests.append(await request.json())
+            return web.json_response(
+                {"data": [{"b64_json": base64.b64encode(outputs.pop(0)).decode()}]}
+            )
+
+        await self._start_images_server(handler)
+        for label in ("static PNG", "single-frame GIF", "damaged GIF"):
+            with self.subTest(output=label):
+                result = await self.generate(
+                    "生成一只眨眼的猫咪循环动图", output_format="gif"
+                )
+                payload = self.assertFailed(result, "生成结果不是有效图片")
+                self.assertEqual(payload["code"], "invalid_image")
+        self.assertEqual(len(self.requests), 3)
+        self.assertEqual(list((Path(self.output_dir.name) / "artifacts").glob("*")), [])
 
     async def test_non_200_response_code_and_body_are_returned_to_tool_caller(self):
         async def handler(request):
@@ -634,13 +767,16 @@ class TestOpenAIImageSize(unittest.TestCase):
     def test_edges_are_aligned_for_custom_portrait_ratio(self):
         self.assertEqual(_openai_image_size("3:4"), "1024x1360")
 
-    def test_extreme_ratio_fits_gpt_image_2_limits_at_max_allowed_size(self):
-        width, height = map(int, _openai_image_size("1:8").split("x"))
-        self.assertEqual(width % 16, 0)
-        self.assertEqual(height % 16, 0)
-        self.assertLessEqual(max(width, height), 3840)
-        self.assertLessEqual(width * height, 8_294_400)
-        self.assertLessEqual(max(width, height) / min(width, height), 3)
+    def test_supported_ratios_keep_short_edge_at_1024(self):
+        for aspect_ratio in sorted(_SUPPORTED_ASPECT_RATIOS):
+            with self.subTest(aspect_ratio=aspect_ratio):
+                width, height = map(int, _openai_image_size(aspect_ratio).split("x"))
+                self.assertEqual(min(width, height), 1024)
+                self.assertEqual(width % 16, 0)
+                self.assertEqual(height % 16, 0)
+                self.assertLessEqual(max(width, height), 3840)
+                self.assertLessEqual(width * height, 8_294_400)
+                self.assertLessEqual(max(width, height) / min(width, height), 3)
 
 
 if __name__ == "__main__":
