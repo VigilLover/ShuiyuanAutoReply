@@ -210,7 +210,8 @@ def build_chat_model(
         kwargs = {
             **common_kwargs,
             "use_responses_api": True,
-            "output_version": "v1",
+            # Keep provider reasoning fields intact for inspection and replay.
+            "output_version": "responses/v1",
             "reasoning": {
                 "effort": reasoning_effort if thinking == "enabled" else "none"
             },
