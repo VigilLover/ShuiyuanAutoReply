@@ -17,6 +17,7 @@ from shuiyuan_auto_reply.features.mention.mention_deepseek_model import (
     _mk_deepseek_llm,
     build_deepseek_responses_content,
 )
+from shuiyuan_auto_reply.infrastructure.llm.deepseek import extract_reasoning_text
 
 
 def _settings(
@@ -54,6 +55,65 @@ def _image(block: dict, source_url: str = "https://cdn.example/image.png"):
 
 
 class DeepSeekRequestContractTests(unittest.TestCase):
+    def test_reasoning_extraction_keeps_response_blocks_and_replay_unchanged(self):
+        reasoning = {
+            "type": "reasoning",
+            "content": [{"type": "reasoning_text", "text": " first\nline "}],
+            "summary": [{"type": "summary_text", "text": "duplicate summary"}],
+        }
+        message = AIMessage(
+            content=[
+                reasoning,
+                {"type": "text", "text": "public answer"},
+                {"type": "reasoning", "summary": [{"text": "second"}]},
+                {"type": "reasoning", "summary": [], "encrypted_content": "opaque"},
+            ]
+        )
+        before = message.model_dump()
+        self.assertEqual(extract_reasoning_text(message), " first\nline \n\nsecond")
+        self.assertEqual(message.model_dump(), before)
+        message.content[0]["content"].append({"type": "reasoning_text", "text": "\n "})
+        self.assertEqual(
+            extract_reasoning_text(message), " first\nline \n\n\n \n\nsecond"
+        )
+        message.additional_kwargs["reasoning_content"] = " chat reasoning\n "
+        self.assertEqual(extract_reasoning_text(message), " chat reasoning\n ")
+        for empty in (
+            AIMessage(content="answer"),
+            AIMessage(content="", additional_kwargs={"reasoning_content": " \n"}),
+        ):
+            self.assertEqual(extract_reasoning_text(empty), "")
+
+    def test_chat_response_reasoning_is_preserved_separately_from_public_text(self):
+        model = _mk_deepseek_llm(
+            "test-key",
+            DEEPSEEK_DEFAULT_MODEL,
+            _settings(DeepSeekApiFormat.CHAT_COMPLETIONS),
+        )
+        result = (
+            model._create_chat_result(
+                {
+                    "id": "fixture",
+                    "model": DEEPSEEK_DEFAULT_MODEL,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "finish_reason": "stop",
+                            "message": {
+                                "role": "assistant",
+                                "content": "public answer",
+                                "reasoning_content": "private reasoning",
+                            },
+                        }
+                    ],
+                }
+            )
+            .generations[0]
+            .message
+        )
+        self.assertEqual(result.content, "public answer")
+        self.assertEqual(extract_reasoning_text(result), "private reasoning")
+
     def test_chat_completions_payload_contract_is_preserved(self):
         model = _mk_deepseek_llm(
             "test-key",
@@ -78,6 +138,7 @@ class DeepSeekRequestContractTests(unittest.TestCase):
 
         self.assertIsInstance(model, DeepSeekChatOpenAI)
         self.assertEqual(payload["model"], DEEPSEEK_DEFAULT_MODEL)
+        self.assertEqual(payload["messages"][0]["role"], "user")
         self.assertEqual(payload["messages"][0]["content"], content)
         self.assertEqual(
             payload["messages"][1]["reasoning_content"], "provider reasoning"

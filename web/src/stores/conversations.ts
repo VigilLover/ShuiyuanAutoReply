@@ -83,6 +83,17 @@ export const useConversations = defineStore('conversations', {
           }
           return
         }
+        if (background && previous && channel === 'web') {
+          const failedInputs = previous.messages.filter(item => item.id.startsWith('local:') && item.status === 'failed')
+          const keptIds = new Set(failedInputs.map(item => item.id))
+          revokeLocalPreviews(previous.messages.filter(item => !keptIds.has(item.id)))
+          this.selected = {
+            ...detail,
+            messages: [...detail.messages, ...failedInputs].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)),
+          }
+          this.liveEvents = []
+          return
+        }
         revokeLocalPreviews(previous?.messages)
         this.selected = detail; this.liveEvents = []
         if (!background) sessionStorage.setItem('shuiyuan.monitor.selected', id)
@@ -222,9 +233,10 @@ export const useConversations = defineStore('conversations', {
         await this.load()
       } catch (error) {
         pendingMessage.status = 'failed'
-        this.error = String(error)
         this.lastFailedMessage = message
         this.lastFailedFiles = files
+        if (this.selected?.conversation.id === conversationId) await this.select(conversationId, true)
+        this.error = String(error)
       } finally { this.running = false }
     },
   },

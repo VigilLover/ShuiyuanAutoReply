@@ -12,6 +12,7 @@ import type { RunEvent } from '../api'
 import { STOP_REASON_LABELS, formatSeconds, formatTokens, groupRounds, runSummary, type Round, type ToolStep } from '../runs'
 import BrandLoader from './BrandLoader.vue'
 import PromptEvent from './PromptEvent.vue'
+import ReasoningEvent from './ReasoningEvent.vue'
 
 const props = defineProps<{
   events: RunEvent[]
@@ -32,7 +33,9 @@ const stageLabels: Record<string, string> = {
   'memory.loaded': '加载长期记忆',
   'model.prompt_prepared': '准备模型输入',
   'model.started': '等待模型',
+  'model.reasoning': '已收到模型思考',
   'model.completed': '模型响应完成',
+  'model.failed': '模型响应无效或调用失败',
   'tool.started': '调用工具',
   'tool.completed': '工具执行完成',
   'tool.failed': '工具执行失败',
@@ -122,6 +125,7 @@ const stopLabel = computed(() => summary.value.stopReason ? (STOP_REASON_LABELS[
             </span>
             <PromptEvent v-if="round.prompt" :payload="round.prompt.payload" class="run-round-prompt" />
           </header>
+          <ReasoningEvent v-if="round.reasoning" :text="round.reasoning" class="run-round-reasoning" />
           <p v-if="round.failed" class="run-round-error">{{ round.failed }}</p>
           <ul v-if="round.tools.length" class="run-tool-list">
             <li v-for="step in round.tools" :key="step.key" class="run-tool" :class="step.status">

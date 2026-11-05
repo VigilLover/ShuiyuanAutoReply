@@ -243,6 +243,71 @@ def test_unexpected_chat_failure_is_recorded_as_a_failed_run(tmp_path):
     asyncio.run(run())
 
 
+def test_empty_response_retry_publishes_one_error_and_keeps_thoughts_in_failed_run(
+    tmp_path,
+):
+    from langchain_core.messages import AIMessage
+    from test_forum_agent_flow import OfflineChat
+
+    async def run():
+        model, store = await setup(tmp_path)
+        model.nickname = "小狼bot"
+        model.trigger_word = "【小狼】"
+        model._runtime_lock = asyncio.Lock()
+        model._runtime_counts = {}
+        model._retired_runtimes = set()
+        runtime = OfflineChat(model.model)
+        runtime.llm_with_tools = SimpleNamespace(
+            ainvoke=AsyncMock(
+                return_value=AIMessage(
+                    content="", additional_kwargs={"reasoning_content": "private first"}
+                )
+            )
+        )
+        runtime.llm_final = SimpleNamespace(
+            ainvoke=AsyncMock(
+                return_value=AIMessage(
+                    content="", additional_kwargs={"reasoning_content": "private retry"}
+                )
+            )
+        )
+        model.pumpkin = runtime
+
+        async def chat(context):
+            return await model._handle_chat(context)
+
+        model.bot_service = BotService(
+            SQLiteSessionRepository(store),
+            HandlerRegistry(
+                [CallbackChatHandler(lambda text: "【小狼】" in text, chat)]
+            ),
+        )
+        await model._new_action_routine(action())
+        runtime.llm_with_tools.ainvoke.assert_awaited_once()
+        runtime.llm_final.ainvoke.assert_awaited_once()
+        model.model.reply_to_post.assert_awaited_once()
+        published = model.model.reply_to_post.await_args.args[0]
+        assert "抱歉，发生了未知错误" in published
+        assert "Pumpkin Edition" in published
+        assert "private" not in published
+        cid = (await store.list_conversations())[0].id
+        runs = await store.list_forum_runs(cid)
+        assert runs[0]["status"] == "failed"
+        assert "重试后仍失败" in runs[0]["error"]
+        events = await store.list_events_for_conversation(cid)
+        assert [
+            event.payload["text"]
+            for event in events
+            if event.event_type == "model.reasoning"
+        ] == ["private first", "private retry"]
+        kinds = [event.event_type for event in events]
+        assert "run.generation_failed" in kinds
+        assert kinds[-1] == "run.failed"
+        assert "run.completed" not in kinds
+
+    asyncio.run(run())
+
+
 def test_uncertain_publication_and_recovery(tmp_path):
     async def run():
         model, store = await setup(tmp_path)

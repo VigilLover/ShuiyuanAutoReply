@@ -26,6 +26,7 @@ class MentionGraphState(TypedDict, total=False):
     chat_history: List[AnyMessage]
     recent_msgs: str
     raw_output: object
+    model_response_invalid: bool
     final_text: str
     history_obj: InMemoryChatMessageHistory
     messages: Annotated[List[AnyMessage], add_messages]

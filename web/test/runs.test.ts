@@ -61,3 +61,31 @@ test('helpers format categories, hints and durations', () => {
   assert.equal(formatSeconds(0.25), '250ms')
   assert.equal(formatSeconds(75), '1m15s')
 })
+
+test('reasoning stays with its round and failed usage is counted once across retry', () => {
+  const text = '完整思考\n'.repeat(20000)
+  const usage = { input_tokens: 100, output_tokens: 40, output_token_details: { reasoning: 30 } }
+  const events = [
+    ev('model.prompt_prepared'), ev('model.started'), ev('model.reasoning', { text }),
+    ev('model.failed', { error: 'empty answer', usage, elapsed_seconds: 2 }),
+    ev('usage.recorded', usage),
+    ev('model.prompt_prepared'), ev('model.started'), ev('model.reasoning', { text: 'retry thought' }),
+    ev('model.completed', { usage, elapsed_seconds: 3, phase: 'final' }),
+    ev('usage.recorded', usage),
+    // Rendering can reject a completed response, without recording usage twice.
+    ev('model.failed', { error: 'no deliverable content', phase: 'final' }),
+    ev('run.failed'),
+  ]
+  const rounds = groupRounds(events)
+  assert.equal(rounds.length, 2)
+  assert.equal(rounds[0].reasoning, text)
+  assert.equal(rounds[0].failed, 'empty answer')
+  assert.equal(rounds[1].reasoning, 'retry thought')
+  assert.equal(rounds[1].elapsed, 3)
+  assert.equal(rounds[1].phase, 'final')
+  const summary = runSummary(events)
+  assert.equal(summary.inputTokens, 200)
+  assert.equal(summary.outputTokens, 80)
+  assert.equal(summary.reasoningTokens, 60)
+  assert.equal(groupRounds([ev('model.started'), ev('model.completed')])[0].reasoning, undefined)
+})

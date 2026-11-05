@@ -21,6 +21,7 @@ import {
 import BrandLoader from '../components/BrandLoader.vue'
 import MarkdownContent from '../components/MarkdownContent.vue'
 import PromptEvent from '../components/PromptEvent.vue'
+import ReasoningEvent from '../components/ReasoningEvent.vue'
 import RunProgress from '../components/RunProgress.vue'
 import ForumConversation from '../components/ForumConversation.vue'
 import { useForumMonitor } from '../stores/forum'
@@ -79,8 +80,9 @@ const forumCounts = computed(() => {
 })
 const selectedEvents = computed(() => {
   const saved = store.selected?.events || []
-  if (store.channel !== 'forum') return saved
-  const live = forumRuns.value.flatMap(run => forum.events[run.id] || [])
+  const live = store.channel === 'forum'
+    ? forumRuns.value.flatMap(run => forum.events[run.id] || [])
+    : store.liveEvents.filter(event => event.run_id)
   return [...new Map([...saved, ...live].map(event => [event.id, event])).values()].sort((a, b) => a.id - b.id)
 })
 const filteredEvents = computed(() => traceFilter.value ? selectedEvents.value.filter(event => eventCategory(event.type) === traceFilter.value) : selectedEvents.value)
@@ -430,8 +432,14 @@ function onMessagesScroll() {
           <ForumConversation v-if="store.channel === 'forum'" :runs="forumRuns" :messages="store.selected?.messages || []" :events="selectedEvents" @preview="lightboxUrl = $event" />
           <template v-else>
           <template v-for="message in store.selected?.messages || []" :key="message.id">
-            <div v-if="message.role === 'system'" class="system-divider" :class="{ failed: message.status === 'failed' }">
-              <span></span><p>{{ message.content }}</p><span></span>
+            <div v-if="message.role === 'system'" class="system-message">
+              <div class="system-divider" :class="{ failed: message.status === 'failed' }">
+                <span></span><p>{{ message.content }}</p><span></span>
+              </div>
+              <RunProgress
+                v-if="message.status === 'failed' && eventsForMessage(message.run_id).length"
+                :events="eventsForMessage(message.run_id)"
+              />
             </div>
             <article v-else class="message-entry" :class="message.role">
               <div class="message-meta">
@@ -456,7 +464,7 @@ function onMessagesScroll() {
             </article>
           </template>
 
-          <RunProgress v-if="store.running" :events="store.liveEvents" running />
+          <RunProgress v-if="store.running || store.liveEvents.length" :events="store.liveEvents" :running="store.running" />
           </template>
           <div v-if="store.error" class="request-error">
             <div><strong>请求失败</strong><p>{{ store.error }}</p></div>
@@ -479,6 +487,7 @@ function onMessagesScroll() {
             <time>{{ new Date(event.created_at).toLocaleTimeString() }}</time>
             <span class="event-kind"><small v-if="store.channel === 'forum'">#{{ runsById[event.run_id]?.request.post_number || '历史' }} · </small>{{ event.type }}</span>
             <PromptEvent v-if="event.type === 'model.prompt_prepared'" :payload="event.payload" />
+            <ReasoningEvent v-else-if="event.type === 'model.reasoning' && typeof event.payload.text === 'string'" :text="event.payload.text" />
             <code v-else>{{ eventSummary(event.payload) }}</code>
           </div>
         </div>

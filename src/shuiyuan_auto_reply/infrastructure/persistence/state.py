@@ -41,7 +41,7 @@ def _safe_event_value(
     value: Any,
     key: str = "",
     *,
-    string_limit: int = 2000,
+    string_limit: int | None = 2000,
     list_limit: int = 50,
 ) -> Any:
     normalized = key.lower().replace("-", "_")
@@ -903,11 +903,18 @@ class SQLiteStateStore:
     ) -> None:
         is_model_prompt = event_type == "model.prompt_prepared"
         is_tool_instruction = event_type == "tool.started"
+        is_model_reasoning = event_type == "model.reasoning"
         encoded = json.dumps(
             _safe_event_value(
                 payload or {},
                 string_limit=(
-                    65536 if is_model_prompt else 32768 if is_tool_instruction else 2000
+                    None
+                    if is_model_reasoning
+                    else (
+                        65536
+                        if is_model_prompt
+                        else 32768 if is_tool_instruction else 2000
+                    )
                 ),
                 list_limit=200 if is_model_prompt or is_tool_instruction else 50,
             ),
@@ -917,7 +924,7 @@ class SQLiteStateStore:
         event_limit = (
             262144 if is_model_prompt else 65536 if is_tool_instruction else 4096
         )
-        if len(encoded) > event_limit:
+        if not is_model_reasoning and len(encoded) > event_limit:
             encoded = json.dumps(
                 {"summary": encoded[:event_limit], "truncated": True},
                 ensure_ascii=False,
